@@ -1,0 +1,197 @@
+package sandbox
+
+import (
+	"context"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ironpark/gvx-desktop/internal/rungv"
+)
+
+// rungvForTest finds a working rungv, or skips: the integration tests run a
+// real sandbox.
+func rungvForTest(t *testing.T) *rungv.Client {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+	path, err := rungv.Locate(filepath.Join("..", "..", "bin", rungv.BinaryName()))
+	if err != nil {
+		t.Skip("rungv not found")
+	}
+	c := &rungv.Client{Path: path}
+	info, err := c.Info(context.Background())
+	if err != nil || len(info.AvailableBackends) == 0 {
+		t.Skipf("no usable backend: %v", err)
+	}
+	return c
+}
+
+func newTestSupervisor(t *testing.T, c *rungv.Client) (*Supervisor, chan Event) {
+	events := make(chan Event, 1024)
+	s := &Supervisor{
+		Client:  func() *rungv.Client { return c },
+		DataDir: t.TempDir(),
+		Notify: func(e Event) {
+			select {
+			case events <- e:
+			default:
+			}
+		},
+	}
+	t.Cleanup(func() { s.StopAll(10 * time.Second) })
+	return s, events
+}
+
+func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool, logs ...*LogBuffer) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	for _, l := range logs {
+		for _, line := range l.Snapshot() {
+			t.Log(line.Text)
+		}
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestSupervisorRunsToCompletion(t *testing.T) {
+	c := rungvForTest(t)
+	s, _ := newTestSupervisor(t, c)
+	spec := Spec{ID: NewID(), Name: "once", Image: "alpine:3.20", Command: "echo hello-from-gvx"}
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "exit", 2*time.Minute, func() bool { return s.State(spec.ID).Status == Exited })
+	var found bool
+	for _, l := range s.Logs(spec.ID).Snapshot() {
+		if l.Text == "hello-from-gvx" && l.Stream == Stdout {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("output missing: %+v", s.Logs(spec.ID).Snapshot())
+	}
+	if st := s.State(spec.ID); st.Platform == "" {
+		t.Errorf("platform not parsed: %+v", st)
+	}
+}
+
+func TestSupervisorPortsReadyAndStop(t *testing.T) {
+	c := rungvForTest(t)
+	s, events := newTestSupervisor(t, c)
+	spec := Spec{ID: NewID(), Name: "web", Image: "nginx:alpine", Ports: []string{"18481:80"},
+		ReadyPattern: "start worker process"}
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(spec); err == nil {
+		t.Error("second start of a running sandbox accepted")
+	}
+	waitFor(t, "ready", 2*time.Minute, func() bool { return s.State(spec.ID).Status == Running })
+	st := s.State(spec.ID)
+	if len(st.Ports) != 1 || st.Ports[0].Host != "127.0.0.1:18481" || st.Ports[0].Guest != 80 || st.Ports[0].URL() != "http://127.0.0.1:18481" {
+		t.Fatalf("ports %+v", st.Ports)
+	}
+	res, err := http.Get(st.Ports[0].URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	var sawReady bool
+	for len(events) > 0 {
+		if (<-events).Kind == EventReady {
+			sawReady = true
+		}
+	}
+	if !sawReady {
+		t.Error("no ready event")
+	}
+	if err := s.Stop(spec.ID, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.State(spec.ID); st.Status != Stopped || st.PID != 0 {
+		t.Fatalf("after stop: %+v", st)
+	}
+}
+
+func TestSupervisorReportsFailure(t *testing.T) {
+	c := rungvForTest(t)
+	s, _ := newTestSupervisor(t, c)
+	spec := Spec{ID: NewID(), Name: "bad", Image: "alpine:3.20", Command: "sh -c 'echo boom >&2; exit 3'"}
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "failure", 2*time.Minute, func() bool { return s.State(spec.ID).Status == Failed })
+	if st := s.State(spec.ID); st.ExitCode != 3 || !strings.Contains(st.Error, "boom") {
+		t.Fatalf("%+v", st)
+	}
+}
+
+func TestSupervisorVolumeLock(t *testing.T) {
+	c := rungvForTest(t)
+	s, _ := newTestSupervisor(t, c)
+	vol := "gvxd-test-" + NewID()
+	t.Cleanup(func() { _ = c.RemoveVolume(context.Background(), vol) })
+	a := Spec{ID: NewID(), Name: "a", Image: "alpine:3.20", Command: "sleep 30",
+		Mounts: []Mount{{Type: MountVolume, Source: vol, Target: "/data"}}}
+	b := a.Clone()
+	b.ID, b.Name = NewID(), "b"
+	if err := s.Start(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(b); err == nil || !strings.Contains(err.Error(), "in use") {
+		t.Fatalf("second user of a volume: %v", err)
+	}
+}
+
+func TestSupervisorCheckpointRestore(t *testing.T) {
+	c := rungvForTest(t)
+	s, _ := newTestSupervisor(t, c)
+	work := t.TempDir()
+	spec := Spec{ID: NewID(), Name: "ck", Image: "alpine:3.20", Workspace: work, Checkpoint: true,
+		Command: `sh -c 'i=0; while true; do i=$((i+1)); echo tick-$i; sleep 0.2; done'`}
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "ticks", 2*time.Minute, func() bool { return len(s.Logs(spec.ID).Tail(20, Stdout)) > 3 }, s.Logs(spec.ID))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	dir, err := s.Checkpoint(ctx, spec.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "stop after checkpoint", time.Minute, func() bool { return !s.State(spec.ID).Status.Active() })
+	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
+		t.Fatal(err)
+	}
+	snaps := s.Snapshots(spec.ID)
+	if len(snaps) != 1 || snaps[0].Dir != dir {
+		t.Fatalf("snapshots %+v", snaps)
+	}
+	last := s.Logs(spec.ID).Tail(1, Stdout)[0]
+	if err := s.Restore(spec, dir); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "resumed ticks", time.Minute, func() bool {
+		tail := s.Logs(spec.ID).Tail(1, Stdout)
+		return len(tail) == 1 && tail[0] != last
+	}, s.Logs(spec.ID))
+	// The counter continues instead of starting over.
+	tail := s.Logs(spec.ID).Tail(1, Stdout)[0]
+	if tail == "tick-1" || tail == "tick-2" {
+		t.Fatalf("restore started over: last before %q, now %q", last, tail)
+	}
+}

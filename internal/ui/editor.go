@@ -76,17 +76,17 @@ func editorSheet(m *Model) ggui.Widget {
 
 	ports := ggui.Column(
 		ui.Field("Published ports", ui.TextField(str(func(x *Draft) *string { return &x.Ports })).Multiline().Lines(3).
-			Placeholder("8080:80 — one per line").Name("Published ports")).
+			Placeholder("8080:80\n127.0.0.1:9000-9019:9000-9019\nunix:~/.gvx/app.sock:3000").Name("Published ports")).
 			Help("One per line: [IP:][HOST:]GUEST[/udp]. Bound before the guest starts and fixed for the run: publish every port the guest will use, including ports of nested containers."),
 	).Gap(14).Stretch()
 
 	workspace := str(func(x *Draft) *string { return &x.Workspace })
 	storage := ggui.Column(
 		ui.Field("Volumes", ui.TextField(str(func(x *Draft) *string { return &x.Volumes })).Multiline().Lines(2).
-			Placeholder("pgdata:/var/lib/postgresql/data — one per line").Name("Volumes")).
+			Placeholder("pgdata:/var/lib/postgresql/data\n/disk/cache.ext4:/cache").Name("Volumes")).
 			Help("NAME:/guest/path[:ro]. Each named volume is one journaled ext4 image that persists; a source with a slash is an .ext4 file at that path."),
 		ui.Field("Bind mounts", ui.TextField(str(func(x *Draft) *string { return &x.Binds })).Multiline().Lines(2).
-			Placeholder("~/src:/src — one per line").Name("Bind mounts")).
+			Placeholder("~/src:/src\n~/app.conf:/etc/app.conf:ro").Name("Bind mounts")).
 			Help("HOST:/guest/path[:ro]. A host directory or one file. The sandbox may only reach what is mounted."),
 		ui.Field("Workspace", ggui.Row(
 			ggui.Expanded(ui.TextField(workspace).Placeholder("Folder mounted at /workspace").Name("Workspace folder")),
@@ -105,7 +105,7 @@ func editorSheet(m *Model) ggui.Widget {
 	).Gap(12).Align(ggui.AlignStart)
 
 	env := ui.Field("Environment", ui.TextField(str(func(x *Draft) *string { return &x.Env })).Multiline().Lines(3).
-		Placeholder("KEY=value — one per line").Name("Environment variables")).
+		Placeholder("KEY=value\nHTTP_PROXY").Name("Environment variables")).
 		Help("KEY=value per line. KEY alone copies the variable from this machine.")
 
 	network := d.Field(func(x *Draft) *string { return &x.Network })

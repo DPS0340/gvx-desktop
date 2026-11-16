@@ -110,7 +110,7 @@ func sidebar(m *Model) ggui.Widget {
 		item(PageDocker, "Docker Engine", lucide.Container),
 		item(PageKubernetes, "Kubernetes", lucide.Ship),
 	).Header(brand).
-		FooterItems(item(PageSettings, "Settings", lucide.Cog)).
+		FooterItems(item(PageSettings, "Settings", lucide.Settings)).
 		Width(232).
 		Collapsible(ui.SidebarCollapseIcon).BindCollapsed(m.SidebarNarrow).
 		Shortcut("cmd+b").Name("Navigation")

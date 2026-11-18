@@ -66,7 +66,10 @@ concurrency:
 jobs:
   release:
     if: github.event_name == 'push'
-    runs-on: macos-26
+    # On Linux: ggui build makes the bundle and its disk image on any host
+    # and signs it itself, ad hoc, or with the certificate through the
+    # rcodesign that go install links in where there is a C compiler.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -83,6 +86,11 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "name=$(sed -n 's/^name = "\(.*\)"$/\1/p' ggui.toml)" >> "$GITHUB_OUTPUT"
+      # The tests draw text offscreen, which takes Mesa and a font with Korean.
+      - name: Fonts and Mesa
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-nanum libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri
       - name: Test
         run: go test -short ./...
       - name: Install the ggui command
@@ -106,14 +114,14 @@ jobs:
               set -- "$@" --notarize --api-key-file "$RUNNER_TEMP/notary.json"
             fi
           fi
-          ggui build "$@"
+          GOARCH=arm64 ggui build --target macos "$@"
           release/check-bundle.sh
           dmg="gvx-desktop-$VERSION-macos-arm64.dmg"
           mv "build/$NAME.dmg" "$dmg"
-          shasum -a 256 "$dmg" > "$dmg.sha256"
+          sha256sum "$dmg" > "$dmg.sha256"
           echo "signing=$signing" >> "$GITHUB_OUTPUT"
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
-          echo "sha256=$(shasum -a 256 "$dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(cut -d' ' -f1 "$dmg.sha256")" >> "$GITHUB_OUTPUT"
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

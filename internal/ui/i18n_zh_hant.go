@@ -698,6 +698,18 @@ var traditionalChinese = &i18n.Catalog{
 		"System pods":                                                                                   "系統 Pod",
 		"The cluster is starting…":                                                                      "叢集正在啟動…",
 		"The last %d lines, as kubectl logs shows them.":                                                "顯示最後 %d 行，與 kubectl logs 相同。",
+		// The terminal of the Containers and Pods pages.
+		"Terminal": "終端機",
+		"A shell in the container, as docker exec -it runs one.":  "在容器中執行 shell，與 docker exec -it 相同。",
+		"A shell in the container, as kubectl exec -it runs one.": "在容器中執行 shell，與 kubectl exec -it 相同。",
+		"The container is not running":                            "這個容器未在執行",
+		"Start it to open a shell in it.":                         "啟動後即可在其中開啟 shell。",
+		"A shell opens in a container while it runs.":             "shell 會在執行中的容器裡開啟。",
+		"Restart the shell":                                       "重新啟動 shell",
+		"Could not start a shell":                                 "無法啟動 shell",
+		"Starting a shell…":                                       "正在啟動 shell…",
+		"The shell ended.":                                        "shell 已結束。",
+		"The shell ended (exit %d).":                              "shell 已結束（結束代碼 %d）。",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d sandbox is running. gvx has no daemon: sandboxes live only while gvx Desktop runs.": {Other: "有 %d 個沙箱正在執行。gvx 沒有常駐程式：沙箱只會在 gvx Desktop 執行時存在。"},

@@ -217,6 +217,7 @@ func podDetail(m *Model) ggui.Widget {
 		tabs := ui.Tabs(m.PodDetail,
 			ui.Tab(tr("Logs"), podLogsView(m)),
 			ui.Tab(tr("Info"), ggui.View(m.Pod, func(p kubeapi.Pod) ggui.Widget { return podInfo(m, p) })),
+			ui.Tab(tr("Terminal"), podTerminal(m)),
 		).Line().Name(tr("Pod details"))
 		return ui.Card(widget.Column(header, tabs).Gap(12).Stretch())
 	})
@@ -254,13 +255,28 @@ func podHeader(m *Model, p kubeapi.Pod) ggui.Widget {
 // wrote, read again as often as the pods are, with a choice of its
 // containers when it has more than one.
 func podLogsView(m *Model) ggui.Widget {
-	names := ggui.Map(m.Pod, kubeapi.Pod.ContainerNames).WithEqual(slices.Equal[[]string])
-	picker := ggui.View(names, func(list []string) ggui.Widget {
+	return engineLogsView(m, m.PodLogs,
+		tr("The last %d lines, as kubectl logs shows them.", podLogTail), tr("The container has written nothing yet."),
+		podContainerPicker(m, m.PodLogContainer.Get, false),
+		tip(iconButton(lucide.RefreshCw, tr("Refresh logs"), m.LoadPodLogs), tr("Refresh")))
+}
+
+// podContainerPicker chooses a container of the chosen pod, when it has
+// more than one, showing chosen as the one chosen; running leaves out
+// those that do not run.
+func podContainerPicker(m *Model, chosen func() string, running bool) ggui.Widget {
+	names := ggui.Map(m.Pod, func(p kubeapi.Pod) []string {
+		if !running {
+			return p.ContainerNames()
+		}
+		return slices.DeleteFunc(p.ContainerNames(), func(n string) bool { return !podContainerRunning(p, n) })
+	}).WithEqual(slices.Equal[[]string])
+	return ggui.View(names, func(list []string) ggui.Widget {
 		if len(list) < 2 {
 			return widget.Box()
 		}
 		p := ggui.Peek(m.Pod)
-		pick := ggui.Bind(m.PodLogContainer.Get, m.PodContainer.Set)
+		pick := ggui.Bind(chosen, m.PodContainer.Set)
 		return ui.Select(pick).Options(list).Format(func(n string) string {
 			if p.IsInit(n) {
 				return tr("%s (init)", n)
@@ -268,10 +284,19 @@ func podLogsView(m *Model) ggui.Widget {
 			return n
 		}).Small().MinWidth(140).Name(tr("Container"))
 	})
-	return engineLogsView(m, m.PodLogs,
-		tr("The last %d lines, as kubectl logs shows them.", podLogTail), tr("The container has written nothing yet."),
-		picker,
-		tip(iconButton(lucide.RefreshCw, tr("Refresh logs"), m.LoadPodLogs), tr("Refresh")))
+}
+
+// podTerminal is a shell in a running container of the chosen pod, as
+// kubectl exec -it runs one, with a choice of its running containers.
+func podTerminal(m *Model) ggui.Widget {
+	shellCtr := ggui.Combine(m.Pod, m.PodContainer, podShellContainer)
+	copyCmd := func() {
+		cmd := kubectlExec(ggui.Peek(m.KubeLink.View), ggui.Peek(m.Pod), ggui.Peek(shellCtr))
+		m.Copy(cmd, "kubectl exec")
+	}
+	return terminalTab(m, m.podShell(), tr("A shell in the container, as kubectl exec -it runs one."),
+		podContainerPicker(m, shellCtr.Get, true),
+		tip(iconButton(lucide.Copy, tr("Copy kubectl exec command"), copyCmd), tr("Copy")))
 }
 
 // podInfo tells what the pod is made of and where it runs, and the

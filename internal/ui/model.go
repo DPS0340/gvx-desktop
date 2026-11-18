@@ -221,6 +221,7 @@ type Model struct {
 	podsLoading, podsAgain       bool      // LoadPods runs; it is wanted again after
 	podLogsLoading, podLogsAgain bool      // LoadPodLogs runs; it is wanted again after
 	podsAnswered                 bool      // the cluster's API server answered since it started
+	terms                        liveTerminals
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).

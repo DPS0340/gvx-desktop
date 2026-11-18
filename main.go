@@ -140,6 +140,9 @@ func run(st store.Store, dir string, hidden bool) error {
 	}()
 	runErr := app.Run()
 	signal.Stop(sigs)
+	// The shells of the terminals end with the app, and what they run in
+	// their containers with them.
+	m.CloseTerminals()
 	// Whatever ended the app, no sandbox outlives it: gvx has no daemon to
 	// adopt them.
 	m.Supervisor().StopAll(10 * time.Second)

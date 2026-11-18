@@ -705,6 +705,18 @@ var japanese = &i18n.Catalog{
 		"System pods":                                                                                   "システム Pod",
 		"The cluster is starting…":                                                                      "クラスターを起動しています…",
 		"The last %d lines, as kubectl logs shows them.":                                                "kubectl logs と同じく、最後の %d 行を表示します。",
+		// The terminal of the Containers and Pods pages.
+		"Terminal": "ターミナル",
+		"A shell in the container, as docker exec -it runs one.":  "docker exec -it と同じように、コンテナ内でシェルを実行します。",
+		"A shell in the container, as kubectl exec -it runs one.": "kubectl exec -it と同じように、コンテナ内でシェルを実行します。",
+		"The container is not running":                            "コンテナは実行されていません",
+		"Start it to open a shell in it.":                         "起動すると、その中でシェルを開けます。",
+		"A shell opens in a container while it runs.":             "シェルは実行中のコンテナで開きます。",
+		"Restart the shell":                                       "シェルを再起動",
+		"Could not start a shell":                                 "シェルを起動できませんでした",
+		"Starting a shell…":                                       "シェルを起動中…",
+		"The shell ended.":                                        "シェルが終了しました。",
+		"The shell ended (exit %d).":                              "シェルが終了しました(終了コード %d)。",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d sandbox is running. gvx has no daemon: sandboxes live only while gvx Desktop runs.": {Other: "%d 件のサンドボックスが実行中です。gvx にはデーモンがないため、サンドボックスは gvx Desktop の実行中だけ維持されます。"},

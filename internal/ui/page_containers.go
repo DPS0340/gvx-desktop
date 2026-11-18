@@ -249,6 +249,7 @@ func containerDetail(m *Model) ggui.Widget {
 		tabs := ui.Tabs(m.ContainerDetail,
 			ui.Tab(tr("Logs"), containerLogsView(m)),
 			ui.Tab(tr("Connect"), ggui.View(m.Container, func(c dockerapi.Container) ggui.Widget { return containerConnect(m, c) })),
+			ui.Tab(tr("Terminal"), containerTerminal(m)),
 		).Line().Name(tr("Container details"))
 		return ui.Card(widget.Column(header, tabs).Gap(12).Stretch())
 	})
@@ -284,6 +285,14 @@ func containerLogsView(m *Model) ggui.Widget {
 	return engineLogsView(m, m.ContainerLogs,
 		tr("The last %d lines, as docker logs shows them.", containerLogTail), tr("The container has written nothing yet."),
 		tip(iconButton(lucide.RefreshCw, tr("Refresh logs"), m.LoadContainerLogs), tr("Refresh")))
+}
+
+// containerTerminal is a shell in the chosen container, as docker exec -it
+// runs one.
+func containerTerminal(m *Model) ggui.Widget {
+	name := ggui.Peek(m.Container).Name()
+	return terminalTab(m, m.containerShell(), tr("A shell in the container, as docker exec -it runs one."),
+		tip(iconButton(lucide.Copy, tr("Copy docker exec command"), func() { m.Copy("docker exec -it "+name+" sh", "docker exec") }), tr("Copy")))
 }
 
 // containerConnect tells how to reach what the container serves, and the

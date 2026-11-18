@@ -705,6 +705,18 @@ var hindi = &i18n.Catalog{
 		"System pods":                                                                                   "सिस्टम पॉड",
 		"The cluster is starting…":                                                                      "क्लस्टर शुरू हो रहा है…",
 		"The last %d lines, as kubectl logs shows them.":                                                "kubectl logs की तरह आख़िरी %d पंक्तियाँ।",
+		// The terminal of the Containers and Pods pages.
+		"Terminal": "टर्मिनल",
+		"A shell in the container, as docker exec -it runs one.":  "कंटेनर में शेल, जैसा docker exec -it चलाता है।",
+		"A shell in the container, as kubectl exec -it runs one.": "कंटेनर में शेल, जैसा kubectl exec -it चलाता है।",
+		"The container is not running":                            "कंटेनर नहीं चल रहा है",
+		"Start it to open a shell in it.":                         "इसमें शेल खोलने के लिए इसे शुरू करें।",
+		"A shell opens in a container while it runs.":             "शेल चल रहे कंटेनर में खुलता है।",
+		"Restart the shell":                                       "शेल रीस्टार्ट करें",
+		"Could not start a shell":                                 "शेल शुरू नहीं हो सका",
+		"Starting a shell…":                                       "शेल शुरू हो रहा है…",
+		"The shell ended.":                                        "शेल समाप्त हो गया।",
+		"The shell ended (exit %d).":                              "शेल समाप्त हो गया (exit कोड %d)।",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d sandbox is running. gvx has no daemon: sandboxes live only while gvx Desktop runs.": {

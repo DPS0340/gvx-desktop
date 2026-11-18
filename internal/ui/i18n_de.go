@@ -709,6 +709,18 @@ var german = &i18n.Catalog{
 		"System pods":                                                                                   "System-Pods",
 		"The cluster is starting…":                                                                      "Der Cluster startet…",
 		"The last %d lines, as kubectl logs shows them.":                                                "Die letzten %d Zeilen, wie kubectl logs sie zeigt.",
+		// The terminal of the Containers and Pods pages.
+		"Terminal": "Terminal",
+		"A shell in the container, as docker exec -it runs one.":  "Eine Shell im Container, wie docker exec -it sie startet.",
+		"A shell in the container, as kubectl exec -it runs one.": "Eine Shell im Container, wie kubectl exec -it sie startet.",
+		"The container is not running":                            "Der Container läuft nicht",
+		"Start it to open a shell in it.":                         "Starten Sie ihn, um darin eine Shell zu öffnen.",
+		"A shell opens in a container while it runs.":             "Eine Shell öffnet sich in einem laufenden Container.",
+		"Restart the shell":                                       "Shell neu starten",
+		"Could not start a shell":                                 "Shell konnte nicht gestartet werden",
+		"Starting a shell…":                                       "Shell wird gestartet…",
+		"The shell ended.":                                        "Die Shell wurde beendet.",
+		"The shell ended (exit %d).":                              "Die Shell wurde beendet (Exit-Code %d).",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d sandbox is running. gvx has no daemon: sandboxes live only while gvx Desktop runs.": {

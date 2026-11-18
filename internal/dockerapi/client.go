@@ -22,6 +22,9 @@ import (
 type Client struct {
 	http *http.Client
 	base string
+	// dial connects to the engine, for a request that takes the
+	// connection over, as an exec's does.
+	dial func(ctx context.Context) (net.Conn, error)
 }
 
 // New connects to host, a unix:// socket or tcp:// address as DOCKER_HOST
@@ -33,22 +36,28 @@ func New(host string) (*Client, error) {
 	}
 	tr := &http.Transport{MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second}
 	base := "http://docker"
+	var network, addr string
 	switch u.Scheme {
 	case "unix":
-		path := u.Path
-		if path == "" {
-			path = u.Opaque
+		network, addr = "unix", u.Path
+		if addr == "" {
+			addr = u.Opaque
 		}
 		tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
-			return d.DialContext(ctx, "unix", path)
+			return d.DialContext(ctx, network, addr)
 		}
 	case "tcp", "http":
+		network, addr = "tcp", u.Host
 		base = "http://" + u.Host
 	default:
 		return nil, fmt.Errorf("unsupported docker host %q", host)
 	}
-	return &Client{http: &http.Client{Transport: tr, Timeout: 15 * time.Second}, base: base}, nil
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+	return &Client{http: &http.Client{Transport: tr, Timeout: 15 * time.Second}, base: base, dial: dial}, nil
 }
 
 // Close releases idle connections.

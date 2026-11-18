@@ -42,6 +42,10 @@ type shot struct {
 	setup func(m *ui.Model)
 }
 
+// live reports whether what the shot shows comes in from goroutines, as a
+// terminal's made-up shell prints: its frames wait a moment each.
+func (s shot) live() bool { return strings.HasSuffix(s.name, "-terminal") }
+
 func renderAll(tmp, out, lang string) error {
 	now := time.Date(2026, 11, 16, 15, 30, 0, 0, time.Local)
 	restore := ggui.SetClock(func() time.Time { return now })
@@ -55,6 +59,8 @@ func renderAll(tmp, out, lang string) error {
 		{"sandboxes-config", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(2) }},
 		{"containers-logs", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(0) }},
 		{"containers-connect", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(1) }},
+		// A terminal's shell is a made-up one: the model starts no process.
+		{"containers-terminal", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(2) }},
 		// The engine stopped while its containers were on screen: the page
 		// says so, and the sidebar's item is greyed out.
 		{"containers-stopped", func(m *ui.Model) {
@@ -63,6 +69,7 @@ func renderAll(tmp, out, lang string) error {
 		}},
 		{"pods-logs", func(m *ui.Model) { m.Go(ui.PagePods); m.PodDetail.Set(0) }},
 		{"pods-info", func(m *ui.Model) { m.Go(ui.PagePods); m.PodDetail.Set(1) }},
+		{"pods-terminal", func(m *ui.Model) { m.Go(ui.PagePods); m.PodDetail.Set(2) }},
 		// The system's pods shown, the first of them chosen.
 		{"pods-system", func(m *ui.Model) {
 			m.Go(ui.PagePods)
@@ -136,6 +143,9 @@ func renderAll(tmp, out, lang string) error {
 			for range 6 {
 				p.Frame()
 				now = now.Add(200 * time.Millisecond)
+				if s.live() {
+					time.Sleep(50 * time.Millisecond)
+				}
 			}
 			img := ggfx.NewImage(w, h)
 			img.Fill(ggui.Untrack(uitheme.Use).Bg)

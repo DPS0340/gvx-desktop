@@ -707,6 +707,18 @@ var korean = &i18n.Catalog{
 		"System pods":                                                                                   "시스템 파드",
 		"The cluster is starting…":                                                                      "클러스터가 시작하는 중입니다…",
 		"The last %d lines, as kubectl logs shows them.":                                                "kubectl logs와 같이 마지막 %d줄을 보여 줍니다.",
+		// The terminal of the Containers and Pods pages.
+		"Terminal": "터미널",
+		"A shell in the container, as docker exec -it runs one.":  "docker exec -it처럼 컨테이너 안에서 셸을 실행합니다.",
+		"A shell in the container, as kubectl exec -it runs one.": "kubectl exec -it처럼 컨테이너 안에서 셸을 실행합니다.",
+		"The container is not running":                            "컨테이너가 실행 중이 아닙니다",
+		"Start it to open a shell in it.":                         "시작하면 그 안에서 셸을 열 수 있습니다.",
+		"A shell opens in a container while it runs.":             "셸은 실행 중인 컨테이너에서 열립니다.",
+		"Restart the shell":                                       "셸 다시 시작",
+		"Could not start a shell":                                 "셸을 시작하지 못했습니다",
+		"Starting a shell…":                                       "셸 시작 중…",
+		"The shell ended.":                                        "셸이 종료되었습니다.",
+		"The shell ended (exit %d).":                              "셸이 종료되었습니다(종료 코드 %d).",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d sandbox is running. gvx has no daemon: sandboxes live only while gvx Desktop runs.": {Other: "샌드박스 %d개가 실행 중입니다. gvx에는 데몬이 없어서 샌드박스는 gvx Desktop이 실행되는 동안에만 유지됩니다."},

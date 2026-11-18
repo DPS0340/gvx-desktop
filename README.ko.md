@@ -164,10 +164,10 @@ GVXD_DOCKER_TEST=1 go test ./internal/recipes/
 ./bin/gvx-desktop -render-dir ./shots-ko -render-lang ko
 ```
 
-README의 GIF는 [tour.go](tour.go)에 작성된 앱 둘러보기입니다. 저장소 루트에서 [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md)를 실행하면 다시 만들 수 있습니다. ggui CLI v0.5.0 이상이 필요합니다.
+README의 GIF는 [tour.go](tour.go)에 작성된 앱 둘러보기입니다. 저장소 루트에서 [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md)를 실행하면 다시 만들 수 있습니다. ggui CLI v0.6.0 이상이 필요합니다.
 
 ```sh
-ggui record -o assets/tour.gif --width 960 --fps 10
+ggui record -o assets/tour.gif --width 1040 --fps 10 --lossy 30
 ```
 
 언어마다 [internal/ui](internal/ui)에 카탈로그가 있고(`i18n_ko.go`, `i18n_ja.go`, `i18n_zh_hans.go`, `i18n_zh_hant.go`, `i18n_de.go`, `i18n_hi.go`), 코드에 있는 영어 문구를 키로 사용합니다. 번역 테스트와 `ggui i18n check`가 빠진 문구를 확인합니다. 한국어 외의 언어는 기계 번역이며 원어민 검수를 거치지 않았습니다. 수정 제안을 환영합니다.

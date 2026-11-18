@@ -65,8 +65,10 @@ func settingsPage(m *Model) ggui.Widget {
 	}
 	theme := ggui.Bind(func() string { return m.Settings.Get().Theme }, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.Theme = v }) })
 	language := ggui.Bind(func() string {
-		if l := m.Settings.Get().Language; l == LangEnglish || l == LangKorean {
-			return l
+		if l := m.Settings.Get().Language; l != LangSystem {
+			if _, ok := languageOf(l); ok {
+				return l
+			}
 		}
 		return LangSystem
 	}, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.Language = v }) })
@@ -91,7 +93,7 @@ func settingsPage(m *Model) ggui.Widget {
 			settingRow(tr("Appearance"), tr("Light, dark, or as the system is."),
 				ui.ToggleGroup[string](theme).Options([]string{"system", "light", "dark"}).Format(themeName).Icon(themeIcon).Outline().Spacing(0).Name(tr("Appearance"))),
 			settingRow(tr("Language"), tr("The language the app is worded in."),
-				ui.ToggleGroup[string](language).Options([]string{LangSystem, LangEnglish, LangKorean}).Format(languageName).Outline().Spacing(0).Name(tr("Language"))),
+				ui.Select(language).Options(append([]string{LangSystem}, LanguageTags()...)).Format(languageName).MinWidth(180).Name(tr("Language"))),
 			settingRow(tr("Start at login"),
 				tr("Starts the app when you log in, in the tray without its window when the tray icon is shown. Sandboxes set to start with the app start then."),
 				ui.Switch(ggui.Bind(m.Autostart.Get, m.SetAutostart), "")),

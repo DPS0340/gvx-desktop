@@ -314,37 +314,36 @@ func connectView(m *Model, r Row) ggui.Widget {
 }
 
 func dockerConnect(m *Model, r Row) ggui.Widget {
-	host := m.DockerHost()
-	ready := r.State.Status == sandbox.Running
-	_, hasCLI := m.DockerCLI()
 	status := tr("Start the sandbox, then point the docker CLI at it.")
-	if ready {
+	if r.State.Status == sandbox.Running {
 		status = tr("dockerd is listening. The docker CLI on this machine can use it.")
 	}
 	return widget.Column(
 		sectionTitle("Docker CLI", status),
-		copyable(m, "docker context create gvx --docker host="+host, "docker context create"),
-		copyable(m, "docker context use gvx", "docker context use"),
-		copyable(m, "export DOCKER_HOST="+host, "DOCKER_HOST"),
-		widget.Row(
-			ui.Button(tr("Create & use context"), m.CreateDockerContext).Size(ui.ButtonSmall).Disabled(!hasCLI),
-			ui.Button(tr("Open Docker page"), func() { m.Go(PageDocker) }).Outline().Size(ui.ButtonSmall),
-		).Gap(8),
+		linkPanel(m, m.DockerLink, func(v LinkView) []ggui.Widget {
+			return dockerCommands(m, v, copyable(m, "export DOCKER_HOST="+v.Want, "DOCKER_HOST"))
+		}),
+		widget.Row(ui.Button(tr("Open Docker page"), func() { m.Go(PageDocker) }).Outline().Size(ui.ButtonSmall)),
 		ui.Divider(),
-	).Gap(8).Stretch()
+	).Gap(10).Stretch()
 }
 
 func kubeConnect(m *Model, r Row) ggui.Widget {
 	cfg := recipes.Kubeconfig()
 	return widget.Column(
 		sectionTitle("kubectl", tr("The server writes its kubeconfig to the host when it starts.")),
-		copyable(m, "export KUBECONFIG="+cfg, "KUBECONFIG"),
-		copyable(m, "kubectl get nodes", "kubectl get nodes"),
+		linkPanel(m, m.KubeLink, func(LinkView) []ggui.Widget {
+			return []ggui.Widget{
+				copyable(m, "export KUBECONFIG="+cfg, "KUBECONFIG"),
+				copyable(m, "kubectl get nodes", "kubectl get nodes"),
+			}
+		}),
 		widget.Row(
 			ui.Button(tr("Reveal kubeconfig"), func() { m.Open(cfg) }).Outline().Size(ui.ButtonSmall),
+			ui.Button(tr("Open Kubernetes page"), func() { m.Go(PageKubernetes) }).Outline().Size(ui.ButtonSmall),
 		).Gap(8),
 		ui.Divider(),
-	).Gap(8).Stretch()
+	).Gap(10).Stretch()
 }
 
 // configView shows the spec in the words of the rungv command line.
@@ -407,10 +406,22 @@ func configView(m *Model, s sandbox.Spec) ggui.Widget {
 			kvText(tr("Limits"), strings.Join(limits, ", ")),
 			kvText(tr("Security"), sec),
 			kvText(tr("Snapshots"), map[bool]string{true: tr("enabled (control socket + bundle directory)"), false: tr("off")}[s.Checkpoint]),
-			kvText(tr("Start with app"), map[bool]string{true: tr("yes"), false: tr("no")}[s.AutoStart]),
+			kvText(tr("Start with app"), startsWithApp(s)),
 			kvText(tr("Ready when log has"), s.ReadyPattern),
 		).Gap(8).Stretch(),
 	).Gap(14).Stretch(), 8, 0)
+}
+
+// startsWithApp says whether a sandbox starts with the app: one set to
+// does, and a recipe's engine does when it was left running.
+func startsWithApp(s sandbox.Spec) string {
+	switch {
+	case s.AutoStart:
+		return tr("yes")
+	case s.Recipe != "":
+		return tr("when left running")
+	}
+	return tr("no")
 }
 
 func sandboxSnapshots(m *Model, r Row) ggui.Widget {

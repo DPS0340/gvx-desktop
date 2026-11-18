@@ -81,13 +81,13 @@ For other platforms, see [Build and run](#build-and-run).
 | Images | Search Docker Hub or Quay, choose tags, and track pull progress. Inspect image metadata as JSON, run images in new sandboxes, or remove and prune images. |
 | Volumes | Create `ext4lite` or `hostfs` volumes, see which sandboxes use them, open their location, and delete or prune them. |
 | Snapshots | Enable checkpoint support for a sandbox to capture its running state. Choose whether to stop it or keep it running after capture. List, restore, and delete snapshots. |
-| Docker Engine | Start `docker:dind`, set up a `docker context`, and manage containers inside the sandbox. |
-| Kubernetes | Start a single-node k3s cluster, detect its kubeconfig, and copy `kubectl` commands. |
+| Docker Engine | Start `docker:dind`, see whether `docker` uses its `gvx` context and set it up or switch to it, and manage containers inside the sandbox, also from the Docker menu and the tray. |
+| Kubernetes | Start a single-node k3s cluster, detect its kubeconfig, see whether `kubectl` uses the cluster, and add it to `~/.kube/config` as the `gvx-k3s` context. A Docker Engine or cluster left running starts again with the app. |
 | Desktop | Use native menus, start at login, and choose a light, dark, or system theme. On macOS and Windows, the app can keep running in the tray when you close its window. The app runs as a single instance. |
 
 On macOS, use **⌘K** to open the command palette and **⌘1** through **⌘7** to switch pages. When the app hides in the menu bar, it also leaves the Dock.
 
-The app follows the system language by default. Choose English or Korean under **Settings → General → Language**.
+The app follows the system language by default. Choose English, Korean, Japanese, Simplified or Traditional Chinese, German, or Hindi under **Settings → General → Language**.
 
 ## Manage the rungv engine
 
@@ -168,7 +168,7 @@ The README GIF is a walkthrough scripted in [tour.go](tour.go). To regenerate it
 ggui record -o assets/tour.gif --width 960 --fps 10
 ```
 
-Korean strings in [internal/ui/i18n_ko.go](internal/ui/i18n_ko.go) use the English text as keys. The localization test checks for missing translations.
+Each language has a catalog in [internal/ui](internal/ui) (`i18n_ko.go`, `i18n_ja.go`, `i18n_zh_hans.go`, `i18n_zh_hant.go`, `i18n_de.go`, `i18n_hi.go`) that uses the English text as keys. The localization test and `ggui i18n check` look for missing translations. Languages other than Korean were machine-translated and have not been reviewed by native speakers; corrections are welcome.
 
 ### Architecture
 

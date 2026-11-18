@@ -12,18 +12,70 @@ import (
 // The languages the app is worded in. English is the source: every string
 // in the code is English, and a catalog maps it to another language.
 const (
-	LangSystem  = "system"
-	LangEnglish = "en"
-	LangKorean  = "ko"
+	LangSystem   = "system"
+	LangEnglish  = "en"
+	LangKorean   = "ko"
+	LangJapanese = "ja"
+	LangChinese  = "zh-Hans" // Simplified
+	LangTaiwan   = "zh-Hant" // Traditional
+	LangGerman   = "de"
+	LangHindi    = "hi"
 )
+
+// language is one the app is worded in: its tag, what it calls itself, its
+// catalog of the app's text, and its words for ggui's controls.
+type language struct {
+	tag     string
+	name    string
+	catalog *i18n.Catalog // nil for English, the source
+	strings ui.Strings
+}
+
+// languages lists them in the order the settings offer them. Each names
+// itself in its own words, so a reader finds theirs whatever the app is
+// set to.
+var languages = []language{
+	{tag: LangEnglish, name: "English"},
+	{tag: LangKorean, name: "한국어", catalog: korean, strings: koreanStrings},
+	{tag: LangJapanese, name: "日本語", catalog: japanese, strings: japaneseStrings},
+	{tag: LangChinese, name: "简体中文", catalog: simplifiedChinese, strings: simplifiedChineseStrings},
+	{tag: LangTaiwan, name: "繁體中文", catalog: traditionalChinese, strings: traditionalChineseStrings},
+	{tag: LangGerman, name: "Deutsch", catalog: german, strings: germanStrings},
+	{tag: LangHindi, name: "हिन्दी", catalog: hindi, strings: hindiStrings},
+}
+
+// LanguageTags are the tags of the languages, English first.
+func LanguageTags() []string {
+	tags := make([]string, len(languages))
+	for i, l := range languages {
+		tags[i] = l.tag
+	}
+	return tags
+}
+
+func languageOf(tag string) (language, bool) {
+	for _, l := range languages {
+		if l.tag == tag {
+			return l, true
+		}
+	}
+	return language{}, false
+}
 
 // localizers translates into each language, keyed by it. Each is fixed to
 // its language, a ggui.Const, so translating with it reads no state and
 // may happen on any goroutine. English, the source, needs no catalog.
-var localizers = map[string]*i18n.Localizer{
-	LangEnglish: i18n.New(ggui.Const(LangEnglish)),
-	LangKorean:  i18n.New(ggui.Const(LangKorean), korean),
-}
+var localizers = func() map[string]*i18n.Localizer {
+	out := map[string]*i18n.Localizer{}
+	for _, l := range languages {
+		if l.catalog == nil {
+			out[l.tag] = i18n.New(ggui.Const(l.tag))
+		} else {
+			out[l.tag] = i18n.New(ggui.Const(l.tag), l.catalog)
+		}
+	}
+	return out
+}()
 
 // current is the Localizer tr translates with. It is atomic because toasts
 // are worded from the goroutines that finish background work.
@@ -64,8 +116,7 @@ func T(key string, args ...any) string { return tr(key, args...) }
 // ResolveLanguage turns the language of the settings into one the app has
 // words for: the one chosen, or the system's when none is.
 func ResolveLanguage(setting string) string {
-	switch setting {
-	case LangEnglish, LangKorean:
+	if _, ok := languageOf(setting); ok {
 		return setting
 	}
 	return systemLanguage()
@@ -75,17 +126,13 @@ func ResolveLanguage(setting string) string {
 // for, English when none is. It is read once, so changing an unrelated
 // setting does not change the language under the user.
 var systemLanguage = sync.OnceValue(func() string {
-	return i18n.Match([]string{LangEnglish, LangKorean}, ggui.SystemLanguages())
+	return i18n.Match(LanguageTags(), ggui.SystemLanguages())
 })
 
-// languageName is how the settings name a language: each in its own words,
-// so a reader finds theirs whatever the app is set to.
+// languageName is how the settings name a language: each in its own words.
 func languageName(lang string) string {
-	switch lang {
-	case LangEnglish:
-		return "English"
-	case LangKorean:
-		return "한국어"
+	if l, ok := languageOf(lang); ok {
+		return l.name
 	}
 	return tr("System")
 }
@@ -104,83 +151,84 @@ func themeName(theme string) string {
 // "Close" or "No results" by themselves. A field left empty keeps the
 // English.
 func controlStrings(lang string) ui.Strings {
-	if lang != LangKorean {
-		return ui.Strings{}
-	}
-	return ui.Strings{
-		Close:    "닫기",
-		Previous: "이전",
-		Next:     "다음",
-		Loading:  "불러오는 중",
+	l, _ := languageOf(lang)
+	return l.strings
+}
 
-		DismissFormat:    "%s 닫기",
-		CloseTabFormat:   "%s 닫기",
-		AlertContinue:    "계속",
-		AlertCancel:      "취소",
-		DrawerSize:       "서랍 크기",
-		DrawerSizeFormat: "%s 크기",
+// koreanStrings are ggui's controls' own words in Korean.
+var koreanStrings = ui.Strings{
+	Close:    "닫기",
+	Previous: "이전",
+	Next:     "다음",
+	Loading:  "불러오는 중",
 
-		SearchCommands:      "명령 검색",
-		SearchCommandsHint:  "명령 검색…",
-		Commands:            "명령",
-		NoResults:           "결과 없음",
-		HintNavigate:        "이동",
-		HintSelect:          "선택",
-		ComboboxPlaceholder: "선택…",
-		ChooseOption:        "옵션 선택",
-		ChooseOptions:       "옵션 선택",
-		ShowOptions:         "옵션 보기",
-		ClearValue:          "지우기",
-		SearchOptions:       "옵션 검색",
-		NoItemsFound:        "항목이 없습니다.",
-		RemoveFormat:        "%s 제거",
+	DismissFormat:    "%s 닫기",
+	CloseTabFormat:   "%s 닫기",
+	AlertContinue:    "계속",
+	AlertCancel:      "취소",
+	DrawerSize:       "서랍 크기",
+	DrawerSizeFormat: "%s 크기",
 
-		ThemeModeName:   "테마",
-		ToggleGroupName: "옵션",
-		ButtonGroupName: "동작",
-		ContextMenuName: "컨텍스트 메뉴",
-		MenubarName:     "메뉴 막대",
-		NavigationName:  "탐색",
-		SidebarName:     "사이드바",
-		DarkMode:        "다크 모드",
-		SliderValue:     "값",
+	SearchCommands:      "명령 검색",
+	SearchCommandsHint:  "명령 검색…",
+	Commands:            "명령",
+	NoResults:           "결과 없음",
+	HintNavigate:        "이동",
+	HintSelect:          "선택",
+	ComboboxPlaceholder: "선택…",
+	ChooseOption:        "옵션 선택",
+	ChooseOptions:       "옵션 선택",
+	ShowOptions:         "옵션 보기",
+	ClearValue:          "지우기",
+	SearchOptions:       "옵션 검색",
+	NoItemsFound:        "항목이 없습니다.",
+	RemoveFormat:        "%s 제거",
 
-		ThemeLight:        "라이트",
-		ThemeDark:         "다크",
-		ThemeSystem:       "시스템",
-		ToggleSidebar:     "사이드바 전환",
-		NumberDecrement:   "감소",
-		NumberIncrement:   "증가",
-		CodeContent:       "코드 내용",
-		CodeScrollHelp:    "화살표 키나 Page Up, Page Down으로 스크롤합니다",
-		CodeBlockName:     "코드 블록",
-		CodeName:          "코드",
-		CopyCode:          "코드 복사",
-		CodeCopied:        "코드를 복사했습니다",
-		ScrollToStart:     "처음으로 스크롤",
-		ScrollToEnd:       "끝으로 스크롤",
-		SortFormat:        "%s 정렬",
-		SortAscending:     "오름차순",
-		SortDescending:    "내림차순",
-		NoTableResults:    "결과가 없습니다.",
-		FilterRows:        "행 필터",
-		FilterRowsHint:    "행 필터...",
-		Columns:           "열",
-		ShowColumnFormat:  "%s 표시",
-		SelectRowFormat:   "%v 행 선택",
-		SelectPage:        "페이지 선택",
-		RowsPerPage:       "페이지당 행 수",
-		PageFormat:        "%d 페이지",
-		PageOfFormat:      "%[2]d 페이지 중 %[1]d",
-		PaginationName:    "페이지 이동",
-		MorePages:         "더 많은 페이지",
-		Submit:            "제출",
-		Skip:              "건너뛰기",
-		AvatarMoreFormat:  "%d개 더",
-		BreadcrumbMore:    "더 보기",
-		BreadcrumbName:    "이동 경로",
-		AccordionName:     "아코디언",
-		ResizablePanels:   "패널 크기 조절",
-		SliderThumbFormat: "%s %d",
-	}
+	ThemeModeName:   "테마",
+	ToggleGroupName: "옵션",
+	ButtonGroupName: "동작",
+	ContextMenuName: "컨텍스트 메뉴",
+	MenubarName:     "메뉴 막대",
+	NavigationName:  "탐색",
+	SidebarName:     "사이드바",
+	DarkMode:        "다크 모드",
+	SliderValue:     "값",
+
+	ThemeLight:        "라이트",
+	ThemeDark:         "다크",
+	ThemeSystem:       "시스템",
+	ToggleSidebar:     "사이드바 전환",
+	NumberDecrement:   "감소",
+	NumberIncrement:   "증가",
+	CodeContent:       "코드 내용",
+	CodeScrollHelp:    "화살표 키나 Page Up, Page Down으로 스크롤합니다",
+	CodeBlockName:     "코드 블록",
+	CodeName:          "코드",
+	CopyCode:          "코드 복사",
+	CodeCopied:        "코드를 복사했습니다",
+	ScrollToStart:     "처음으로 스크롤",
+	ScrollToEnd:       "끝으로 스크롤",
+	SortFormat:        "%s 정렬",
+	SortAscending:     "오름차순",
+	SortDescending:    "내림차순",
+	NoTableResults:    "결과가 없습니다.",
+	FilterRows:        "행 필터",
+	FilterRowsHint:    "행 필터...",
+	Columns:           "열",
+	ShowColumnFormat:  "%s 표시",
+	SelectRowFormat:   "%v 행 선택",
+	SelectPage:        "페이지 선택",
+	RowsPerPage:       "페이지당 행 수",
+	PageFormat:        "%d 페이지",
+	PageOfFormat:      "%[2]d 페이지 중 %[1]d",
+	PaginationName:    "페이지 이동",
+	MorePages:         "더 많은 페이지",
+	Submit:            "제출",
+	Skip:              "건너뛰기",
+	AvatarMoreFormat:  "%d개 더",
+	BreadcrumbMore:    "더 보기",
+	BreadcrumbName:    "이동 경로",
+	AccordionName:     "아코디언",
+	ResizablePanels:   "패널 크기 조절",
+	SliderThumbFormat: "%s %d",
 }

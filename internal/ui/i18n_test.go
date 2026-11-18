@@ -119,12 +119,11 @@ func edgeSpace(s string) (lead, trail string) {
 // particlePair matches a Korean particle choice, "{을/를}".
 var particlePair = regexp.MustCompile(`\{[^{}/%\s]+/[^{}/%\s]+\}`)
 
-// Every text of the app has a Korean one that takes the same arguments and
-// joins what is around it the same way, and whose particle choices are
-// where the formatter makes them.
-func TestKoreanCatalogIsComplete(t *testing.T) {
+// appKeys is every text the app words: those tr and trn are given as
+// literals, and those that reach them in a variable.
+func appKeys(t *testing.T) map[string]key {
+	t.Helper()
 	keys := sourceKeys(t)
-	// The texts that reach tr in a variable.
 	for _, s := range []sandbox.Status{sandbox.Starting, sandbox.Running, sandbox.Stopping, sandbox.Exited, sandbox.Failed, -1} {
 		keys[s.String()] = key{at: "sandbox.Status"}
 	}
@@ -137,40 +136,65 @@ func TestKoreanCatalogIsComplete(t *testing.T) {
 	for _, k := range []string{"System", "Light", "Dark"} {
 		keys[k] = key{at: "a theme"}
 	}
-	for text, k := range keys {
-		var ko []string
-		if k.plural {
-			forms, ok := korean.Plurals[text]
-			if !ok || forms.Other == "" {
-				t.Errorf("%s: no Korean plural for %q", k.at, text)
-				continue
-			}
-			ko = []string{forms.Other}
-		} else {
-			s, ok := korean.Messages[text]
-			if !ok {
-				t.Errorf("%s: no Korean for %q", k.at, text)
-				continue
-			}
-			ko = []string{s}
+	return keys
+}
+
+// Every text of the app has one in each language, which takes the same
+// arguments and joins what is around it the same way. In Korean, particle
+// choices are where the formatter makes them. Run one language with
+// -run 'TestCatalogsAreComplete/ja'.
+func TestCatalogsAreComplete(t *testing.T) {
+	keys := appKeys(t)
+	for _, lang := range languages {
+		if lang.catalog == nil {
+			continue
 		}
-		for _, ko := range ko {
-			if a, b := verbs(text), verbs(ko); !slices.Equal(a, b) {
-				t.Errorf("%s: %q takes %v, its Korean %q takes %v", k.at, text, a, ko, b)
+		t.Run(lang.tag, func(t *testing.T) {
+			if lang.catalog.Lang != lang.tag {
+				t.Errorf("the catalog says it is %q", lang.catalog.Lang)
 			}
-			kl, kt := edgeSpace(text)
-			if l, tr := edgeSpace(ko); l != kl || tr != kt {
-				t.Errorf("%s: the Korean of %q does not keep its leading and trailing spaces", k.at, text)
+			if lang.strings.Close == "" {
+				t.Errorf("no words for ggui's controls")
 			}
-			for _, at := range particlePair.FindAllStringIndex(ko, -1) {
-				if !endsInVerb(ko[:at[0]]) {
-					t.Errorf("%s: the Korean of %q has %s after no format verb, where it shows as written", k.at, text, ko[at[0]:at[1]])
+			for text, k := range keys {
+				var words []string
+				if k.plural {
+					forms, ok := lang.catalog.Plurals[text]
+					if !ok || forms.Other == "" {
+						t.Errorf("%s: no plural for %q", k.at, text)
+						continue
+					}
+					words = []string{forms.Other}
+				} else {
+					s, ok := lang.catalog.Messages[text]
+					if !ok || s == "" {
+						t.Errorf("%s: no text for %q", k.at, text)
+						continue
+					}
+					words = []string{s}
 				}
-				if k.bare {
-					t.Errorf("%s: %q is formatted after tr, which leaves %s in its Korean as written: pass tr the arguments", k.at, text, ko[at[0]:at[1]])
+				for _, w := range words {
+					if a, b := verbs(text), verbs(w); !slices.Equal(a, b) {
+						t.Errorf("%s: %q takes %v, its translation %q takes %v", k.at, text, a, w, b)
+					}
+					kl, kt := edgeSpace(text)
+					if l, tr := edgeSpace(w); l != kl || tr != kt {
+						t.Errorf("%s: the translation of %q does not keep its leading and trailing spaces", k.at, text)
+					}
+					if lang.tag != LangKorean {
+						continue
+					}
+					for _, at := range particlePair.FindAllStringIndex(w, -1) {
+						if !endsInVerb(w[:at[0]]) {
+							t.Errorf("%s: the Korean of %q has %s after no format verb, where it shows as written", k.at, text, w[at[0]:at[1]])
+						}
+						if k.bare {
+							t.Errorf("%s: %q is formatted after tr, which leaves %s in its Korean as written: pass tr the arguments", k.at, text, w[at[0]:at[1]])
+						}
+					}
 				}
 			}
-		}
+		})
 	}
 }
 
@@ -257,7 +281,7 @@ func TestResolveLanguage(t *testing.T) {
 	if got := ResolveLanguage(LangEnglish); got != LangEnglish {
 		t.Errorf("en: %q", got)
 	}
-	if got := ResolveLanguage(""); got != LangEnglish && got != LangKorean {
+	if got := ResolveLanguage(""); !slices.Contains(LanguageTags(), got) {
 		t.Errorf("system: %q", got)
 	}
 }

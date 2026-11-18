@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"syscall"
 	"time"
 
@@ -39,7 +40,7 @@ func main() {
 	ui.AppVersion = version
 	dataDir := flag.String("data-dir", "", "directory for sandboxes, settings and snapshots (default: the user config dir)")
 	renderDir := flag.String("render-dir", "", "render the screens to PNG files in this directory, then exit")
-	renderLang := flag.String("render-lang", "en", "the language -render-dir renders in: en or ko")
+	renderLang := flag.String("render-lang", "en", "the language -render-dir renders in: en, ko, ja, zh-Hans, zh-Hant, de or hi")
 	hidden := flag.Bool(ui.HiddenFlag, false, "start in the tray without showing the window, as a start at login does")
 	flag.Parse()
 
@@ -99,11 +100,13 @@ func run(st store.Store, dir string, hidden bool) error {
 			}
 			installTray(app, m)
 			// The menu bar is worded as it is built, so a change of
-			// language builds it again.
+			// language builds it again, as does a change of what the
+			// Docker and Kubernetes menus tell.
 			ggui.Watch(m.Lang, func(lang string) {
 				ui.SetLanguage(lang)
 				installMenus(app, m)
 			})
+			ggui.Watch(m.Menus, func(ui.MenuState) { installMenus(app, m) })
 		})
 		installShortcuts(app, m)
 		installMenus(app, m)
@@ -206,8 +209,10 @@ func installMenus(app *ggui.App, m *ui.Model) {
 			ggui.MenuAction(ui.T("Start Docker Engine"), "", func() { m.CreateFromRecipe(recipes.Docker); m.Go(ui.PageDocker) }),
 			ggui.MenuAction(ui.T("Start Kubernetes"), "", func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(ui.PageKubernetes) }),
 			ggui.MenuSeparator(),
-			ggui.MenuAction(ui.T("Stop All"), "", func() { m.StopAllAndThen(func() {}) }),
+			ggui.MenuAction(ui.T("Stop All"), "", m.StopAll),
 		),
+		ggui.Menu("Docker", m.RecipeMenu(recipes.Docker, app.ShowFromTray)...),
+		ggui.Menu("Kubernetes", m.RecipeMenu(recipes.Kubernetes, app.ShowFromTray)...),
 		ggui.Menu(ui.T("View"),
 			ggui.MenuAction(ui.T("Command Palette"), "cmd+k", func() { m.PaletteQuery.Set(""); m.PaletteOpen.Set(true) }),
 			ggui.MenuAction(ui.T("Refresh"), "cmd+r", m.RefreshAll),
@@ -266,9 +271,12 @@ func installTray(app *ggui.App, m *ui.Model) {
 		}
 		items = append(items,
 			ggui.MenuSeparator(),
+			ggui.Menu("Docker", m.RecipeMenu(recipes.Docker, show)...),
+			ggui.Menu("Kubernetes", m.RecipeMenu(recipes.Kubernetes, show)...),
+			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("New Sandbox…"), "", func() { show(); m.NewSandbox("") }),
 			ggui.MenuAction(ui.T("Pull Image…"), "", func() { show(); m.OpenPull("") }),
-			ggui.MenuAction(ui.T("Stop All"), "", func() { m.StopAllAndThen(func() {}) }).BindEnabled(ggui.Const(running > 0)),
+			ggui.MenuAction(ui.T("Stop All"), "", m.StopAll).BindEnabled(ggui.Const(running > 0)),
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("Settings…"), "", func() { show(); m.Go(ui.PageSettings) }),
 			ggui.MenuAction(ui.T("Quit gvx Desktop"), "", func() { quit(app, m) }),
@@ -293,8 +301,22 @@ func installTray(app *ggui.App, m *ui.Model) {
 			tray = nil
 		}
 	})
-	// The menu tells of all of these, so each builds it again.
-	ggui.Watch(m.Rows, func([]ui.Row) { rebuild() })
+	// The menu tells of all of these, so each builds it again. Of the
+	// sandboxes it tells only names and whether they run: a line of a log
+	// changes a row, and must not replace a menu that may be open.
+	type entry struct {
+		id, name string
+		active   bool
+	}
+	entries := ggui.Map(m.Rows, func(rows []ui.Row) []entry {
+		out := make([]entry, len(rows))
+		for i, r := range rows {
+			out[i] = entry{r.Spec.ID, r.Spec.Name, r.State.Status.Active()}
+		}
+		return out
+	}).WithEqual(slices.Equal[[]entry])
+	ggui.Watch(entries, func([]entry) { rebuild() })
+	ggui.Watch(m.Menus, func(ui.MenuState) { rebuild() })
 	ggui.Watch(m.Engine, func(ui.Engine) { rebuild() })
 	ggui.Watch(m.Update, func(ui.Update) { rebuild() })
 	ggui.Watch(m.Lang, func(string) { rebuild() })

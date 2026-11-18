@@ -15,7 +15,7 @@ id = "io.github.ironpark.gvx-desktop"
 # User-visible version, one to three numbers: Info.plist's
 # CFBundleShortVersionString and CFBundleVersion, and the Windows
 # program's file and product version, where each number is at most 65535.
-version = "0.2.0"
+version = "0.3.0"
 # A square PNG, ideally 1024x1024, turned into the macOS app icon and the
 # Windows program's icon. This one is drawn to the edges from
 # assets/gvx-desktop-icon.svg by assets/svg2png.swift; macos.icon_inset
@@ -96,7 +96,7 @@ icon_inset = true
 # The languages the app is worded in. Without them macOS takes the app for
 # English only: the panels it shows for the app, such as the one that picks
 # a file, are English, and System Settings offers the app no language.
-CFBundleLocalizations = ["en", "ko"]
+CFBundleLocalizations = ["en", "ko", "ja", "zh-Hans", "zh-Hant", "de", "hi"]
 
 # How to reach the notary service: a notarytool keychain profile (made
 # once with xcrun notarytool store-credentials NAME), an App Store

@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sort"
 
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
@@ -31,6 +33,26 @@ type Settings struct {
 	UpdateChannel  string `json:"updateChannel,omitempty"`  // where rungv is updated from: release (default), source
 	NoUpdateCheck  bool   `json:"noUpdateCheck,omitempty"`  // do not ask GitHub for a newer rungv at launch
 	LoginCommand   string `json:"loginCommand,omitempty"`   // what the start at login was registered to run, to register it again when the app moves
+	// Resume names, by ID, the recipe sandboxes the user left running: the
+	// app starts them again when it next starts. Quitting, which stops every
+	// sandbox, leaves it as it is; the user stopping one takes it out.
+	Resume []string `json:"resume,omitempty"`
+	// DockerContextBefore is the docker context that was in use when the app
+	// switched docker to gvx, to switch back to.
+	DockerContextBefore string `json:"dockerContextBefore,omitempty"`
+	// KubeContextBefore is kubectl's current context when the app switched
+	// kubectl to gvx-k3s, to switch back to.
+	KubeContextBefore string `json:"kubeContextBefore,omitempty"`
+}
+
+// Equal makes Settings comparable for signals, which a list in it keeps
+// == from doing.
+func (s Settings) Equal(o Settings) bool {
+	if !slices.Equal(s.Resume, o.Resume) {
+		return false
+	}
+	s.Resume, o.Resume = nil, nil
+	return reflect.DeepEqual(s, o)
 }
 
 // DefaultSettings are the settings of a first launch.

@@ -558,7 +558,7 @@ func palette(m *Model) ggui.Widget {
 	}
 	cmd := ui.Command(m.PaletteQuery,
 		ui.CommandItem(tr("New sandbox"), close(func() { m.NewSandbox("") })).Group(tr("Sandboxes")).Shortcut("cmd+n").Keywords("create run"),
-		ui.CommandItem(tr("Stop all sandboxes"), close(func() { m.StopAllAndThen(func() {}) })).Group(tr("Sandboxes")),
+		ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Group(tr("Sandboxes")),
 		ui.CommandItem(tr("Pull image"), close(func() { m.OpenPull("") })).Group(tr("Images")).Keywords("download"),
 		ui.CommandItem(tr("Start Docker Engine"), close(func() { m.CreateFromRecipe(recipes.Docker); m.Go(PageDocker) })).Group(tr("Recipes")).Keywords("dind dockerd"),
 		ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
@@ -588,5 +588,8 @@ func (m *Model) RefreshAll() {
 	m.DetectEngine(nil)
 	m.LoadDocker()
 	m.CheckKubeconfig()
+	for _, l := range m.Links() {
+		m.CheckLink(l)
+	}
 	m.refreshStates()
 }

@@ -159,6 +159,14 @@ func (c *Client) Command(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// ToolCommand builds an exec.Cmd for another program, such as the docker
+// CLI, as Command does for rungv: with no console window on Windows.
+func ToolCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, path, args...)
+	hideWindow(cmd)
+	return cmd
+}
+
 func (c *Client) output(ctx context.Context, args ...string) ([]byte, error) {
 	if c.Path == "" {
 		return nil, ErrNotFound

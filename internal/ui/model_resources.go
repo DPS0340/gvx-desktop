@@ -2,10 +2,8 @@ package ui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -284,8 +282,9 @@ const (
 
 // dockerSetting is how the settings ask the Docker Engine recipe to
 // publish its API: a new engine is made so.
-func (m *Model) dockerSetting() recipes.DockerAPI {
-	set := ggui.Peek(m.Settings)
+func (m *Model) dockerSetting() recipes.DockerAPI { return dockerSettingOf(ggui.Peek(m.Settings)) }
+
+func dockerSettingOf(set store.Settings) recipes.DockerAPI {
 	api := recipes.DefaultDockerAPI()
 	switch set.DockerEndpoint {
 	case DockerSocketEndpoint:
@@ -303,12 +302,16 @@ func (m *Model) dockerSetting() recipes.DockerAPI {
 // the API when there is one, whose ports are its own, and else as the
 // settings would make one.
 func (m *Model) DockerAPI() recipes.DockerAPI {
-	if row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker); ok {
+	return m.dockerAPIOf(ggui.Peek(m.Rows), ggui.Peek(m.Settings))
+}
+
+func (m *Model) dockerAPIOf(rows []Row, set store.Settings) recipes.DockerAPI {
+	if row, ok := m.RecipeSandbox(rows, recipes.Docker); ok {
 		if api, ok := recipes.DockerAPIOf(row.Spec); ok {
 			return api
 		}
 	}
-	return m.dockerSetting()
+	return dockerSettingOf(set)
 }
 
 // DockerHost is the DOCKER_HOST value that reaches the Docker Engine.
@@ -348,7 +351,8 @@ func (m *Model) SetDockerAPI(api recipes.DockerAPI) {
 	}
 }
 
-// LoadDocker lists the containers of the Docker Engine recipe.
+// LoadDocker lists the containers of the Docker Engine recipe. Asked for
+// while a listing runs, it lists them again after it.
 func (m *Model) LoadDocker() {
 	if m.Offline {
 		return // the containers shown are made up
@@ -358,6 +362,11 @@ func (m *Model) LoadDocker() {
 		m.DockerContainers.Set(Listing[dockerapi.Container]{})
 		return
 	}
+	if m.dockerLoading {
+		m.dockerAgain = true
+		return
+	}
+	m.dockerLoading = true
 	host := m.dockerHost()
 	var items []dockerapi.Container
 	var version dockerapi.Version
@@ -376,6 +385,15 @@ func (m *Model) LoadDocker() {
 		items, err = c.Containers(ctx, true)
 		return err
 	}, func(err error) {
+		m.dockerLoading = false
+		if m.dockerAgain {
+			m.dockerAgain = false
+			m.LoadDocker()
+			return
+		}
+		if row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker); !ok || row.State.Status != sandbox.Running {
+			return // the engine stopped meanwhile, and its list was emptied
+		}
 		l := Listing[dockerapi.Container]{Items: items, Loaded: true}
 		if err != nil {
 			l.Err = err.Error()
@@ -384,6 +402,90 @@ func (m *Model) LoadDocker() {
 		}
 		m.DockerContainers.Set(l)
 	})
+}
+
+// followDocker keeps the engine's containers current while it runs, for
+// the Docker page and the menus: often while the page shows them, now and
+// then otherwise, and not at all while the engine is stopped. Call it from
+// Start.
+func (m *Model) followDocker() {
+	if m.Offline {
+		return
+	}
+	every := ggui.Derived(func() time.Duration {
+		row, ok := m.RecipeSandbox(m.Rows.Get(), recipes.Docker)
+		switch {
+		case !ok || row.State.Status != sandbox.Running:
+			return 0
+		case m.Page.Get() == PageDocker:
+			return 3 * time.Second
+		}
+		return 10 * time.Second
+	})
+	ggui.Effect(func() ggui.Cleanup {
+		d := every.Get()
+		// At once, too: the engine has just come up or stopped, or the page
+		// has just opened.
+		m.post(m.LoadDocker)
+		if d == 0 {
+			return nil
+		}
+		stop := make(chan struct{})
+		go func() {
+			t := time.NewTicker(d)
+			defer t.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-t.C:
+					m.post(m.LoadDocker)
+				}
+			}
+		}()
+		return func() { close(stop) }
+	})
+}
+
+// followLinks asks docker and kubectl about their contexts at the start,
+// whenever a screen that tells of them opens, and when what they should
+// point at changes. Call it from Start.
+func (m *Model) followLinks() {
+	if m.Offline {
+		return
+	}
+	shown := func(page, recipe string) *ggui.DerivedValue[bool] {
+		return ggui.Derived(func() bool {
+			switch m.Page.Get() {
+			case page:
+				return true
+			case PageSandboxes:
+				if m.Detail.Get() != connectTab {
+					return false
+				}
+				id := m.Selected.Get()
+				for _, s := range m.Specs.Get() {
+					if s.ID == id {
+						return s.Recipe == recipe
+					}
+				}
+			}
+			return false
+		})
+	}
+	ggui.Watch(shown(PageDocker, recipes.Docker), func(on bool) {
+		if on {
+			m.CheckLink(m.DockerLink)
+		}
+	})
+	ggui.Watch(shown(PageKubernetes, recipes.Kubernetes), func(on bool) {
+		if on {
+			m.CheckLink(m.KubeLink)
+		}
+	})
+	// Each runs at once as well, which asks both tools at the start.
+	ggui.Watch(m.DockerEndpoint, func(string) { m.CheckLink(m.DockerLink) })
+	ggui.Watch(m.KubeconfigReady, func(bool) { m.CheckLink(m.KubeLink) })
 }
 
 // DockerAction runs start, stop, restart or remove on a container.
@@ -416,54 +518,15 @@ func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
 	})
 }
 
+// AskRemoveContainer confirms and removes a container.
+func (m *Model) AskRemoveContainer(ctr dockerapi.Container) {
+	m.Confirm(tr("Remove %s?", ctr.Name()), tr("The container is stopped and removed from the engine."), tr("Remove container"), func() { m.DockerAction("remove", ctr) })
+}
+
 // DockerCLI finds the docker command: the one the settings name, and
 // otherwise where a terminal would find it.
 func (m *Model) DockerCLI() (string, bool) {
-	if set := strings.TrimSpace(ggui.Peek(m.Settings).DockerPath); set != "" {
-		p := rungv.ExpandHome(set)
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p, true
-		}
-		return "", false // a path that names nothing is not quietly replaced
-	}
-	return DockerCLI()
-}
-
-// DockerCLI finds the docker command where a terminal would find it.
-func DockerCLI() (string, bool) {
-	// Not exec.LookPath alone: started from the Dock the app has a PATH
-	// without Homebrew's directory, where brew install docker puts it.
-	p, err := rungv.FindTool("docker")
-	return p, err == nil
-}
-
-// CreateDockerContext runs docker context create gvx and selects it.
-func (m *Model) CreateDockerContext() {
-	path, ok := m.DockerCLI()
-	if !ok {
-		m.toastError(tr("docker was not found"), errors.New(tr("install the Docker CLI (no engine is needed), then try again")))
-		return
-	}
-	host := m.dockerHost()
-	var out string
-	m.async(func(ctx context.Context) error {
-		b, err := exec.CommandContext(ctx, path, "context", "create", "gvx", "--docker", "host="+host).CombinedOutput()
-		if err != nil && !strings.Contains(string(b), "already exists") {
-			return errors.New(strings.TrimSpace(string(b)))
-		}
-		b, err = exec.CommandContext(ctx, path, "context", "use", "gvx").CombinedOutput()
-		out = strings.TrimSpace(string(b))
-		if err != nil {
-			return errors.New(out)
-		}
-		return nil
-	}, func(err error) {
-		if err != nil {
-			m.toastError(tr("Could not set up the docker context"), err)
-			return
-		}
-		m.toastOK(tr("docker now uses gvx"), tr("The context \"gvx\" is selected. Run `docker context use default` to switch back."))
-	})
+	return findCLI("docker", ggui.Peek(m.Settings).DockerPath)
 }
 
 // CheckKubeconfig looks for the kubeconfig the k3s recipe writes.
@@ -485,6 +548,9 @@ func (m *Model) UpdateSettings(fn func(*store.Settings)) {
 	}
 	if s.RungvPath != before.RungvPath || s.CacheDir != before.CacheDir {
 		m.DetectEngine(nil)
+	}
+	if s.DockerPath != before.DockerPath {
+		m.CheckLink(m.DockerLink)
 	}
 }
 
@@ -520,9 +586,23 @@ func (m *Model) PrepareQuit() bool {
 	return false
 }
 
-// StopAllAndThen stops every sandbox, then runs then on the UI thread.
+// StopAll stops every sandbox, as the user asked: the recipe sandboxes
+// among them are not started again with the app.
+func (m *Model) StopAll() {
+	for _, id := range m.sup.Running() {
+		m.setResume(id, false)
+	}
+	m.stopAll(func() {})
+}
+
+// StopAllAndThen stops every sandbox to quit, then runs then on the UI
+// thread. The recipe sandboxes running start again with the app.
 func (m *Model) StopAllAndThen(then func()) {
 	m.quitting = true
+	m.stopAll(then)
+}
+
+func (m *Model) stopAll(then func()) {
 	timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
 	id := m.Toasts.Push(ui.Toast(tr("Stopping sandboxes"), tr("Waiting for the guests to exit…")).Loading())
 	m.async(func(context.Context) error {

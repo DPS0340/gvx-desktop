@@ -201,6 +201,11 @@ func demoState(m *ui.Model, now time.Time) {
 		{Type: "Images", TotalCount: 5, Active: 3, Size: "348MB", Reclaimable: "113MB"},
 		{Type: "Local Volumes", TotalCount: 3, Active: 2, Size: "2.30GB", Reclaimable: "64MB"},
 	})
+	// docker has the gvx context and uses another; kubectl has not been set
+	// up for the cluster.
+	m.DockerLink.State.Set(ui.CLIContext{Checked: true, CLI: "/opt/homebrew/bin/docker", Exists: true, Host: m.DockerHost(),
+		Current: "desktop-linux", Contexts: []string{"default", "desktop-linux", ui.DockerContextName}})
+	m.KubeLink.State.Set(ui.CLIContext{Checked: true, CLI: "/opt/homebrew/bin/kubectl", Current: "kind-dev", Contexts: []string{"kind-dev"}})
 	m.DockerVersion.Set(dockerapi.Version{Version: "29.9.3", APIVersion: "1.56", OS: "linux", Arch: "arm64", KernelVersion: "4.19.0-gvisor"})
 	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{Loaded: true, Items: []dockerapi.Container{
 		{ID: "3f2a9c1b7d4e5f60", Names: []string{"/shop-web-1"}, Image: "nginx:alpine", State: "running", Status: "Up 2 hours",

@@ -97,7 +97,7 @@ type Model struct {
 	release   rungv.Release            // what Update tells of
 	Now       *ggui.StateValue[time.Time]
 	// Lang is the language the app is worded in, from the settings or the
-	// system: LangEnglish or LangKorean.
+	// system: one of LanguageTags.
 	Lang *ggui.DerivedValue[string]
 
 	Specs    *ggui.StateValue[[]sandbox.Spec]
@@ -117,6 +117,16 @@ type Model struct {
 	DockerContainers *ggui.StateValue[Listing[dockerapi.Container]]
 	DockerVersion    *ggui.StateValue[dockerapi.Version]
 	KubeconfigReady  *ggui.StateValue[bool]
+	// DockerEndpoint is the DOCKER_HOST value that reaches the Docker
+	// Engine, as DockerHost says it.
+	DockerEndpoint *ggui.DerivedValue[string]
+	// DockerLink and KubeLink are the contexts docker and kubectl on this
+	// machine reach the recipes' engines through.
+	DockerLink, KubeLink *Link
+	// LinkCommandsOpen unfolds the commands that set the contexts up by hand.
+	LinkCommandsOpen *ggui.StateValue[bool]
+	// Menus is what the Docker and Kubernetes menus tell; see RecipeMenu.
+	Menus *ggui.DerivedValue[MenuState]
 
 	// Editor
 	EditorOpen *ggui.StateValue[bool]
@@ -165,6 +175,9 @@ type Model struct {
 	scheduled atomic.Bool
 	logSeq    int64
 	quitting  bool
+
+	runCLI                     cliRunner // runs docker and kubectl; tests replace it
+	dockerLoading, dockerAgain bool      // LoadDocker runs; it is wanted again after
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -199,6 +212,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		DockerContainers: ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
 		DockerVersion:    ggui.State(dockerapi.Version{}),
 		KubeconfigReady:  ggui.State(false),
+		LinkCommandsOpen: ggui.State(false),
 
 		EditorOpen: ggui.State(false),
 		Draft:      ggui.State(Draft{}),
@@ -231,6 +245,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		ImageQuery:     ggui.State(""),
 		SelectedImage:  ggui.State(""),
 		SelectedVolume: ggui.State(""),
+		runCLI:         runCLI,
 	}
 	ggui.OnCleanup(m.Toasts.Close)
 	m.sup = &sandbox.Supervisor{
@@ -246,6 +261,13 @@ func NewModel(st store.Store, dataDir string) *Model {
 		}
 		return rows
 	}).WithEqual(func(a, b []Row) bool { return slices.EqualFunc(a, b, Row.Equal) })
+	m.DockerEndpoint = ggui.Combine(m.Rows, m.Settings, func(rows []Row, set store.Settings) string {
+		return m.dockerAPIOf(rows, set).Host()
+	})
+	m.newLinks()
+	m.Menus = ggui.Derived(func() MenuState {
+		return menuState(m.Rows.Get(), m.DockerContainers.Get(), m.DockerLink.View.Get(), m.KubeLink.View.Get())
+	}).WithEqual(MenuState.Equal)
 	m.Running = m.States.Map(func(states map[string]sandbox.State) int {
 		n := 0
 		for _, st := range states {
@@ -397,6 +419,9 @@ func (m *Model) Go(page string) {
 	}
 }
 
+// connectTab is the index of the Connect tab of the sandbox details.
+const connectTab = 1
+
 // ---- Engine -------------------------------------------------------------
 
 // Start locates rungv, loads everything and starts the autostart
@@ -407,15 +432,12 @@ func (m *Model) Start() {
 		m.Selected.Set(specs[0].ID)
 	}
 	m.DetectEngine(func(ok bool) {
-		if !ok {
-			return
-		}
-		for _, s := range ggui.Peek(m.Specs) {
-			if s.AutoStart {
-				m.StartSandbox(s.ID)
-			}
+		if ok {
+			m.startWithApp()
 		}
 	})
+	m.followDocker()
+	m.followLinks()
 	// A registration to start at login names the program; one that has
 	// moved since is named again.
 	m.refreshAutostart()
@@ -531,13 +553,18 @@ func (m *Model) announce(e sandbox.Event) {
 	switch e.Kind {
 	case sandbox.EventReady:
 		m.toastOK(tr("%s is ready", spec.Name), readyText(spec))
-		if spec.Recipe == recipes.Docker {
-			m.LoadDocker()
-		}
 		if spec.Recipe == recipes.Kubernetes {
 			m.CheckKubeconfig()
+			m.CheckLink(m.KubeLink) // it has written its kubeconfig now
 		}
 	case sandbox.EventExited:
+		// An engine that ended before it was ever ready is not started again
+		// with the app, to fail there again; one that ended after it was up
+		// is, as the user left it running: it may have been ended with the
+		// session at a logout.
+		if (e.State.Status == sandbox.Failed || e.State.Status == sandbox.Exited) && e.State.ReadyAt.IsZero() {
+			m.setResume(e.ID, false)
+		}
 		switch st.Status {
 		case sandbox.Failed:
 			desc := st.Error
@@ -644,8 +671,49 @@ func (m *Model) StartSandbox(id string) {
 		m.toastError(tr("Could not start %s", spec.Name), err)
 		return
 	}
+	m.setResume(id, true)
 	m.refreshStates()
 	m.LoadVolumes()
+}
+
+// startWithApp starts what starts with the app: the sandboxes set to, and
+// the recipe sandboxes the user left running when the app last ended.
+func (m *Model) startWithApp() {
+	for _, id := range launchStarts(ggui.Peek(m.Specs), ggui.Peek(m.Settings).Resume) {
+		m.StartSandbox(id)
+	}
+}
+
+// launchStarts picks from specs the sandboxes to start with the app.
+func launchStarts(specs []sandbox.Spec, resume []string) []string {
+	var ids []string
+	for _, s := range specs {
+		if s.AutoStart || s.Recipe != "" && slices.Contains(resume, s.ID) {
+			ids = append(ids, s.ID)
+		}
+	}
+	return ids
+}
+
+// setResume notes whether the user wants a recipe sandbox running, so that
+// one left running starts again with the app. The recipe sandboxes are the
+// engines the app hosts for docker and kubectl; any sandbox can be set to
+// start with the app instead. It is the user's will that counts: starting
+// and stopping one note it, and quitting, which stops every sandbox, does
+// not.
+func (m *Model) setResume(id string, on bool) {
+	if spec, ok := m.spec(id); on && (!ok || spec.Recipe == "") {
+		return
+	}
+	if slices.Contains(ggui.Peek(m.Settings).Resume, id) == on {
+		return
+	}
+	m.UpdateSettings(func(s *store.Settings) {
+		s.Resume = slices.DeleteFunc(slices.Clone(s.Resume), func(r string) bool { return r == id })
+		if on {
+			s.Resume = append(s.Resume, id)
+		}
+	})
 }
 
 func engineProblem(e Engine) string {
@@ -658,8 +726,10 @@ func engineProblem(e Engine) string {
 	return tr("rungv is still being checked.")
 }
 
-// StopSandbox stops a running sandbox.
+// StopSandbox stops a running sandbox, as the user asked: a recipe
+// sandbox is not started again with the app.
 func (m *Model) StopSandbox(id string) {
+	m.setResume(id, false)
 	timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
 	go func() { _ = m.sup.Stop(id, timeout) }()
 }
@@ -686,6 +756,7 @@ func (m *Model) AskDelete(id string) {
 		timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
 		m.async(func(context.Context) error { return m.sup.Stop(id, timeout) }, func(error) {
 			m.sup.Forget(id)
+			m.setResume(id, false)
 			specs := slices.DeleteFunc(slices.Clone(ggui.Peek(m.Specs)), func(s sandbox.Spec) bool { return s.ID == id })
 			if ggui.Peek(m.Selected) == id {
 				next := ""
@@ -853,6 +924,9 @@ func (m *Model) Checkpoint(id string, leaveRunning bool) {
 			m.Toasts.Update(toast, ui.Toast(tr("Snapshot failed"), err.Error()).Error())
 			return
 		}
+		if !leaveRunning {
+			m.setResume(id, false) // the user stopped it with the snapshot
+		}
 		what := tr("The sandbox stopped after the snapshot.")
 		if leaveRunning {
 			what = tr("The sandbox keeps running.")
@@ -892,6 +966,7 @@ func (m *Model) Restore(snap sandbox.Snapshot) {
 		m.toastError(tr("Could not restore %s", spec.Name), err)
 		return
 	}
+	m.setResume(spec.ID, true)
 	m.ShowSandbox(spec.ID, 0)
 	m.refreshStates()
 }

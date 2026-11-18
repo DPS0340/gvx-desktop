@@ -52,3 +52,22 @@ jobs:
             GOOS=windows GOARCH="$arch" go vet ./...
             GOARCH="$arch" ggui build --target windows --out "build/windows-$arch"
           done
+
+  # install.ps1 is what the README tells Windows users to pipe into iex:
+  # it is run here as they would, under both PowerShells, against the
+  # newest release.
+  install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          if (-not (Test-Path "$env:LOCALAPPDATA\Programs\GVX Desktop\GVX Desktop.exe")) { throw 'no program was installed' }
+          if (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'GVX Desktop.lnk'))) { throw 'no Start menu shortcut was made' }
+      - name: PowerShell 7, over what is there
+        shell: pwsh
+        run: |
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          if (-not (Test-Path "$env:LOCALAPPDATA\Programs\GVX Desktop\GVX Desktop.exe")) { throw 'no program was installed' }

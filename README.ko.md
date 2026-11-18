@@ -44,7 +44,19 @@ brew install --cask ironpark/tap/gvx-desktop
 > cask가 표시를 직접 지웁니다. 받은 파일을 확인하려면 릴리스에 함께 있는
 > `.sha256` 파일과 대조하세요: `shasum -a 256 -c gvx-desktop-*.dmg.sha256`.
 
-Windows에서는 같은 릴리스에서 PC에 맞는 zip을 받아(`windows-amd64`는 Intel·AMD,
+Windows에서는 PowerShell에서 한 줄로 설치합니다.
+
+```powershell
+irm https://raw.githubusercontent.com/ironpark/gvx-desktop/main/install.ps1 | iex
+```
+
+[`install.ps1`](install.ps1)은 PC에 맞는 최신 릴리스를 받아 함께 게시된 체크섬과
+대조하고, `%LOCALAPPDATA%\Programs\GVX Desktop`에 풀어 시작 메뉴에 등록합니다. 현재
+사용자에게만 설치하며 관리자 권한이 필요 없습니다. 다시 실행하면 앱을 업데이트하고,
+실행 전에 `$env:GVX_DESKTOP_VERSION = '0.1.0'`을 지정하면 버전을 고를 수 있습니다.
+제거하려면 그 폴더와 시작 메뉴의 `GVX Desktop` 바로 가기를 지우면 됩니다.
+
+또는 같은 릴리스에서 PC에 맞는 zip을 받아(`windows-amd64`는 Intel·AMD,
 `windows-arm64`는 Arm) 안의 `GVX Desktop.exe`를 실행합니다. gvx는 *Windows 하이퍼바이저
 플랫폼* 기능으로 게스트를 실행하므로 이 기능을 켜 두어야 합니다.
 

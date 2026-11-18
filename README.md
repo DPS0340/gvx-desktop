@@ -45,7 +45,20 @@ and drag the app to Applications.
 > what you downloaded, compare it with the `.sha256` file beside it in the
 > release: `shasum -a 256 -c gvx-desktop-*.dmg.sha256`.
 
-On Windows, take the zip for your PC from the same releases — `windows-amd64`
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ironpark/gvx-desktop/main/install.ps1 | iex
+```
+
+[`install.ps1`](install.ps1) takes the newest release for your PC, checks it
+against the checksum published with it, unpacks it into
+`%LOCALAPPDATA%\Programs\GVX Desktop` and adds it to the Start menu, for your
+user alone and without an administrator. Running it again updates the app;
+`$env:GVX_DESKTOP_VERSION = '0.1.0'` before it chooses a version. To remove the
+app, delete that folder and the Start menu's `GVX Desktop` shortcut.
+
+Or take the zip for your PC from the same releases — `windows-amd64`
 for Intel and AMD, `windows-arm64` for Arm — and run the `GVX Desktop.exe` in
 it. gvx runs guests through the *Windows Hypervisor Platform* feature, which
 has to be turned on.

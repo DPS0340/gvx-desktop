@@ -84,10 +84,15 @@ func Locate(preferred string) (string, error) {
 	return "", ErrNotFound
 }
 
+// HomeDir is the user's home directory as ExpandHome writes it. The
+// screens drawn with made-up state put a made-up one here, so that the
+// pictures do not name whoever drew them.
+var HomeDir = os.UserHomeDir
+
 // ExpandHome replaces a leading ~ with the user's home directory.
 func ExpandHome(p string) string {
 	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home, err := HomeDir(); err == nil {
 			return filepath.Join(home, p[1:])
 		}
 	}

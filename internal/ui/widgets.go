@@ -15,6 +15,7 @@ import (
 	uitheme "github.com/ironpark/ggui/ui/theme"
 	"github.com/ironpark/ggui/widget"
 
+	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
@@ -270,7 +271,7 @@ func shortVersion(v string) string {
 
 // tildePath writes a path under the user's home directory from ~.
 func tildePath(p string) string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(p, home+string(os.PathSeparator)) {
+	if home, err := rungv.HomeDir(); err == nil && home != "" && strings.HasPrefix(p, home+string(os.PathSeparator)) {
 		return "~" + p[len(home):]
 	}
 	return p

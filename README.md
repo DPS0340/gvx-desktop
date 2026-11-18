@@ -4,12 +4,16 @@
 
 <h1 align="center">gvx Desktop</h1>
 
+<p align="center"><b>English</b> · <a href="README.ko.md">한국어</a></p>
+
 A desktop app for [gvx](https://github.com/gfire-sigs/gvx) — run Linux containers as
 unprivileged gvx sandboxes (no VM, no daemon, no root) and manage their images,
 volumes and snapshots, in the spirit of Docker Desktop. Built with
 [ggui](https://github.com/ironpark/ggui).
 
-설계 배경과 기능 분류는 [docs/DESIGN.md](docs/DESIGN.md)를 참고하세요.
+<p align="center">
+  <img src="assets/tour.gif" width="960" alt="A walk through gvx Desktop: the dashboard, a sandbox's details, the new sandbox sheet, image search, the Docker Engine and Kubernetes recipes, settings and the command palette">
+</p>
 
 ## Install
 
@@ -34,7 +38,7 @@ to date (see [rungv](#rungv)). On other systems, [build it](#build-and-run).
 | Snapshots | Checkpoint a running sandbox (stop or keep running), list, restore, delete |
 | Docker Engine | One-click `docker:dind`, `docker context` setup, inner container list with start/stop/restart/remove |
 | Kubernetes | One-click single-node k3s, kubeconfig detection, kubectl snippets |
-| Engine | Install `rungv` from gvx's releases, see when a newer one is out and update to it, sign it for the hypervisor (macOS) |
+| Engine | Install `rungv` from gvx's releases or build gvx's `main` from source, see when a newer one is out and update to it, sign it for the hypervisor (macOS) |
 | Desktop | Menu-bar tray (macOS/Windows), native menus, ⌘K palette, ⌘1–7 navigation, single instance, light/dark/system theme |
 
 ## How it works
@@ -85,10 +89,14 @@ Render every screen with demo data, without an engine:
 ./bin/gvx-desktop -render-dir ./shots-ko -render-lang ko
 ```
 
+`-render-tour DIR` draws a walk through the app the same way, as frames with
+its motion in them; `assets/tour.sh` makes the animation above of those, with
+ffmpeg.
+
 The app is worded in English and Korean. It follows the system language, and
 Settings → Language chooses one. The Korean text lives in
 `internal/ui/i18n_ko.go`, keyed by the English in the code; a test fails when
-a text has no Korean.
+a text has no Korean. This README is kept in both too: [README.ko.md](README.ko.md).
 
 ## rungv
 

@@ -34,7 +34,8 @@ func main() {
 	ui.AppVersion = version
 	dataDir := flag.String("data-dir", "", "directory for sandboxes, settings and snapshots (default: the user config dir)")
 	renderDir := flag.String("render-dir", "", "render the screens to PNG files in this directory, then exit")
-	renderLang := flag.String("render-lang", "en", "the language -render-dir renders in: en or ko")
+	renderLang := flag.String("render-lang", "en", "the language -render-dir and -render-tour render in: en or ko")
+	tourDir := flag.String("render-tour", "", "render a walk through the app as PNG frames in this directory, then exit")
 	flag.Parse()
 
 	dir := *dataDir
@@ -48,6 +49,12 @@ func main() {
 		log.Fatal(err)
 	}
 	st := store.Store{Dir: dir}
+	if *tourDir != "" {
+		if err := renderTour(*renderLang, *tourDir); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *renderDir != "" {
 		if err := renderScreens(*renderLang, *renderDir); err != nil {
 			log.Fatal(err)

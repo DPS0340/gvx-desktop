@@ -278,6 +278,9 @@ func (m *Model) dockerHost() string { return recipes.DockerHost() }
 
 // LoadDocker lists the containers of the Docker Engine recipe.
 func (m *Model) LoadDocker() {
+	if m.Offline {
+		return // the containers shown are made up
+	}
 	row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
 	if !ok || row.State.Status != sandbox.Running {
 		m.DockerContainers.Set(Listing[dockerapi.Container]{})

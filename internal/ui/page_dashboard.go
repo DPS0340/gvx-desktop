@@ -24,7 +24,7 @@ func dashboardPage(m *Model) ggui.Widget {
 		), engineAlert(m)),
 		metrics(m),
 		widget.Responsive(900,
-			abreast(recentSandboxes(m), engineCard(m), 3, 2, 16),
+			widget.Row(widget.Flex(recentSandboxes(m), 3), widget.Flex(engineCard(m), 2)).Gap(16).Stretch(),
 			widget.Column(recentSandboxes(m), engineCard(m)).Gap(16).Stretch(),
 		),
 		widget.Column(

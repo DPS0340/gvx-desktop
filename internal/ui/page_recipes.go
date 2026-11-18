@@ -192,7 +192,7 @@ func dockerPage(m *Model) ggui.Widget {
 			tip(iconButton(lucide.RefreshCw, tr("Refresh containers"), m.LoadDocker), tr("Refresh")),
 		),
 		recipeHero(m, recipes.Docker, row, "docker:dind",
-			tr("An unmodified dockerd in one sandbox. Images and containers persist in the gvx-docker volume; the API is published on %s.", recipes.DockerHost()),
+			tr("An unmodified dockerd in one sandbox. Images and containers persist in the gvx-docker volume; the API is published on %s.", m.DockerHost()),
 			lucide.Container),
 		widget.Column(
 			sectionTitle(tr("Containers"), tr("Published container ports must be inside 9000–9019, the range the sandbox opened at start.")),
@@ -213,11 +213,11 @@ func orDash(s string) string {
 }
 
 func dockerCLICard(m *Model) ggui.Widget {
-	host := recipes.DockerHost()
-	_, hasCLI := DockerCLI()
+	host := m.DockerHost()
+	_, hasCLI := m.DockerCLI()
 	var cliNote ggui.Widget = widget.Box()
 	if !hasCLI {
-		cliNote = ui.Caption(tr("The docker command was not found on PATH. Install the Docker CLI alone; no local engine is needed."))
+		cliNote = ui.Caption(tr("The docker command was not found. Install the Docker CLI alone (no local engine is needed), or name it in Settings → Docker."))
 	}
 	return ui.Card(
 		ui.CardHeader(tr("Use it from a terminal"), tr("One-time setup of a docker context named gvx.")),

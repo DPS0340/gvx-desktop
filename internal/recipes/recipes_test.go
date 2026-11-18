@@ -80,3 +80,46 @@ func TestDockerEngine(t *testing.T) {
 	}
 	t.Logf("dockerd %s (API %s) on %s/%s kernel %s", v.Version, v.APIVersion, v.OS, v.Arch, v.KernelVersion)
 }
+
+// The engine's API is published as asked, read back from the sandbox, and
+// moved without touching the ports beside it.
+func TestDockerAPI(t *testing.T) {
+	socket := DockerAPI{Port: DefaultDockerPort}
+	tcp := DockerAPI{TCP: true, Port: 23750}
+	if got := socket.Publish(); got != "unix:~/.gvx/docker.sock:2375" {
+		t.Errorf("socket publishes %q", got)
+	}
+	if got := tcp.Publish(); got != "127.0.0.1:23750:2375" {
+		t.Errorf("tcp publishes %q", got)
+	}
+	if got := tcp.Host(); got != "tcp://127.0.0.1:23750" {
+		t.Errorf("tcp host %q", got)
+	}
+	if got := (DockerAPI{TCP: true}).Host(); got != "tcp://127.0.0.1:2375" {
+		t.Errorf("a port left out: %q", got)
+	}
+
+	spec := DockerEngineWith(socket)
+	if api, ok := DockerAPIOf(spec); !ok || api.TCP {
+		t.Errorf("read back %+v, %v", api, ok)
+	}
+	moved := WithDockerAPI(spec, tcp)
+	if api, ok := DockerAPIOf(moved); !ok || api != tcp {
+		t.Errorf("after the move: %+v, %v", api, ok)
+	}
+	if len(moved.Ports) != len(spec.Ports) || moved.Ports[1] != spec.Ports[1] {
+		t.Errorf("the other ports changed: %v", moved.Ports)
+	}
+	if spec.Ports[0] != socket.Publish() {
+		t.Errorf("the sandbox given was changed: %v", spec.Ports)
+	}
+	// A sandbox whose API port someone removed gets it back.
+	bare := spec
+	bare.Ports = []string{"127.0.0.1:9000-9019:9000-9019"}
+	if got := WithDockerAPI(bare, tcp).Ports; len(got) != 2 || got[0] != tcp.Publish() {
+		t.Errorf("a sandbox without the port: %v", got)
+	}
+	if _, ok := DockerAPIOf(bare); ok {
+		t.Error("an API was read from a sandbox that publishes none")
+	}
+}

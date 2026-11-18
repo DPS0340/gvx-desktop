@@ -11,21 +11,38 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ironpark/ggui"
+
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
+	"github.com/ironpark/gvx-desktop/internal/store"
 )
 
-// sourceKeys returns every text the code hands tr or T as a literal, with
-// where it is.
-func sourceKeys(t *testing.T) map[string]string {
+// A key is a text the code hands tr, T or trn as a literal.
+type key struct {
+	at     string // where the code has it
+	plural bool   // trn's: the Korean is a plural, under the singular
+	bare   bool   // some call passes no arguments, formatting it later
+}
+
+// sourceKeys returns every text the code hands tr, T or trn as a literal.
+func sourceKeys(t *testing.T) map[string]key {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	files = append(files, filepath.Join("..", "..", "main.go"))
-	keys := map[string]string{}
+	keys := map[string]key{}
 	fset := token.NewFileSet()
+	literal := func(e ast.Expr) (string, bool) {
+		lit, ok := e.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return "", false
+		}
+		s, err := strconv.Unquote(lit.Value)
+		return s, err == nil
+	}
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
@@ -39,21 +56,34 @@ func sourceKeys(t *testing.T) map[string]string {
 			if !ok || len(call.Args) == 0 {
 				return true
 			}
-			switch fn := call.Fun.(type) {
+			fn := ""
+			switch f := call.Fun.(type) {
 			case *ast.Ident:
-				if fn.Name != "tr" {
-					return true
-				}
+				fn = f.Name
 			case *ast.SelectorExpr:
-				if pkg, ok := fn.X.(*ast.Ident); !ok || pkg.Name != "ui" || fn.Sel.Name != "T" {
+				if pkg, ok := f.X.(*ast.Ident); ok && pkg.Name == "ui" && f.Sel.Name == "T" {
+					fn = "T"
+				}
+			}
+			switch fn {
+			case "tr", "T":
+				if s, ok := literal(call.Args[0]); ok {
+					k := keys[s]
+					k.at = fset.Position(call.Args[0].Pos()).String()
+					k.bare = k.bare || len(call.Args) == 1
+					keys[s] = k
+				}
+			case "trn":
+				if len(call.Args) < 3 {
 					return true
 				}
-			default:
-				return true
-			}
-			if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-				if key, err := strconv.Unquote(lit.Value); err == nil {
-					keys[key] = fset.Position(lit.Pos()).String()
+				one, ok1 := literal(call.Args[1])
+				other, ok2 := literal(call.Args[2])
+				if ok1 && ok2 {
+					if a, b := verbs(one), verbs(other); !slices.Equal(a, b) {
+						t.Errorf("%s: %q takes %v, its plural %q takes %v", fset.Position(call.Pos()), one, a, other, b)
+					}
+					keys[one] = key{at: fset.Position(call.Args[1].Pos()).String(), plural: true}
 				}
 			}
 			return true
@@ -86,44 +116,88 @@ func edgeSpace(s string) (lead, trail string) {
 	return s[:len(s)-len(strings.TrimLeft(s, " "))], s[len(strings.TrimRight(s, " ")):]
 }
 
+// particlePair matches a Korean particle choice, "{을/를}".
+var particlePair = regexp.MustCompile(`\{[^{}/%\s]+/[^{}/%\s]+\}`)
+
 // Every text of the app has a Korean one that takes the same arguments and
-// joins what is around it the same way.
+// joins what is around it the same way, and whose particle choices are
+// where the formatter makes them.
 func TestKoreanCatalogIsComplete(t *testing.T) {
 	keys := sourceKeys(t)
 	// The texts that reach tr in a variable.
 	for _, s := range []sandbox.Status{sandbox.Starting, sandbox.Running, sandbox.Stopping, sandbox.Exited, sandbox.Failed, -1} {
-		keys[s.String()] = "sandbox.Status"
+		keys[s.String()] = key{at: "sandbox.Status"}
 	}
 	for _, r := range recipes.All() {
-		keys[r.Summary] = "recipe " + r.Key
+		keys[r.Summary] = key{at: "recipe " + r.Key}
 		for _, h := range r.Highlights {
-			keys[h] = "recipe " + r.Key
+			keys[h] = key{at: "recipe " + r.Key}
 		}
 	}
 	for _, k := range []string{"System", "Light", "Dark"} {
-		keys[k] = "a theme"
+		keys[k] = key{at: "a theme"}
 	}
-	for key, at := range keys {
-		ko, ok := korean[key]
-		if !ok {
-			t.Errorf("%s: no Korean for %q", at, key)
-			continue
+	for text, k := range keys {
+		var ko []string
+		if k.plural {
+			forms, ok := korean.Plurals[text]
+			if !ok || forms.Other == "" {
+				t.Errorf("%s: no Korean plural for %q", k.at, text)
+				continue
+			}
+			ko = []string{forms.Other}
+		} else {
+			s, ok := korean.Messages[text]
+			if !ok {
+				t.Errorf("%s: no Korean for %q", k.at, text)
+				continue
+			}
+			ko = []string{s}
 		}
-		if a, b := verbs(key), verbs(ko); !slices.Equal(a, b) {
-			t.Errorf("%s: %q takes %v, its Korean %q takes %v", at, key, a, ko, b)
-		}
-		kl, kt := edgeSpace(key)
-		if l, tr := edgeSpace(ko); l != kl || tr != kt {
-			t.Errorf("%s: the Korean of %q does not keep its leading and trailing spaces", at, key)
+		for _, ko := range ko {
+			if a, b := verbs(text), verbs(ko); !slices.Equal(a, b) {
+				t.Errorf("%s: %q takes %v, its Korean %q takes %v", k.at, text, a, ko, b)
+			}
+			kl, kt := edgeSpace(text)
+			if l, tr := edgeSpace(ko); l != kl || tr != kt {
+				t.Errorf("%s: the Korean of %q does not keep its leading and trailing spaces", k.at, text)
+			}
+			for _, at := range particlePair.FindAllStringIndex(ko, -1) {
+				if !endsInVerb(ko[:at[0]]) {
+					t.Errorf("%s: the Korean of %q has %s after no format verb, where it shows as written", k.at, text, ko[at[0]:at[1]])
+				}
+				if k.bare {
+					t.Errorf("%s: %q is formatted after tr, which leaves %s in its Korean as written: pass tr the arguments", k.at, text, ko[at[0]:at[1]])
+				}
+			}
 		}
 	}
+}
+
+// endsInVerb reports whether s ends in a format verb.
+func endsInVerb(s string) bool {
+	locs := formatVerb.FindAllStringIndex(s, -1)
+	return len(locs) > 0 && locs[len(locs)-1][1] == len(s)
 }
 
 func TestTranslateFollowsTheLanguage(t *testing.T) {
 	t.Cleanup(func() { SetLanguage(LangEnglish) })
 	SetLanguage(LangKorean)
-	if got := tr("Delete %s?", "web"); got != "web을(를) 삭제할까요?" {
-		t.Errorf("Korean: %q", got)
+	// The particle fits the word: a Latin name takes the form after a
+	// vowel, and a number the one Korean reads it with.
+	for _, c := range []struct{ got, want string }{
+		{tr("Delete %s?", "web"), "web를 삭제할까요?"},
+		{tr("Delete %s?", "postgres:16"), "postgres:16을 삭제할까요?"},
+		{tr("Exited with code %d", 1), "코드 1로 종료됨"},
+		{tr("Exited with code %d", 3), "코드 3으로 종료됨"},
+		{tr("The bundle %s (%s) is removed from disk.", "web-10", "1 GB"), "번들 web-10이 디스크에서 삭제됩니다(1 GB)."},
+	} {
+		if c.got != c.want {
+			t.Errorf("Korean: %q, want %q", c.got, c.want)
+		}
+	}
+	if got := quitText(2); got != "샌드박스 2개가 실행 중입니다. gvx에는 데몬이 없어서 샌드박스는 gvx Desktop이 실행되는 동안에만 유지됩니다." {
+		t.Errorf("a plural: %q", got)
 	}
 	if got := tr("%d of %d sandboxes running", 1, 4); got != "샌드박스 4개 중 1개 실행 중" {
 		t.Errorf("reordered arguments: %q", got)
@@ -135,6 +209,45 @@ func TestTranslateFollowsTheLanguage(t *testing.T) {
 	if got := tr("Delete %s?", "web"); got != "Delete web?" {
 		t.Errorf("English: %q", got)
 	}
+	if got := quitText(1); !strings.HasPrefix(got, "1 sandbox is running.") {
+		t.Errorf("one: %q", got)
+	}
+	if got := quitText(2); !strings.HasPrefix(got, "2 sandboxes are running.") {
+		t.Errorf("two: %q", got)
+	}
+}
+
+// Choosing a language in the settings words the window in it at the next
+// frame, and the text tr gives anywhere else too.
+func TestTheWindowFollowsTheLanguageSetting(t *testing.T) {
+	t.Cleanup(func() { SetLanguage(LangEnglish) })
+	dir := t.TempDir()
+	var m *Model
+	p := ggui.ProbeBuilder(func() ggui.Widget { return Build(m) }, ggui.Sz(1100, 760))
+	p.Setup(func() {
+		m = NewModel(store.Store{Dir: dir}, dir)
+		m.Offline = true
+		m.Attach(p)
+	})
+	defer p.Close()
+	p.Frame()
+	shows := func(lang string, want, not string) {
+		t.Helper()
+		m.UpdateSettings(func(s *store.Settings) { s.Language = lang })
+		p.Frame()
+		if _, ok := p.Find(want); !ok {
+			t.Errorf("%s: no %q in the window", lang, want)
+		}
+		if _, ok := p.Find(not); ok {
+			t.Errorf("%s: %q is still in the window", lang, not)
+		}
+		if got := tr("Settings"); got != want {
+			t.Errorf("%s: tr says %q", lang, got)
+		}
+	}
+	shows(LangKorean, "설정", "Settings")
+	shows(LangEnglish, "Settings", "설정")
+	shows(LangKorean, "설정", "Settings")
 }
 
 func TestResolveLanguage(t *testing.T) {

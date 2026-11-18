@@ -275,7 +275,79 @@ func (m *Model) LoadDisk() {
 
 // ---- Docker and Kubernetes ----------------------------------------------
 
-func (m *Model) dockerHost() string { return recipes.DockerHost() }
+func (m *Model) dockerHost() string { return m.DockerAPI().Host() }
+
+// Docker endpoints, as the settings name them.
+const (
+	DockerSocketEndpoint = "socket"
+	DockerTCPEndpoint    = "tcp"
+)
+
+// dockerSetting is how the settings ask the Docker Engine recipe to
+// publish its API: a new engine is made so.
+func (m *Model) dockerSetting() recipes.DockerAPI {
+	set := ggui.Peek(m.Settings)
+	api := recipes.DefaultDockerAPI()
+	switch set.DockerEndpoint {
+	case DockerSocketEndpoint:
+		api.TCP = false
+	case DockerTCPEndpoint:
+		api.TCP = true
+	}
+	if set.DockerPort > 0 {
+		api.Port = set.DockerPort
+	}
+	return api
+}
+
+// DockerAPI is how the Docker Engine is reached: as its sandbox publishes
+// the API when there is one, whose ports are its own, and else as the
+// settings would make one.
+func (m *Model) DockerAPI() recipes.DockerAPI {
+	if row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker); ok {
+		if api, ok := recipes.DockerAPIOf(row.Spec); ok {
+			return api
+		}
+	}
+	return m.dockerSetting()
+}
+
+// DockerHost is the DOCKER_HOST value that reaches the Docker Engine.
+func (m *Model) DockerHost() string { return m.dockerHost() }
+
+// SetDockerAPI changes how the engine's API is published, in the settings
+// and in the engine's sandbox when there is one. A sandbox's ports are
+// fixed when it starts, so a running engine keeps its endpoint until it is
+// restarted, and is told so.
+func (m *Model) SetDockerAPI(api recipes.DockerAPI) {
+	if api.Port <= 0 || api.Port > 65535 {
+		api.Port = recipes.DefaultDockerPort
+	}
+	m.UpdateSettings(func(s *store.Settings) {
+		s.DockerEndpoint = DockerSocketEndpoint
+		if api.TCP {
+			s.DockerEndpoint = DockerTCPEndpoint
+		}
+		s.DockerPort = api.Port
+	})
+	specs := slices.Clone(ggui.Peek(m.Specs))
+	for i, spec := range specs {
+		if spec.Recipe != recipes.Docker {
+			continue
+		}
+		if was, ok := recipes.DockerAPIOf(spec); ok && was.Host() == api.Host() {
+			return
+		}
+		specs[i] = recipes.WithDockerAPI(spec, api)
+		m.saveSpecs(specs)
+		if m.sup.State(spec.ID).Status.Active() {
+			m.Toasts.Push(ui.Toast(tr("Restart the Docker Engine to move its API"),
+				tr("It keeps answering on its old endpoint until then; after the restart it is %s.", api.Host())).Duration(8 * time.Second))
+		}
+		m.LoadDocker()
+		return
+	}
+}
 
 // LoadDocker lists the containers of the Docker Engine recipe.
 func (m *Model) LoadDocker() {
@@ -345,15 +417,30 @@ func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
 	})
 }
 
-// DockerCLI reports whether a docker command is on PATH.
+// DockerCLI finds the docker command: the one the settings name, and
+// otherwise where a terminal would find it.
+func (m *Model) DockerCLI() (string, bool) {
+	if set := strings.TrimSpace(ggui.Peek(m.Settings).DockerPath); set != "" {
+		p := rungv.ExpandHome(set)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p, true
+		}
+		return "", false // a path that names nothing is not quietly replaced
+	}
+	return DockerCLI()
+}
+
+// DockerCLI finds the docker command where a terminal would find it.
 func DockerCLI() (string, bool) {
-	p, err := exec.LookPath("docker")
+	// Not exec.LookPath alone: started from the Dock the app has a PATH
+	// without Homebrew's directory, where brew install docker puts it.
+	p, err := rungv.FindTool("docker")
 	return p, err == nil
 }
 
 // CreateDockerContext runs docker context create gvx and selects it.
 func (m *Model) CreateDockerContext() {
-	path, ok := DockerCLI()
+	path, ok := m.DockerCLI()
 	if !ok {
 		m.toastError(tr("docker was not found"), errors.New(tr("install the Docker CLI (no engine is needed), then try again")))
 		return

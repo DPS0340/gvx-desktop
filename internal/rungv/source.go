@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 )
 
 // The source of gvx: where it is cloned from, the branch built, and the
@@ -76,43 +78,107 @@ func getJSON(ctx context.Context, url string, v any) error {
 // was not found.
 var ErrNoToolchain = errors.New("building from source needs git and Go")
 
+// ErrToolNotFound reports a command that is nowhere FindTool looks.
+var ErrToolNotFound = errors.New("command not found")
+
 // FindTool looks for a command where a terminal would find it. An app
 // started from the Dock or a launcher has a short PATH, without the
-// directories a shell's profile adds, so the usual homes of developer
-// tools are looked in too, and at last the login shell is asked.
+// directories a shell's profile adds — Homebrew's among them — so the
+// usual homes of developer tools are looked in too, and at last the login
+// shell is asked. Asking the shell takes a while, and its answer is kept
+// for askAgain, so that a screen may call FindTool each time it is drawn.
 func FindTool(name string) (string, error) {
 	if p, err := exec.LookPath(name); err == nil {
 		return p, nil
 	}
+	file := name
 	if runtime.GOOS == "windows" {
-		name += ".exe"
+		file += ".exe"
 	}
-	var dirs []string
-	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(home, "go", "bin"), filepath.Join(home, ".local", "bin"),
-			filepath.Join(home, ".nix-profile", "bin"), filepath.Join(home, "sdk", "go", "bin"))
-	}
-	if runtime.GOOS == "windows" {
-		dirs = append(dirs, `C:\Program Files\Go\bin`, `C:\Program Files\Git\cmd`)
-	} else {
-		dirs = append(dirs, "/opt/homebrew/bin", "/usr/local/bin", "/usr/local/go/bin",
-			"/run/current-system/sw/bin", "/nix/var/nix/profiles/default/bin", "/snap/bin")
-	}
-	for _, d := range dirs {
-		p := filepath.Join(d, name)
+	for _, d := range toolDirs() {
+		p := filepath.Join(d, file)
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p, nil
 		}
 	}
-	if runtime.GOOS != "windows" {
-		if shell := os.Getenv("SHELL"); shell != "" {
-			out, err := exec.Command(shell, "-lc", "command -v "+name).Output()
-			if p := strings.TrimSpace(lastLine(string(out))); err == nil && filepath.IsAbs(p) {
-				return p, nil
+	if p := askShell(name); p != "" {
+		return p, nil
+	}
+	return "", fmt.Errorf("%w: %s", ErrToolNotFound, name)
+}
+
+// toolDirs are the directories developer tools are installed in that the
+// PATH an app is started with may leave out. On macOS that is most of
+// them: an app started from the Dock has the system's PATH alone. Windows
+// and the Linux desktops hand an app the user's PATH, so there these only
+// catch what was installed since the session began, or by a tool that
+// leaves the PATH to the user's shell profile.
+func toolDirs() []string {
+	var dirs []string
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		dirs = append(dirs,
+			filepath.Join(home, "go", "bin"), filepath.Join(home, ".local", "bin"), filepath.Join(home, "bin"),
+			filepath.Join(home, ".nix-profile", "bin"), filepath.Join(home, "sdk", "go", "bin"),
+			// Docker Desktop, Rancher Desktop and OrbStack put their CLIs here.
+			filepath.Join(home, ".docker", "bin"), filepath.Join(home, ".rd", "bin"), filepath.Join(home, ".orbstack", "bin"))
+	}
+	if runtime.GOOS == "windows" {
+		if home != "" {
+			dirs = append(dirs, filepath.Join(home, "scoop", "shims"))
+		}
+		if local := os.Getenv("LOCALAPPDATA"); local != "" {
+			dirs = append(dirs, filepath.Join(local, "Microsoft", "WinGet", "Links")) // winget's portable packages
+		}
+		if data := os.Getenv("ProgramData"); data != "" {
+			dirs = append(dirs, filepath.Join(data, "chocolatey", "bin"))
+		}
+		for _, v := range []string{"ProgramFiles", "ProgramW6432"} {
+			if pf := os.Getenv(v); pf != "" {
+				dirs = append(dirs, filepath.Join(pf, "Go", "bin"), filepath.Join(pf, "Git", "cmd"),
+					filepath.Join(pf, "Docker", "Docker", "resources", "bin"))
 			}
 		}
+		return dirs
 	}
-	return "", fmt.Errorf("%w: %s was not found", ErrNoToolchain, name)
+	if home != "" {
+		dirs = append(dirs, filepath.Join("/etc/profiles/per-user", filepath.Base(home), "bin")) // nix-darwin, home-manager
+	}
+	return append(dirs, "/opt/homebrew/bin", "/usr/local/bin", "/usr/local/go/bin",
+		"/home/linuxbrew/.linuxbrew/bin", "/run/current-system/sw/bin", "/nix/var/nix/profiles/default/bin", "/snap/bin",
+		"/Applications/Docker.app/Contents/Resources/bin")
+}
+
+// askAgain is how long the login shell's answer about a command stands.
+const askAgain = 30 * time.Second
+
+var shellAnswers = struct {
+	sync.Mutex
+	at   map[string]time.Time
+	path map[string]string
+}{at: map[string]time.Time{}, path: map[string]string{}}
+
+// askShell asks the user's login shell where a command is, which knows
+// the PATH their profile sets up; "" when it does not know either.
+func askShell(name string) string {
+	shell := os.Getenv("SHELL")
+	if runtime.GOOS == "windows" || shell == "" || strings.ContainsAny(name, " \t'\"$`;&|") {
+		return ""
+	}
+	shellAnswers.Lock()
+	defer shellAnswers.Unlock()
+	if at, ok := shellAnswers.at[name]; ok && time.Since(at) < askAgain {
+		return shellAnswers.path[name]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, shell, "-lc", "command -v "+name).Output()
+	p := strings.TrimSpace(lastLine(string(out)))
+	if err != nil || !filepath.IsAbs(p) {
+		p = ""
+	}
+	shellAnswers.at[name], shellAnswers.path[name] = time.Now(), p
+	return p
 }
 
 func lastLine(s string) string {
@@ -132,11 +198,11 @@ func lastLine(s string) string {
 func BuildFromSource(ctx context.Context, dir, target string, phase func(Phase), line func(string)) (string, error) {
 	git, err := FindTool("git")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrNoToolchain, err)
 	}
 	goBin, err := FindTool("go")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrNoToolchain, err)
 	}
 	run := func(in string, env []string, name string, args ...string) error {
 		line("$ " + filepath.Base(name) + " " + strings.Join(args, " "))

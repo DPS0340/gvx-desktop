@@ -30,14 +30,29 @@ type searchKey struct {
 // search is the state of the pull dialog's search that the screen does not
 // show; the model's Search signals are what it does.
 type search struct {
-	gen      int // of the newest question
-	timer    *time.Timer
-	cancel   context.CancelFunc
-	picked   string // the repository chosen from the results, which typing a tag after keeps
+	waiting  *ggui.StateValue[*searchAsk] // the search to ask once the typing pauses; see searchWaiting
+	cancel   context.CancelFunc           // calls off the search being asked
+	picked   string                       // the repository chosen from the results, which typing a tag after keeps
 	tagsGen  int
 	tagsStop context.CancelFunc
 	kept     map[searchKey][]registry.Result
 	order    []searchKey
+}
+
+// searchAsk is a search waiting for the typing to pause. Each is made anew,
+// so that waiting again for the same words is a change all the same.
+type searchAsk struct {
+	key   searchKey
+	typed string
+}
+
+// searchWaiting is the search waiting for the typing to pause, or nil. The
+// pull dialog follows it searchDelay late and asks it with searchPaused.
+func (m *Model) searchWaiting() *ggui.StateValue[*searchAsk] {
+	if m.search.waiting == nil {
+		m.search.waiting = ggui.State[*searchAsk](nil)
+	}
+	return m.search.waiting
 }
 
 // SearchSource is the registry the pull dialog searches.
@@ -60,9 +75,9 @@ func repoOf(ref string) string {
 	return ref
 }
 
-// SearchTyped follows what the pull dialog's field holds: it searches for
-// it once the typing has paused, or clears the results when it is a
-// reference to pull as it stands. It runs on the UI thread.
+// SearchTyped follows what the pull dialog's field holds: it has it
+// searched for once the typing has paused, or clears the results when it is
+// a reference to pull as it stands. It runs on the UI thread.
 func (m *Model) SearchTyped() {
 	if m.Offline {
 		return
@@ -74,18 +89,13 @@ func (m *Model) SearchTyped() {
 		return
 	}
 	s.picked = ""
-	s.gen++
-	gen := s.gen
-	if s.timer != nil {
-		s.timer.Stop()
-		s.timer = nil
-	}
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
 	}
 	m.clearTags()
 	if !ggui.Peek(m.PullOpen) || ggui.Peek(m.Pulling) || !registry.Searchable(typed) {
+		m.searchWaiting().Set(nil)
 		m.SearchResults.Set(nil)
 		m.SearchFor.Set("")
 		m.SearchBusy.Set(false)
@@ -94,6 +104,7 @@ func (m *Model) SearchTyped() {
 	}
 	key := searchKey{m.SearchSource(), strings.ToLower(typed)}
 	if kept, ok := s.kept[key]; ok {
+		m.searchWaiting().Set(nil)
 		m.SearchResults.Set(kept)
 		m.SearchFor.Set(typed)
 		m.SearchBusy.Set(false)
@@ -102,35 +113,41 @@ func (m *Model) SearchTyped() {
 	}
 	// What was found stays on the screen until the next answer replaces it.
 	m.SearchBusy.Set(true)
-	s.timer = time.AfterFunc(searchDelay, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), searchTimeout)
+	m.searchWaiting().Set(&searchAsk{key, typed})
+}
+
+// searchPaused asks the registry the search that waited for the typing to
+// pause, if it is still the one waiting. An answer that comes after a newer
+// search called this one off is dropped.
+func (m *Model) searchPaused(a *searchAsk) {
+	s := &m.search
+	if a == nil || a != ggui.Peek(s.waiting) {
+		return
+	}
+	s.waiting.Set(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	go func() {
+		timed, stop := context.WithTimeout(ctx, searchTimeout)
+		found, err := registry.Search(timed, a.key.source, a.typed, searchLimit)
+		stop()
 		m.post(func() {
-			if gen != s.gen {
-				cancel()
+			if ctx.Err() != nil { // called off by a newer search
 				return
 			}
-			s.cancel = cancel
-			go func() {
-				defer cancel()
-				found, err := registry.Search(ctx, key.source, typed, searchLimit)
-				m.post(func() {
-					if gen != s.gen {
-						return
-					}
-					s.cancel = nil
-					m.SearchBusy.Set(false)
-					if err != nil {
-						m.SearchErr.Set(err.Error())
-						return
-					}
-					m.keep(key, found)
-					m.SearchErr.Set("")
-					m.SearchResults.Set(found)
-					m.SearchFor.Set(typed)
-				})
-			}()
+			cancel()
+			s.cancel = nil
+			m.SearchBusy.Set(false)
+			if err != nil {
+				m.SearchErr.Set(err.Error())
+				return
+			}
+			m.keep(a.key, found)
+			m.SearchErr.Set("")
+			m.SearchResults.Set(found)
+			m.SearchFor.Set(a.typed)
 		})
-	})
+	}()
 }
 
 func (m *Model) keep(key searchKey, found []registry.Result) {

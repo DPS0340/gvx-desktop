@@ -106,7 +106,7 @@ func imagesPage(m *Model) ggui.Widget {
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Reading the image cache…"))).Gap(8)
 		}
 		count := ggui.Combine(visible, m.Images, func(v []rungv.Image, l Listing[rungv.Image]) string { return showing(len(v), len(l.Items)) })
-		return tableCard(table, filterBar(m.ImageQuery, tr("Filter images"), count))
+		return tableCard(table.Toolbar(filterBar(m.ImageQuery, tr("Filter images"), count)))
 	})
 	return page(
 		pageHeader(tr("Images"), summary,

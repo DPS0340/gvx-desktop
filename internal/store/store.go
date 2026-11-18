@@ -25,6 +25,9 @@ type Settings struct {
 	SidebarNarrow  bool   `json:"sidebarNarrow,omitempty"`
 	NoTray         bool   `json:"noTray,omitempty"`         // keep out of the menu bar or notification area
 	SearchRegistry string `json:"searchRegistry,omitempty"` // the registry the pull dialog searches: hub (default), quay
+	DockerPath     string `json:"dockerPath,omitempty"`     // the docker command; empty: find it
+	DockerEndpoint string `json:"dockerEndpoint,omitempty"` // how the Docker Engine recipe publishes its API: socket, tcp; empty: the system's default
+	DockerPort     int    `json:"dockerPort,omitempty"`     // the host port of a tcp endpoint; 0: 2375
 	UpdateChannel  string `json:"updateChannel,omitempty"`  // where rungv is updated from: release (default), source
 	NoUpdateCheck  bool   `json:"noUpdateCheck,omitempty"`  // do not ask GitHub for a newer rungv at launch
 }

@@ -115,32 +115,10 @@ func pageHeader(title string, subtitle ggui.Widget, actions ...ggui.Widget) ggui
 // is there fades away fast, and only then does the next come up into
 // place: two screens are never drawn over one another.
 func entering[K comparable](key ggui.Readable[K], build func(K) ggui.Widget) ggui.Widget {
-	return ggui.Component(func() ggui.Widget {
-		shown := ggui.State(ggui.Peek(key))
-		opacity := ggui.Tween(1.0, leaveDuration).Easing(ggui.EaseStandardAccelerate)
-		leaving := false
-		ggui.Watch(key, func(k K) {
-			if k == ggui.Peek(shown) {
-				// Back to what is still there: stay.
-				leaving = false
-				opacity.Set(1)
-				return
-			}
-			leaving = true
-			opacity.Set(0)
-		})
-		ggui.Watch(opacity, func(v float64) {
-			if !leaving || v > 0 {
-				return
-			}
-			leaving = false
-			shown.Set(ggui.Peek(key))
-			opacity.Jump(1) // the next one's own entrance fades it in
-		})
-		return widget.Opacity(ggui.Key(shown, func(k K) ggui.Widget {
-			return widget.Transition(build(k)).Fade().Slide(0, 8).Duration(pageDuration).Easing(ggui.EaseStandardDecelerate)
-		}), 1).BindOpacity(opacity)
-	})
+	return widget.Switcher(key, build).Sequential().
+		Fade().Slide(0, 8).
+		Durations(leaveDuration, pageDuration).
+		Easing(ggui.EaseStandardDecelerate)
 }
 
 // headed puts what may or may not be there under a page's header, so that
@@ -184,69 +162,40 @@ func metric(label string, value ggui.Widget, icon *icons.Glyph, onTap func()) gg
 		widget.Row(ui.Caption(label), widget.Spacer(), glyph(icon, 16).Color(colorGray)).Align(widget.AlignCenter),
 		value,
 	).Gap(10).Stretch()
-	if onTap == nil {
-		return ui.Card(body)
+	card := ui.Card(body)
+	if onTap != nil {
+		// A card that goes somewhere answers the pointer.
+		card.OnTap(onTap).Pad(16).SetName(label)
 	}
-	// A card that goes somewhere answers the pointer: its surface warms
-	// to the accent while the pointer is over it.
-	hover := ggui.State(false)
-	fill := ggui.Map(hover, func(over bool) color.Color {
-		if over {
-			return uitheme.Var("accent").Alpha(.6)
-		}
-		return color.RGBA{}
-	})
-	surface := widget.AnimatedBox(body).Pad(16).Radius(cardRadius - 1).BindFill(fill).Duration(hoverDuration)
-	return widget.Tap(ui.Card(surface).Pad(0), onTap).OnHover(hover.Set).Cursor(ggui.CursorShapePointer)
+	return card
 }
 
-// tableRow is the height of a row that holds buttons, which the default
-// row of one line of text would squeeze.
-const tableRow = 44
-
-// cardRadius is the corner of a card under the stock theme.
-const cardRadius = 14
-
-// tableCard is a card around a table, with the bars given above it, such
-// as the field that filters it. It clips what it holds to its corners: a
-// row's highlight is square, and the last row's would cover them.
-func tableCard(table ggui.Widget, bars ...ggui.Widget) ggui.Widget {
-	const r = cardRadius - 1
-	var body []ggui.Widget
-	for _, bar := range bars {
-		body = append(body, bar, ui.Divider())
-	}
-	body = append(body, table)
-	return ui.Card(widget.ClipPath(widget.Column(body...).Stretch(), func(b ggui.Rect) *ggui.Path {
-		x0, y0, x1, y1 := b.Origin.X, b.Origin.Y, b.Origin.X+b.Size.W, b.Origin.Y+b.Size.H
-		p := &ggui.Path{}
-		p.MoveTo(x0+r, y0)
-		p.LineTo(x1-r, y0)
-		p.QuadTo(x1, y0, x1, y0+r)
-		p.LineTo(x1, y1-r)
-		p.QuadTo(x1, y1, x1-r, y1)
-		p.LineTo(x0+r, y1)
-		p.QuadTo(x0, y1, x0, y1-r)
-		p.LineTo(x0, y0+r)
-		p.QuadTo(x0, y0, x0+r, y0)
-		p.Close()
-		return p
-	})).Pad(1)
+// tableCard is a card around a table, clipped to its corners: a row's
+// highlight is square, and the last row's would cover them.
+func tableCard(table ggui.Widget) ggui.Widget {
+	return ui.Card(table).Pad(1).Clip()
 }
 
-// filterBar heads a table with the field that filters it: what is typed
-// in query chooses the rows, and count says how many are showing.
+// filterBar is a table's toolbar holding the field that filters it: what
+// is typed in query chooses the rows, and count says how many are showing.
 func filterBar(query ggui.Binding[string], placeholder string, count ggui.Readable[string]) ggui.Widget {
 	clear := ggui.If(ggui.Map(query, func(q string) bool { return q != "" }), func() ggui.Widget {
 		return iconButton(lucide.X, tr("Clear the filter"), func() { query.Set("") })
 	})
+	// The toolbar already pads it by a cell's 8 and keeps the line under it
+	// clear: 4 more at the sides and 28 tall make the bar as wide-set and as
+	// tall as a row that holds buttons.
 	return widget.Box(widget.Row(
 		glyph(lucide.Search, 15).Color(colorGray),
 		widget.Expanded(widget.TextInput(query).Placeholder(placeholder).Name(placeholder)),
 		clear,
 		ui.CaptionOf(count).Size(12).NoWrap(),
-	).Gap(10).Align(widget.AlignCenter)).Pad(0, 12).Height(tableRow)
+	).Gap(10).Align(widget.AlignCenter)).Pad(0, 4).Height(tableRow - 2*8)
 }
+
+// tableRow is the height of a row that holds buttons, which the default
+// row of one line of text would squeeze.
+const tableRow = 44
 
 // showing words how many of total rows a filter leaves.
 func showing(shown, total int) string {
@@ -299,41 +248,6 @@ func sectionTitle(title, help string) ggui.Widget {
 		return ui.Heading(title).Size(15)
 	}
 	return widget.Column(ui.Heading(title).Size(15), ui.Caption(help)).Gap(2)
-}
-
-// abreast lays two widgets side by side, sharing the width as their
-// weights say, and makes both as tall as the taller. A Row stretches its
-// children only to a height it is given, and a page that scrolls gives
-// none.
-func abreast(left, right ggui.Widget, leftWeight, rightWeight, gap float64) ggui.Widget {
-	return &abreastWidget{left: left, right: right, lw: leftWeight, rw: rightWeight, gap: gap}
-}
-
-type abreastWidget struct {
-	left, right ggui.Widget
-	lw, rw, gap float64
-	split       float64 // the left one's width, as laid out
-}
-
-func (a *abreastWidget) Layout(c ggui.Constraints, env ggui.Env) ggui.Size {
-	room := max(0, c.MaxW-a.gap)
-	a.split = room * a.lw / (a.lw + a.rw)
-	widths := [2]float64{a.split, room - a.split}
-	kids := [2]ggui.Widget{a.left, a.right}
-	var tall float64
-	for i, k := range kids {
-		tall = max(tall, k.Layout(ggui.Constraints{MinW: widths[i], MaxW: widths[i], MaxH: c.MaxH}, env).H)
-	}
-	for i, k := range kids {
-		k.Layout(ggui.Constraints{MinW: widths[i], MaxW: widths[i], MinH: tall, MaxH: tall}, env)
-	}
-	return ggui.Sz(c.MaxW, tall)
-}
-
-func (a *abreastWidget) Paint(dst *ggui.Canvas, r ggui.Rect) {
-	dst.Paint(a.left, ggui.Rct(r.Origin, ggui.Sz(a.split, r.Size.H)))
-	x := a.split + a.gap
-	dst.Paint(a.right, ggui.Rct(ggui.Pt(r.Origin.X+x, r.Origin.Y), ggui.Sz(r.Size.W-x, r.Size.H)))
 }
 
 // tailPath shortens a long path to its end, which names the file: the

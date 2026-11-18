@@ -13,6 +13,7 @@ import (
 
 	"github.com/ironpark/ggfx"
 	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/i18n"
 	"github.com/ironpark/ggui/icons/lucide"
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/ui/icons"
@@ -32,11 +33,13 @@ var TitlebarHidden = runtime.GOOS == "darwin"
 
 // Build is the root of the window. It builds the window again when the
 // language changes: the words are chosen as the tree is built, and what
-// the user was doing lives in the model, which stays.
+// the user was doing lives in the model, which stays. The tree is given
+// the language's Localizer, which sets the language text is shaped in, and
+// the words of ggui's own controls.
 func Build(m *Model) ggui.Widget {
 	return ggui.View(m.Lang, func(lang string) ggui.Widget {
 		SetLanguage(lang)
-		return ggui.Provide(ggui.LanguageKey, lang, ui.ProvideStrings(controlStrings(lang), build(m)))
+		return i18n.Provide(localizer(lang), ui.ProvideStrings(controlStrings(lang), build(m)))
 	})
 }
 
@@ -343,6 +346,7 @@ func pullDialog(m *Model) ggui.Widget {
 	ggui.Watch(m.PullRef, func(string) { m.SearchTyped() })
 	ggui.Watch(m.PullOpen, func(bool) { m.SearchTyped() })
 	ggui.Watch(m.Pulling, func(bool) { m.SearchTyped() })
+	ggui.Watch(ggui.Debounced(m.searchWaiting(), searchDelay), m.searchPaused)
 	source := ggui.Bind(m.SearchSource, func(v registry.Source) {
 		m.UpdateSettings(func(s *storeSettings) { s.SearchRegistry = string(v) })
 		m.SearchTyped()
@@ -522,12 +526,16 @@ func volumeDialog(m *Model) ggui.Widget {
 	)
 }
 
+// quitText says what quitting with n sandboxes running does to them.
+func quitText(n int) string {
+	return trn(n, "%d sandbox is running. gvx has no daemon: sandboxes live only while gvx Desktop runs.",
+		"%d sandboxes are running. gvx has no daemon: sandboxes live only while gvx Desktop runs.")
+}
+
 func quitDialog(m *Model) ggui.Widget {
 	return ui.Dialog(m.QuitOpen, widget.Column(
 		ui.Heading(tr("Stop running sandboxes?")).Size(17),
-		ui.CaptionOf(ggui.Map(m.Running, func(n int) string {
-			return fmt.Sprintf(tr("%d sandbox(es) are running. gvx has no daemon: sandboxes live only while gvx Desktop runs."), n)
-		})),
+		ui.CaptionOf(ggui.Map(m.Running, quitText)),
 		widget.Row(
 			ui.Button(tr("Cancel"), func() { m.QuitOpen.Set(false) }).Outline(),
 			ui.Button(tr("Stop and quit"), func() {

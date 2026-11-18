@@ -1,14 +1,11 @@
 package ui
 
 import (
-	"fmt"
-	"os"
-	"os/exec"
-	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 
+	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/i18n"
 	"github.com/ironpark/ggui/ui"
 )
 
@@ -20,39 +17,45 @@ const (
 	LangKorean  = "ko"
 )
 
-// catalogs holds the translations of each language but English, keyed by
-// the English text.
-var catalogs = map[string]map[string]string{
-	LangKorean: korean,
+// localizers translates into each language, keyed by it. Each is fixed to
+// its language, a ggui.Const, so translating with it reads no state and
+// may happen on any goroutine. English, the source, needs no catalog.
+var localizers = map[string]*i18n.Localizer{
+	LangEnglish: i18n.New(ggui.Const(LangEnglish)),
+	LangKorean:  i18n.New(ggui.Const(LangKorean), korean),
 }
 
-// current is the catalog tr reads, nil for English. It is atomic because
-// toasts are worded from the goroutines that finish background work.
-var current atomic.Pointer[map[string]string]
+// current is the Localizer tr translates with. It is atomic because toasts
+// are worded from the goroutines that finish background work.
+var current atomic.Pointer[i18n.Localizer]
+
+func init() { current.Store(localizers[LangEnglish]) }
+
+// localizer returns the Localizer of lang, English's for a language the
+// app has no words for.
+func localizer(lang string) *i18n.Localizer {
+	if l, ok := localizers[lang]; ok {
+		return l
+	}
+	return localizers[LangEnglish]
+}
 
 // SetLanguage chooses the language tr answers in from then on. Build calls
 // it before it builds the window, so the tree is worded in one language.
-func SetLanguage(lang string) {
-	if c, ok := catalogs[lang]; ok {
-		current.Store(&c)
-		return
-	}
-	current.Store(nil)
-}
+func SetLanguage(lang string) { current.Store(localizer(lang)) }
 
 // tr returns the text of key in the current language, or key itself where
 // the language has no word for it. With args, key is a fmt format: a
-// translation reorders them with explicit indexes such as %[2]s.
-func tr(key string, args ...any) string {
-	if c := current.Load(); c != nil {
-		if v, ok := (*c)[key]; ok {
-			key = v
-		}
-	}
-	if len(args) == 0 {
-		return key
-	}
-	return fmt.Sprintf(key, args...)
+// translation reorders them with explicit indexes such as %[2]s, and in
+// Korean picks the particle after an argument ("%s{을/를}"). Without, the
+// text is returned as written. Pass args that are plain values: a reactive
+// one would be read, which only the UI goroutine may do.
+func tr(key string, args ...any) string { return current.Load().S(key, args...) }
+
+// trn is tr for a count: one is the English for n == 1, other for any
+// other n, and n is the first argument. A catalog words it under one.
+func trn(n int, one, other string, args ...any) string {
+	return current.Load().N(n, one, other, args...)
 }
 
 // T is tr for the menus and the tray, which main builds.
@@ -68,40 +71,12 @@ func ResolveLanguage(setting string) string {
 	return systemLanguage()
 }
 
+// systemLanguage is the first of the user's languages the app has words
+// for, English when none is. It is read once, so changing an unrelated
+// setting does not change the language under the user.
 var systemLanguage = sync.OnceValue(func() string {
-	for _, tag := range preferredLanguages() {
-		tag = strings.ToLower(tag)
-		switch {
-		case strings.HasPrefix(tag, "ko"):
-			return LangKorean
-		case strings.HasPrefix(tag, "en"):
-			return LangEnglish
-		}
-	}
-	return LangEnglish
+	return i18n.Match([]string{LangEnglish, LangKorean}, ggui.SystemLanguages())
 })
-
-// preferredLanguages lists the user's languages, most wanted first. macOS
-// keeps them in the user defaults, and an app opened from the Finder has
-// no LANG; elsewhere the locale variables say.
-func preferredLanguages() []string {
-	var tags []string
-	if runtime.GOOS == "darwin" {
-		if out, err := exec.Command("defaults", "read", "-g", "AppleLanguages").Output(); err == nil {
-			for _, f := range strings.FieldsFunc(string(out), func(r rune) bool {
-				return r == '(' || r == ')' || r == ',' || r == '"' || r == ' ' || r == '\n' || r == '\t'
-			}) {
-				tags = append(tags, f)
-			}
-		}
-	}
-	for _, k := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
-		if v := os.Getenv(k); v != "" && v != "C" && v != "POSIX" {
-			tags = append(tags, v)
-		}
-	}
-	return tags
-}
 
 // languageName is how the settings name a language: each in its own words,
 // so a reader finds theirs whatever the app is set to.

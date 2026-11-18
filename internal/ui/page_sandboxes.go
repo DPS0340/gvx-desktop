@@ -35,47 +35,40 @@ func sandboxesPage(m *Model) ggui.Widget {
 	}))
 	selected := ggui.Bind(m.Selected.Get, m.Select)
 
-	// The table is as tall as its rows until there are more than fit, and
-	// scrolls from then on, so the details below stay in reach.
-	const rowHeight, mostRows = 48, 6
-	crowded := ggui.Map(visible, func(rows []Row) bool { return len(rows) > mostRows })
-	table := ggui.View(crowded, func(scrolls bool) ggui.Widget {
-		t := ui.Table(visible, func(r Row) string { return r.Spec.ID },
-			ui.Col(tr("Status"), func(r ggui.Readable[Row]) ggui.Widget {
-				return ggui.View(ggui.Map(r, func(r Row) sandbox.State { return r.State }), statusLabel)
-			}).W(150),
-			ui.Col(tr("Name"), func(r ggui.Readable[Row]) ggui.Widget {
-				return widget.Column(
-					widget.TextOf(ggui.Map(r, func(r Row) string { return r.Spec.Name })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
-					ui.CaptionOf(ggui.Map(r, func(r Row) string { return r.Spec.Image })).Size(11).NoWrap().Ellipsis(),
-				).Gap(1)
-			}).Grow(2),
-			ui.Col(tr("Ports"), func(r ggui.Readable[Row]) ggui.Widget {
-				return ui.CaptionOf(ggui.Map(r, portsSummary)).Size(12).NoWrap().Ellipsis()
-			}).Grow(2),
-			ui.Col(tr("Uptime"), func(r ggui.Readable[Row]) ggui.Widget {
-				return ui.CaptionOf(ggui.Combine(r, m.Now, func(r Row, now time.Time) string {
-					if r.State.Status.Active() {
-						return uptime(r.State.StartedAt, now)
-					}
-					if !r.State.ExitedAt.IsZero() {
-						return tr("stopped %s", ago(r.State.ExitedAt, now))
-					}
-					return "—"
-				})).Size(12).NoWrap()
-			}).W(160),
-			ui.Col("", func(r ggui.Readable[Row]) ggui.Widget {
-				return ggui.View(r, func(r Row) ggui.Widget {
-					return widget.Row(sandboxQuickActions(m, r), rowMenu(m, r)).Gap(2).Justify(widget.JustifyEnd)
-				})
-			}).W(84).Identified("actions"),
-		).BindSelected(selected).RowName(func(r Row) string { return r.Spec.Name }).RowHeight(rowHeight)
-		if scrolls {
-			t.Height((mostRows + 1) * rowHeight)
-		}
-		return t
-	})
 	count := ggui.Combine(visible, m.Rows, func(v, all []Row) string { return showing(len(v), len(all)) })
+	// The table is as tall as its rows up to six, and scrolls past that, so
+	// the details below stay in reach.
+	table := ui.Table(visible, func(r Row) string { return r.Spec.ID },
+		ui.Col(tr("Status"), func(r ggui.Readable[Row]) ggui.Widget {
+			return ggui.View(ggui.Map(r, func(r Row) sandbox.State { return r.State }), statusLabel)
+		}).W(150),
+		ui.Col(tr("Name"), func(r ggui.Readable[Row]) ggui.Widget {
+			return widget.Column(
+				widget.TextOf(ggui.Map(r, func(r Row) string { return r.Spec.Name })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
+				ui.CaptionOf(ggui.Map(r, func(r Row) string { return r.Spec.Image })).Size(11).NoWrap().Ellipsis(),
+			).Gap(1)
+		}).Grow(2),
+		ui.Col(tr("Ports"), func(r ggui.Readable[Row]) ggui.Widget {
+			return ui.CaptionOf(ggui.Map(r, portsSummary)).Size(12).NoWrap().Ellipsis()
+		}).Grow(2),
+		ui.Col(tr("Uptime"), func(r ggui.Readable[Row]) ggui.Widget {
+			return ui.CaptionOf(ggui.Combine(r, m.Now, func(r Row, now time.Time) string {
+				if r.State.Status.Active() {
+					return uptime(r.State.StartedAt, now)
+				}
+				if !r.State.ExitedAt.IsZero() {
+					return tr("stopped %s", ago(r.State.ExitedAt, now))
+				}
+				return "—"
+			})).Size(12).NoWrap()
+		}).W(160),
+		ui.Col("", func(r ggui.Readable[Row]) ggui.Widget {
+			return ggui.View(r, func(r Row) ggui.Widget {
+				return widget.Row(sandboxQuickActions(m, r), rowMenu(m, r)).Gap(2).Justify(widget.JustifyEnd)
+			})
+		}).W(84).Identified("actions"),
+	).BindSelected(selected).RowName(func(r Row) string { return r.Spec.Name }).RowHeight(48).MaxRows(6).
+		Toolbar(filterBar(m.Query, tr("Filter by name or image"), count))
 
 	empty := ui.Empty(tr("No sandboxes"), tr("A sandbox runs one OCI image in its own unprivileged process. Create one, or start the Docker Engine or Kubernetes recipe.")).
 		Media(glyph(lucide.Box, 32).Color(colorGray)).
@@ -86,7 +79,7 @@ func sandboxesPage(m *Model) ggui.Widget {
 
 	list := ggui.If(ggui.Map(m.Specs, func(s []sandbox.Spec) bool { return len(s) > 0 }), func() ggui.Widget {
 		return widget.Column(
-			tableCard(table, filterBar(m.Query, tr("Filter by name or image"), count)),
+			tableCard(table),
 			detailPanel(m),
 		).Gap(16).Stretch()
 	}).Else(func() ggui.Widget { return empty })
@@ -207,7 +200,7 @@ func detailHeader(m *Model, r Row) ggui.Widget {
 		if st.Advice != "" {
 			desc = st.Advice + "\n" + st.Error
 		}
-		problem = ui.Alert(fmt.Sprintf(tr("Exited with code %d"), st.ExitCode), desc).Destructive().Icon(icons.Alert)
+		problem = ui.Alert(tr("Exited with code %d", st.ExitCode), desc).Destructive().Icon(icons.Alert)
 	}
 	return widget.Column(
 		widget.Responsive(680,
@@ -321,9 +314,9 @@ func connectView(m *Model, r Row) ggui.Widget {
 }
 
 func dockerConnect(m *Model, r Row) ggui.Widget {
-	host := recipes.DockerHost()
+	host := m.DockerHost()
 	ready := r.State.Status == sandbox.Running
-	_, hasCLI := DockerCLI()
+	_, hasCLI := m.DockerCLI()
 	status := tr("Start the sandbox, then point the docker CLI at it.")
 	if ready {
 		status = tr("dockerd is listening. The docker CLI on this machine can use it.")

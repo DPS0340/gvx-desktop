@@ -2,6 +2,7 @@ package ui
 
 import (
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/ironpark/ggui"
@@ -115,6 +116,7 @@ func settingsPage(m *Model) ggui.Widget {
 				tr("How long a sandbox gets to exit after an interrupt before it is killed."),
 				widget.Box(ui.NumberInput(timeout).Name(tr("Stop timeout"))).Width(120)),
 		),
+		dockerSettings(m),
 		settingsGroup(lucide.Cpu, tr("Engine"),
 			settingField(tr("rungv path"), tr("Leave empty to search $GVX_RUNGV, PATH, ~/.gvx/bin and the app's own folder."), widget.Row(
 				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, ~/.gvx/bin, next to the app)")).Name(tr("rungv path")).
@@ -273,4 +275,77 @@ func themeIcon(theme string) *icons.Widget {
 		return glyph(lucide.Moon, 14)
 	}
 	return glyph(lucide.Monitor, 14)
+}
+
+// dockerSettings chooses the docker command the app runs and how the
+// Docker Engine recipe publishes its API.
+func dockerSettings(m *Model) ggui.Widget {
+	path := ggui.State(ggui.Peek(m.Settings).DockerPath)
+	setPath := func(v string) { m.UpdateSettings(func(s *storeSettings) { s.DockerPath = strings.TrimSpace(v) }) }
+	found := ui.CaptionOf(ggui.Map(m.Settings, func(s storeSettings) string {
+		p, ok := m.DockerCLI()
+		switch {
+		case ok:
+			return tr("Using %s.", tildePath(p))
+		case strings.TrimSpace(s.DockerPath) != "":
+			return tr("Nothing is at that path.")
+		}
+		return tr("docker was not found. Install the Docker CLI alone; no local engine is needed.")
+	}))
+
+	endpoint := ggui.Bind(func() string {
+		m.Settings.Get() // follows the setting; the sandbox's own port is what counts
+		m.Rows.Get()
+		if m.DockerAPI().TCP {
+			return DockerTCPEndpoint
+		}
+		return DockerSocketEndpoint
+	}, func(v string) {
+		api := m.DockerAPI()
+		api.TCP = v == DockerTCPEndpoint
+		m.SetDockerAPI(api)
+	})
+	port := ggui.State(strconv.Itoa(m.DockerAPI().Port))
+	setPort := func(v string) {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || n < 1 || n > 65535 {
+			port.Set(strconv.Itoa(m.DockerAPI().Port)) // not a port: put back what holds
+			return
+		}
+		api := m.DockerAPI()
+		api.Port = n
+		m.SetDockerAPI(api)
+	}
+	overTCP := ggui.Map(endpoint, func(v string) bool { return v == DockerTCPEndpoint })
+	host := ui.CaptionOf(ggui.Map(endpoint, func(string) string { return tr("DOCKER_HOST is %s.", m.DockerHost()) }))
+
+	return settingsGroup(lucide.Container, "Docker",
+		settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Column(
+			widget.Row(
+				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, Homebrew, Docker Desktop)")).Name(tr("docker path")).OnCommit(setPath)),
+				ui.Button(tr("Browse…"), func() { browseFile(m, path, setPath) }).Outline(),
+			).Gap(8),
+			found,
+		).Gap(6).Stretch()),
+		widget.Column(
+			settingRow(tr("Engine API"),
+				tr("How the Docker Engine recipe is reached. A running engine moves when it is restarted."),
+				widget.Row(
+					ggui.If(overTCP, func() ggui.Widget {
+						return widget.Box(ui.TextField(port).Name(tr("Docker API port")).OnCommit(setPort)).Width(84)
+					}),
+					ui.ToggleGroup(endpoint).Options([]string{DockerSocketEndpoint, DockerTCPEndpoint}).Format(dockerEndpointName).Outline().Spacing(0).Name(tr("Engine API")),
+				).Gap(8).Align(widget.AlignCenter)),
+			ui.Caption(tr("A Docker CLI on Windows reaches a Unix socket only from version 29 on. TCP on this computer's loopback address works with any version, on every system.")),
+			host,
+		).Gap(6).Stretch(),
+	)
+}
+
+// dockerEndpointName words an endpoint of the Docker Engine's API.
+func dockerEndpointName(v string) string {
+	if v == DockerTCPEndpoint {
+		return "TCP"
+	}
+	return tr("Unix socket")
 }

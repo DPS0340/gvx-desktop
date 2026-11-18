@@ -3,8 +3,11 @@
 package recipes
 
 import (
+	"fmt"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -19,31 +22,120 @@ const (
 // DockerSocket is the host socket the Docker Engine recipe publishes.
 func DockerSocket() string { return rungv.ExpandHome("~/.gvx/docker.sock") }
 
-// DockerHost is the DOCKER_HOST value that reaches the recipe's engine.
-func DockerHost() string {
-	if runtime.GOOS == "windows" {
-		return "tcp://127.0.0.1:2375"
+// dockerGuestPort is where dockerd listens inside the sandbox.
+const dockerGuestPort = 2375
+
+// DefaultDockerPort is the host port the engine's API takes over TCP.
+const DefaultDockerPort = 2375
+
+// DockerAPI is how the recipe's engine is reached from the host: through
+// the Unix socket ~/.gvx/docker.sock, or over TCP on a port of the
+// loopback address. A Docker CLI on Windows reaches a Unix socket only
+// from version 29 on; TCP works with any, on every system.
+type DockerAPI struct {
+	TCP  bool
+	Port int // the host port, for TCP
+}
+
+// DefaultDockerAPI is the socket where sockets serve every CLI, and TCP on
+// Windows.
+func DefaultDockerAPI() DockerAPI {
+	return DockerAPI{TCP: runtime.GOOS == "windows", Port: DefaultDockerPort}
+}
+
+func (a DockerAPI) port() int {
+	if a.Port <= 0 || a.Port > 65535 {
+		return DefaultDockerPort
+	}
+	return a.Port
+}
+
+// Publish is the sandbox's published port that carries the API.
+func (a DockerAPI) Publish() string {
+	if a.TCP {
+		return fmt.Sprintf("127.0.0.1:%d:%d", a.port(), dockerGuestPort)
+	}
+	return fmt.Sprintf("unix:~/.gvx/docker.sock:%d", dockerGuestPort)
+}
+
+// Host is the DOCKER_HOST value that reaches the engine.
+func (a DockerAPI) Host() string {
+	if a.TCP {
+		return fmt.Sprintf("tcp://127.0.0.1:%d", a.port())
 	}
 	return "unix://" + filepath.ToSlash(DockerSocket())
 }
 
-// DockerEngine runs an unmodified dockerd in a sandbox with its data in the
-// ext4lite volume gvx-docker, its API on ~/.gvx/docker.sock and the host
-// ports 9000-9019 published for the containers it runs
-// (docs/recipes/docker-engine.md).
-func DockerEngine() sandbox.Spec {
-	api := "unix:~/.gvx/docker.sock:2375"
-	if runtime.GOOS == "windows" {
-		// A unix:// host needs Docker CLI 29 on Windows; TCP works with any.
-		api = "127.0.0.1:2375:2375"
+// DockerHost is the DOCKER_HOST value that reaches an engine made with the
+// defaults.
+func DockerHost() string { return DefaultDockerAPI().Host() }
+
+// isDockerAPI reports whether a published port carries the engine's API,
+// and how.
+func isDockerAPI(port string) (DockerAPI, bool) {
+	parts := strings.Split(port, ":")
+	if len(parts) < 2 || parts[len(parts)-1] != strconv.Itoa(dockerGuestPort) {
+		return DockerAPI{}, false
 	}
+	if parts[0] == "unix" {
+		return DockerAPI{Port: DefaultDockerPort}, true
+	}
+	host, err := strconv.Atoi(parts[len(parts)-2])
+	if err != nil {
+		return DockerAPI{}, false
+	}
+	return DockerAPI{TCP: true, Port: host}, true
+}
+
+// DockerAPIOf reads from an engine's sandbox how its API is published,
+// which is what counts once the sandbox exists: its ports are its own.
+func DockerAPIOf(spec sandbox.Spec) (DockerAPI, bool) {
+	for _, p := range spec.Ports {
+		if api, ok := isDockerAPI(p); ok {
+			return api, true
+		}
+	}
+	return DockerAPI{}, false
+}
+
+// WithDockerAPI returns the engine's sandbox publishing its API as api
+// says, its other ports untouched. The change takes a restart: a sandbox's
+// ports are fixed when it starts.
+func WithDockerAPI(spec sandbox.Spec, api DockerAPI) sandbox.Spec {
+	ports := make([]string, 0, len(spec.Ports)+1)
+	placed := false
+	for _, p := range spec.Ports {
+		if _, ok := isDockerAPI(p); ok {
+			if !placed {
+				ports = append(ports, api.Publish())
+				placed = true
+			}
+			continue
+		}
+		ports = append(ports, p)
+	}
+	if !placed {
+		ports = append([]string{api.Publish()}, ports...)
+	}
+	spec.Ports = ports
+	return spec
+}
+
+// DockerEngine runs an unmodified dockerd in a sandbox with its data in the
+// ext4lite volume gvx-docker, its API on ~/.gvx/docker.sock (TCP on
+// Windows) and the host ports 9000-9019 published for the containers it
+// runs (docs/recipes/docker-engine.md).
+func DockerEngine() sandbox.Spec { return DockerEngineWith(DefaultDockerAPI()) }
+
+// DockerEngineWith is DockerEngine with its API published as api says.
+func DockerEngineWith(api DockerAPI) sandbox.Spec {
 	return sandbox.Spec{
 		ID:           sandbox.NewID(),
 		Name:         "docker-engine",
 		Image:        "docker:dind",
 		Command:      "--tls=false",
 		Env:          []string{"DOCKER_TLS_CERTDIR="},
-		Ports:        []string{api, "127.0.0.1:9000-9019:9000-9019"},
+		Ports:        []string{api.Publish(), "127.0.0.1:9000-9019:9000-9019"},
 		Mounts:       []sandbox.Mount{{Type: sandbox.MountVolume, Source: "gvx-docker", Target: "/var/lib/docker"}},
 		Recipe:       Docker,
 		ReadyPattern: "API listen on",

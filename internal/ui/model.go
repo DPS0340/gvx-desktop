@@ -558,7 +558,11 @@ func (m *Model) announce(e sandbox.Event) {
 func readyText(s sandbox.Spec) string {
 	switch s.Recipe {
 	case recipes.Docker:
-		return tr("The Docker Engine accepts connections on %s.", recipes.DockerHost())
+		api, ok := recipes.DockerAPIOf(s)
+		if !ok {
+			api = recipes.DefaultDockerAPI()
+		}
+		return tr("The Docker Engine accepts connections on %s.", api.Host())
 	case recipes.Kubernetes:
 		return tr("kubectl can reach the cluster with KUBECONFIG=%s.", recipes.Kubeconfig())
 	}
@@ -805,7 +809,7 @@ func (m *Model) CreateFromRecipe(key string) {
 	var spec sandbox.Spec
 	switch key {
 	case recipes.Docker:
-		spec = recipes.DockerEngine()
+		spec = recipes.DockerEngineWith(m.dockerSetting())
 	case recipes.Kubernetes:
 		spec = recipes.KubernetesNode()
 	default:

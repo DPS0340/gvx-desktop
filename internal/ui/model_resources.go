@@ -413,49 +413,14 @@ func (m *Model) followDocker() {
 	if m.Offline {
 		return
 	}
-	every := ggui.Derived(func() time.Duration {
-		row, ok := m.RecipeSandbox(m.Rows.Get(), recipes.Docker)
-		switch {
-		case !ok || row.State.Status != sandbox.Running:
-			return 0
-		case m.Page.Get() == PageDocker || m.Page.Get() == PageContainers:
-			return 3 * time.Second
-		}
-		return 10 * time.Second
-	})
+	every := ggui.Derived(func() time.Duration { return m.recipePageInterval(recipes.Docker, PageDocker, PageContainers) })
 	logs := ggui.Derived(m.followsContainerLogs)
-	tick := func() {
+	m.poll(every, m.LoadDocker, func() {
 		m.LoadDocker()
 		if ggui.Peek(logs) {
 			m.LoadContainerLogs()
 		}
-	}
-	ggui.Effect(func() ggui.Cleanup {
-		d := every.Get()
-		// At once, too: the engine has just come up or stopped, or the page
-		// has just opened.
-		m.post(m.LoadDocker)
-		if d == 0 {
-			return nil
-		}
-		stop := make(chan struct{})
-		go func() {
-			t := time.NewTicker(d)
-			defer t.Stop()
-			for {
-				select {
-				case <-stop:
-					return
-				case <-t.C:
-					m.post(tick)
-				}
-			}
-		}()
-		return func() { close(stop) }
 	})
-	// A container's logs are read when they come on screen, and when
-	// another container's take their place; with no container left, as when
-	// the engine stops, the lines go.
 	id := ggui.Map(m.Container, func(c dockerapi.Container) string { return c.ID })
 	shown := ggui.Combine(logs, id, func(on bool, id string) string {
 		if !on {
@@ -463,16 +428,7 @@ func (m *Model) followDocker() {
 		}
 		return id
 	})
-	ggui.Watch(shown, func(shown string) {
-		if shown != "" {
-			m.LoadContainerLogs()
-		}
-	})
-	ggui.Watch(id, func(id string) {
-		if id == "" {
-			m.ContainerLogs.Set(ContainerLogs{})
-		}
-	})
+	m.followLogs(shown, id, m.LoadContainerLogs, m.ContainerLogs)
 }
 
 // followLinks asks docker and kubectl about their contexts at the start,

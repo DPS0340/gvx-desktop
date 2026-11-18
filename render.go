@@ -15,6 +15,7 @@ import (
 	"github.com/ironpark/ggwd"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
@@ -59,6 +60,26 @@ func renderAll(tmp, out, lang string) error {
 		{"containers-stopped", func(m *ui.Model) {
 			m.Go(ui.PageContainers)
 			stopEngine(m)
+		}},
+		{"pods-logs", func(m *ui.Model) { m.Go(ui.PagePods); m.PodDetail.Set(0) }},
+		{"pods-info", func(m *ui.Model) { m.Go(ui.PagePods); m.PodDetail.Set(1) }},
+		// The system's pods shown, the first of them chosen.
+		{"pods-system", func(m *ui.Model) {
+			m.Go(ui.PagePods)
+			m.SystemPods.Set(true)
+			m.SelectPod("kube-system/local-path-provisioner-5cf85fd84d-x7k2p")
+			m.PodDetail.Set(1)
+		}},
+		// k3s is up and its API server has yet to answer.
+		{"pods-starting", func(m *ui.Model) {
+			m.Go(ui.PagePods)
+			m.PodsWaiting.Set(true)
+			m.Pods.Set(ui.Listing[kubeapi.Pod]{})
+		}},
+		// The cluster stopped while its pods were on screen.
+		{"pods-stopped", func(m *ui.Model) {
+			m.Go(ui.PagePods)
+			stopCluster(m)
 		}},
 		{"images", func(m *ui.Model) { m.Page.Set(ui.PageImages) }},
 		{"volumes", func(m *ui.Model) { m.Page.Set(ui.PageVolumes) }},
@@ -166,7 +187,8 @@ func demoState(m *ui.Model, now time.Time) {
 		demoIDs[1]: {Status: sandbox.Running, PID: 41301, StartedAt: now.Add(-3*time.Hour - 12*time.Minute), Platform: "hvf",
 			Ports: []sandbox.PublishedPort{{Host: "/Users/me/.gvx/docker.sock", Guest: 2375, Proto: "tcp"},
 				{Host: "127.0.0.1:9000", Guest: 9000, Proto: "tcp"}, {Host: "127.0.0.1:9001", Guest: 9001, Proto: "tcp"}}},
-		demoIDs[2]: {Status: sandbox.Starting, PID: 41377, StartedAt: now.Add(-40 * time.Second), Platform: "hvf"},
+		demoIDs[2]: {Status: sandbox.Running, PID: 41377, StartedAt: now.Add(-2*time.Hour - 10*time.Minute), Platform: "hvf",
+			Ports: []sandbox.PublishedPort{{Host: "127.0.0.1:6443", Guest: 6443, Proto: "tcp"}, {Host: "127.0.0.1:30000", Guest: 30000, Proto: "tcp"}}},
 		demoIDs[3]: {Status: sandbox.Failed, ExitCode: 1, ExitedAt: now.Add(-5 * time.Minute),
 			Error:  "rungv run: listen tcp 127.0.0.1:5432: bind: address already in use",
 			Advice: rungv.Diagnose("address already in use", 1)},
@@ -219,6 +241,103 @@ func demoState(m *ui.Model, now time.Time) {
 	m.DockerVersion.Set(dockerapi.Version{Version: "29.9.3", APIVersion: "1.56", OS: "linux", Arch: "arm64", KernelVersion: "4.19.0-gvisor"})
 	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{Loaded: true, Items: demoContainers()})
 	m.ContainerLogs.Set(demoContainerLogs(now))
+	m.KubeconfigReady.Set(true)
+	m.Pods.Set(ui.Listing[kubeapi.Pod]{Loaded: true, Items: demoPods(now)})
+	m.SelectPod("default/web-7d4b9c8f6d-2m9qz")
+	m.PodLogs.Set(demoPodLogs(now))
+}
+
+// stopCluster stops the demo's k3s cluster, as its sandbox and the model
+// would tell it.
+func stopCluster(m *ui.Model) {
+	states := maps.Clone(ggui.Peek(m.States))
+	states[demoIDs[2]] = sandbox.State{Status: sandbox.Stopped, ExitedAt: ggui.Peek(m.Now).Add(-time.Minute)}
+	m.States.Set(states)
+	m.Pods.Set(ui.Listing[kubeapi.Pod]{})
+	m.PodLogs.Set(ui.ContainerLogs{})
+}
+
+// demoPods are the demo cluster's: k3s's own in kube-system (traefik and
+// servicelb are off in the recipe), a Deployment of two replicas, one
+// that crashes, a Job that is done, and a StatefulSet.
+func demoPods(now time.Time) []kubeapi.Pod {
+	up := now.Add(-2 * time.Hour)
+	running := kubeapi.ContainerState{Running: &kubeapi.Running{Started: up}}
+	ready := []kubeapi.Condition{{Type: "Initialized", Status: "True"}, {Type: "Ready", Status: "True"}, {Type: "PodScheduled", Status: "True"}}
+	ctr := func(name, image string) kubeapi.Container { return kubeapi.Container{Name: name, Image: image} }
+	pod := func(ns, name, kind, owner, hash string, created time.Time, ip string, spec []kubeapi.Container, st kubeapi.PodStatus) kubeapi.Pod {
+		labels := map[string]string{}
+		if hash != "" {
+			labels["pod-template-hash"] = hash
+		}
+		p := kubeapi.Pod{
+			Metadata: kubeapi.Meta{Namespace: ns, Name: name, Created: created, Labels: labels},
+			Spec:     kubeapi.PodSpec{Node: "k3s", Containers: spec},
+			Status:   st,
+		}
+		if kind != "" {
+			p.Metadata.Owners = []kubeapi.OwnerRef{{Kind: kind, Name: owner, Controller: true}}
+		}
+		p.Status.PodIP = ip
+		return p
+	}
+	ok := func(names ...string) kubeapi.PodStatus {
+		st := kubeapi.PodStatus{Phase: "Running", Conditions: ready}
+		for _, n := range names {
+			st.Containers = append(st.Containers, kubeapi.ContainerStatus{Name: n, Ready: true, State: running})
+		}
+		return st
+	}
+	cluster := up.Add(-3 * 24 * time.Hour)
+	sys := func(name, owner, hash, image, ip string) kubeapi.Pod {
+		return pod("kube-system", name, "ReplicaSet", owner+"-"+hash, hash, cluster, ip, []kubeapi.Container{ctr(owner, image)}, ok(owner))
+	}
+	web := func(name, ip string) kubeapi.Pod {
+		p := pod("default", name, "ReplicaSet", "web-7d4b9c8f6d", "7d4b9c8f6d", up.Add(-20*time.Minute), ip,
+			[]kubeapi.Container{ctr("web", "nginx:alpine"), ctr("exporter", "nginx/nginx-prometheus-exporter:1.4")}, ok("web", "exporter"))
+		p.Metadata.Labels["app"] = "web"
+		return p
+	}
+	api := pod("default", "api-6f8d5b7c9-r2xwl", "ReplicaSet", "api-6f8d5b7c9", "6f8d5b7c9", now.Add(-25*time.Minute), "10.42.0.17",
+		[]kubeapi.Container{ctr("api", "ghcr.io/acme/api:dev")}, kubeapi.PodStatus{Phase: "Running",
+			Conditions: []kubeapi.Condition{{Type: "Ready", Status: "False", Reason: "ContainersNotReady"}},
+			Containers: []kubeapi.ContainerStatus{{Name: "api", Restarts: 6,
+				State: kubeapi.ContainerState{Waiting: &kubeapi.Waiting{Reason: "CrashLoopBackOff",
+					Message: "back-off 5m0s restarting failed container=api pod=api-6f8d5b7c9-r2xwl_default"}},
+				Last: kubeapi.ContainerState{Terminated: &kubeapi.Terminated{Reason: "Error", ExitCode: 1, Finished: now.Add(-3 * time.Minute)}}}}})
+	api.Metadata.Labels["app"] = "api"
+	migrate := pod("default", "migrate-db-8xq4v", "Job", "migrate-db", "", up.Add(-15*time.Minute), "",
+		[]kubeapi.Container{ctr("migrate", "app:dev")}, kubeapi.PodStatus{Phase: "Succeeded",
+			Containers: []kubeapi.ContainerStatus{{Name: "migrate",
+				State: kubeapi.ContainerState{Terminated: &kubeapi.Terminated{Reason: "Completed", Finished: up.Add(-14 * time.Minute)}}}}})
+	redis := pod("shop", "redis-0", "StatefulSet", "redis", "", up.Add(-30*time.Minute), "10.42.0.9",
+		[]kubeapi.Container{ctr("redis", "redis:7-alpine")}, ok("redis"))
+	return []kubeapi.Pod{
+		api, migrate, web("web-7d4b9c8f6d-2m9qz", "10.42.0.14"), web("web-7d4b9c8f6d-hv5tc", "10.42.0.15"), redis,
+		sys("coredns-ccb96694c-7xk2m", "coredns", "ccb96694c", "rancher/mirrored-coredns-coredns:1.12.0", "10.42.0.2"),
+		sys("local-path-provisioner-5cf85fd84d-x7k2p", "local-path-provisioner", "5cf85fd84d", "rancher/local-path-provisioner:v0.0.30", "10.42.0.3"),
+		sys("metrics-server-5985cbc9d7-q4n8w", "metrics-server", "5985cbc9d7", "rancher/mirrored-metrics-server:v0.7.2", "10.42.0.4"),
+	}
+}
+
+// demoPodLogs is what the web container of the demo's first web pod wrote.
+func demoPodLogs(now time.Time) ui.ContainerLogs {
+	text := []string{
+		"/docker-entrypoint.sh: Configuration complete; ready for start up",
+		"2026/11/16 06:10:02 [notice] 1#1: nginx/1.31.8",
+		"2026/11/16 06:10:02 [notice] 1#1: start worker processes",
+		`10.42.0.1 - - [16/Nov/2026:06:12:44 +0000] "GET / HTTP/1.1" 200 615 "-" "kube-probe/1.31" "-"`,
+		`10.42.0.17 - - [16/Nov/2026:06:14:09 +0000] "GET /api/health HTTP/1.1" 502 157 "-" "curl/8.7.1" "-"`,
+		`10.42.0.1 - - [16/Nov/2026:06:15:44 +0000] "GET / HTTP/1.1" 200 615 "-" "kube-probe/1.31" "-"`,
+		`127.0.0.1 - - [16/Nov/2026:06:18:30 +0000] "GET /stub_status HTTP/1.1" 200 97 "-" "NGINX-Prometheus-Exporter/v1.4.0" "-"`,
+		`10.42.0.1 - - [16/Nov/2026:06:18:44 +0000] "GET / HTTP/1.1" 200 615 "-" "kube-probe/1.31" "-"`,
+	}
+	l := ui.ContainerLogs{ID: "default/web-7d4b9c8f6d-2m9qz/web", Loaded: true}
+	start := now.Add(-20 * time.Minute)
+	for i, t := range text {
+		l.Lines = append(l.Lines, sandbox.LogLine{Seq: int64(i + 1), Time: start.Add(time.Duration(i) * 2 * time.Minute), Stream: sandbox.Stdout, Text: t})
+	}
+	return l
 }
 
 // stopEngine stops the demo's Docker Engine, as its sandbox and the model

@@ -1,0 +1,53 @@
+{
+    "kind": "Config",
+    "apiVersion": "v1",
+    "clusters": [
+        {
+            "name": "default",
+            "cluster": {
+                "server": "https://127.0.0.1:6443",
+                "certificate-authority-data": "Q0EgUEVNCg=="
+            }
+        },
+        {
+            "name": "named",
+            "cluster": {
+                "server": "https://localhost:6443",
+                "tls-server-name": "kubernetes"
+            }
+        }
+    ],
+    "users": [
+        {
+            "name": "default",
+            "user": {
+                "client-certificate-data": "Q0VSVCBQRU0K",
+                "client-key-data": "S0VZIFBFTQo="
+            }
+        },
+        {
+            "name": "token-user",
+            "user": {
+                "token": "abc.def#1"
+            }
+        }
+    ],
+    "contexts": [
+        {
+            "name": "default",
+            "context": {
+                "cluster": "default",
+                "user": "default"
+            }
+        },
+        {
+            "name": "token",
+            "context": {
+                "cluster": "named",
+                "user": "token-user",
+                "namespace": "dev"
+            }
+        }
+    ],
+    "current-context": "default"
+}

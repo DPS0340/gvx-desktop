@@ -15,6 +15,7 @@ import (
 	"github.com/ironpark/ggui/ui"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/registry"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -27,6 +28,7 @@ const (
 	PageDashboard  = "dashboard"
 	PageSandboxes  = "sandboxes"
 	PageContainers = "containers"
+	PagePods       = "pods"
 	PageImages     = "images"
 	PageVolumes    = "volumes"
 	PageSnapshots  = "snapshots"
@@ -132,6 +134,28 @@ type Model struct {
 	ContainerDetail   *ggui.StateValue[int]
 	ContainerLogs     *ggui.StateValue[ContainerLogs]
 	KubeconfigReady   *ggui.StateValue[bool]
+	// Pods are the k3s cluster's, and PodsWaiting says its sandbox runs
+	// and its API server has yet to answer: k3s is still coming up.
+	Pods        *ggui.StateValue[Listing[kubeapi.Pod]]
+	PodsWaiting *ggui.StateValue[bool]
+	// PodsAccess says whether the Pods page can be used, which is while
+	// the cluster's sandbox runs, and PodsOpen is its yes.
+	PodsAccess *ggui.DerivedValue[PodsAccess]
+	PodsOpen   *ggui.DerivedValue[bool]
+	// RunningPods counts the cluster's running pods.
+	RunningPods *ggui.DerivedValue[int]
+	// The Pods page: what filters its table, whether it shows the system's
+	// pods, the pod chosen in it (namespace/name), which is the first shown
+	// when none is, the tab of its details, the container whose logs show,
+	// as chosen and as it is, and the last lines of those.
+	PodQuery        *ggui.StateValue[string]
+	SystemPods      *ggui.StateValue[bool]
+	SelectedPod     *ggui.StateValue[string]
+	Pod             *ggui.DerivedValue[kubeapi.Pod]
+	PodDetail       *ggui.StateValue[int]
+	PodContainer    *ggui.StateValue[string]
+	PodLogContainer *ggui.DerivedValue[string]
+	PodLogs         *ggui.StateValue[ContainerLogs]
 	// DockerEndpoint is the DOCKER_HOST value that reaches the Docker
 	// Engine, as DockerHost says it.
 	DockerEndpoint *ggui.DerivedValue[string]
@@ -191,9 +215,12 @@ type Model struct {
 	logSeq    int64
 	quitting  bool
 
-	runCLI                     cliRunner // runs docker and kubectl; tests replace it
-	dockerLoading, dockerAgain bool      // LoadDocker runs; it is wanted again after
-	logsLoading, logsAgain     bool      // LoadContainerLogs runs; it is wanted again after
+	runCLI                       cliRunner // runs docker and kubectl; tests replace it
+	dockerLoading, dockerAgain   bool      // LoadDocker runs; it is wanted again after
+	logsLoading, logsAgain       bool      // LoadContainerLogs runs; it is wanted again after
+	podsLoading, podsAgain       bool      // LoadPods runs; it is wanted again after
+	podLogsLoading, podLogsAgain bool      // LoadPodLogs runs; it is wanted again after
+	podsAnswered                 bool      // the cluster's API server answered since it started
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -232,6 +259,14 @@ func NewModel(st store.Store, dataDir string) *Model {
 		ContainerDetail:   ggui.State(0),
 		ContainerLogs:     ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
 		KubeconfigReady:   ggui.State(false),
+		Pods:              ggui.State(Listing[kubeapi.Pod]{}).WithEqual(podsEqual),
+		PodsWaiting:       ggui.State(false),
+		PodQuery:          ggui.State(""),
+		SystemPods:        ggui.State(false),
+		SelectedPod:       ggui.State(""),
+		PodDetail:         ggui.State(0),
+		PodContainer:      ggui.State(""),
+		PodLogs:           ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
 		LinkCommandsOpen:  ggui.State(false),
 
 		EditorOpen: ggui.State(false),
@@ -299,8 +334,18 @@ func NewModel(st store.Store, dataDir string) *Model {
 	m.Container = ggui.Combine(m.DockerContainers, m.SelectedContainer, func(l Listing[dockerapi.Container], id string) dockerapi.Container {
 		return chosenContainer(l.Items, id)
 	}).WithEqual(dockerapi.Container.Equal)
+	m.PodsAccess = ggui.Map(m.Rows, podsAccess)
+	m.PodsOpen = ggui.Map(m.PodsAccess, func(a PodsAccess) bool { return a == PodsOpen })
+	m.RunningPods = ggui.Map(m.Pods, func(l Listing[kubeapi.Pod]) int {
+		running, _, _ := podCounts(l.Items)
+		return running
+	})
+	m.Pod = ggui.Derived(func() kubeapi.Pod {
+		return chosenPod(userPods(m.Pods.Get().Items, m.SystemPods.Get()), m.SelectedPod.Get())
+	}).WithEqual(kubeapi.Pod.Equal)
+	m.PodLogContainer = ggui.Combine(m.Pod, m.PodContainer, podLogContainer)
 	m.Menus = ggui.Derived(func() MenuState {
-		return menuState(m.Rows.Get(), m.DockerContainers.Get(), m.DockerLink.View.Get(), m.KubeLink.View.Get())
+		return menuState(m.Rows.Get(), m.DockerContainers.Get(), m.Pods.Get(), m.PodsWaiting.Get(), m.DockerLink.View.Get(), m.KubeLink.View.Get())
 	}).WithEqual(MenuState.Equal)
 	m.Running = m.States.Map(func(states map[string]sandbox.State) int {
 		n := 0
@@ -435,9 +480,11 @@ func (m *Model) RunConfirmed() {
 }
 
 // Go switches the page. The Containers page opens only while the Docker
-// Engine runs, as the sidebar and the menus that lead there say.
+// Engine runs, and the Pods page only while the cluster does, as the
+// sidebar and the menus that lead there say.
 func (m *Model) Go(page string) {
-	if page == PageContainers && ggui.Peek(m.ContainersAccess) != ContainersOpen {
+	if page == PageContainers && ggui.Peek(m.ContainersAccess) != ContainersOpen ||
+		page == PagePods && ggui.Peek(m.PodsAccess) != PodsOpen {
 		return
 	}
 	m.Page.Set(page)
@@ -454,6 +501,9 @@ func (m *Model) Go(page string) {
 		m.LoadDocker()
 	case PageKubernetes:
 		m.CheckKubeconfig()
+		m.LoadPods()
+	case PagePods:
+		m.LoadPods()
 	}
 }
 
@@ -475,6 +525,7 @@ func (m *Model) Start() {
 		}
 	})
 	m.followDocker()
+	m.followPods()
 	m.followLinks()
 	// A registration to start at login names the program; one that has
 	// moved since is named again.

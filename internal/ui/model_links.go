@@ -15,6 +15,7 @@ import (
 
 	"github.com/ironpark/ggui"
 
+	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -495,67 +496,9 @@ func (m *Model) dockerWrite() linkWrite {
 
 // kubeconfig is what kubectl config view --raw -o json writes: the
 // configuration in JSON, its certificates and keys in base64.
-type kubeconfig struct {
-	Clusters []struct {
-		Name    string `json:"name"`
-		Cluster struct {
-			Server string `json:"server"`
-			CA     string `json:"certificate-authority-data"`
-		} `json:"cluster"`
-	} `json:"clusters"`
-	Users []struct {
-		Name string `json:"name"`
-		User struct {
-			Cert  string `json:"client-certificate-data"`
-			Key   string `json:"client-key-data"`
-			Token string `json:"token"`
-		} `json:"user"`
-	} `json:"users"`
-	Contexts []struct {
-		Name    string `json:"name"`
-		Context struct {
-			Cluster string `json:"cluster"`
-			User    string `json:"user"`
-		} `json:"context"`
-	} `json:"contexts"`
-	Current string `json:"current-context"`
-}
+type kubeconfig = kubeapi.Config
 
-// kubeEntry is a context with its cluster and user, as one.
-type kubeEntry struct {
-	Server, CA, Cert, Key, Token string
-}
-
-// entry is the context named name, or the current one for "".
-func (k kubeconfig) entry(name string) (kubeEntry, bool) {
-	if name == "" {
-		name = k.Current
-	}
-	for _, c := range k.Contexts {
-		if c.Name != name {
-			continue
-		}
-		var e kubeEntry
-		for _, cl := range k.Clusters {
-			if cl.Name == c.Context.Cluster {
-				e.Server, e.CA = cl.Cluster.Server, cl.Cluster.CA
-			}
-		}
-		for _, u := range k.Users {
-			if u.Name == c.Context.User {
-				e.Cert, e.Key, e.Token = u.User.Cert, u.User.Key, u.User.Token
-			}
-		}
-		return e, true
-	}
-	return kubeEntry{}, false
-}
-
-func parseKubeconfig(out []byte) (kubeconfig, error) {
-	var k kubeconfig
-	err := json.Unmarshal(out, &k)
-	return k, err
-}
+func parseKubeconfig(out []byte) (kubeconfig, error) { return kubeapi.ParseConfig(out) }
 
 // kubeLink compares the user's kubeconfig, mine, with the one the cluster
 // wrote: whether mine has the gvx-k3s context, and whether that reaches
@@ -565,10 +508,10 @@ func kubeLink(mine, cluster kubeconfig) CLIContext {
 	for _, k := range mine.Contexts {
 		c.Contexts = append(c.Contexts, k.Name)
 	}
-	have, ok := mine.entry(KubeContextName)
+	have, ok := mine.Entry(KubeContextName)
 	c.Exists, c.Host = ok, have.Server
 	c.InUse = ok && mine.Current == KubeContextName
-	if want, found := cluster.entry(""); ok && found {
+	if want, found := cluster.Entry(""); ok && found {
 		c.Stale = have != want
 	}
 	return c
@@ -616,7 +559,7 @@ func kubeWrite(file string) linkWrite {
 		if err != nil {
 			return err
 		}
-		e, ok := cfg.entry("")
+		e, ok := cfg.Entry("")
 		if !ok || e.Server == "" || e.Cert == "" || e.Key == "" {
 			return errors.New(tr("the cluster's kubeconfig has no client certificate"))
 		}

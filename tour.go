@@ -80,6 +80,7 @@ func init() {
 			r.Then(glance/2, func() { m.PullOpen.Set(false) })
 			r.Then(look, func() { m.Page.Set(ui.PageDocker) })
 			r.Then(look, func() { m.Page.Set(ui.PageContainers) })
+			r.Then(look, func() { m.Page.Set(ui.PagePods) })
 			r.Then(look, func() { m.Page.Set(ui.PageKubernetes) })
 			r.Then(look, func() { m.Page.Set(ui.PageSettings) })
 			r.Then(look, func() { dark.Set(false) })

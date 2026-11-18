@@ -26,19 +26,7 @@ const (
 
 // containersAccess reads it from the sandboxes.
 func containersAccess(rows []Row) ContainersAccess {
-	for _, r := range rows {
-		if r.Spec.Recipe != recipes.Docker {
-			continue
-		}
-		switch r.State.Status {
-		case sandbox.Running:
-			return ContainersOpen
-		case sandbox.Starting:
-			return ContainersStarting
-		}
-		return ContainersStopped
-	}
-	return ContainersNoEngine
+	return ContainersAccess(engineStage(rows, recipes.Docker))
 }
 
 // Reason says why the page cannot be used, or nothing when it can.
@@ -119,24 +107,31 @@ func (l ContainerLogs) Equal(o ContainerLogs) bool {
 // containerLogTail is how many of its last lines a container's logs show.
 const containerLogTail = 500
 
-// containerLogLines makes the engine's lines into the log viewer's. Each
-// is numbered by its time, in nanoseconds, and one past the line before it
-// when that is no later: a line keeps its number as the lines before it
-// fall out of the tail.
+// containerLogLines makes the engine's lines into the log viewer's.
 func containerLogLines(lines []dockerapi.LogLine) []sandbox.LogLine {
-	out := make([]sandbox.LogLine, len(lines))
+	return timedLines(len(lines), func(i int) (time.Time, string, bool) { return lines[i].Time, lines[i].Text, lines[i].Stderr })
+}
+
+// timedLines makes n lines an engine read, each its time, text and
+// whether it came from stderr, into the log viewer's. Each is numbered by
+// its time, in nanoseconds, and one past the line before it when that is
+// no later: a line keeps its number as the lines before it fall out of
+// the tail.
+func timedLines(n int, line func(i int) (time.Time, string, bool)) []sandbox.LogLine {
+	out := make([]sandbox.LogLine, n)
 	var last int64
-	for i, l := range lines {
-		seq := l.Time.UnixNano()
-		if l.Time.IsZero() || seq <= last {
+	for i := range n {
+		at, text, stderr := line(i)
+		seq := at.UnixNano()
+		if at.IsZero() || seq <= last {
 			seq = last + 1
 		}
 		last = seq
 		stream := sandbox.Stdout
-		if l.Stderr {
+		if stderr {
 			stream = sandbox.Stderr
 		}
-		out[i] = sandbox.LogLine{Seq: seq, Time: l.Time.Local(), Stream: stream, Text: l.Text}
+		out[i] = sandbox.LogLine{Seq: seq, Time: at.Local(), Stream: stream, Text: text}
 	}
 	return out
 }

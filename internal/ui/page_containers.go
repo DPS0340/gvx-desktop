@@ -14,7 +14,6 @@ import (
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
-	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
 // The states of the Containers page, past the engine's: dockerd did not
@@ -63,9 +62,8 @@ func containersPage(m *Model) ggui.Widget {
 		}
 		switch s {
 		case 0:
-			return ggui.View(ggui.Combine(m.ContainersAccess, recipeRow(m, recipes.Docker), func(a ContainersAccess, r Row) engineGate {
-				return engineGate{a, r.State.Status == sandbox.Stopping}
-			}), func(g engineGate) ggui.Widget { return engineNotRunning(m, g) })
+			stage := ggui.Map(m.ContainersAccess, func(a ContainersAccess) int { return int(a) })
+			return ggui.View(gateOf(m, recipes.Docker, stage), func(g engineGate) ggui.Widget { return engineNotRunning(m, g, dockerGate()) })
 		case containersFailed:
 			return ui.Alert(tr("Could not reach dockerd"), ggui.Peek(listing).Err).Destructive().Icon(icons.Alert)
 		case containersLoading:
@@ -91,32 +89,17 @@ func containersPage(m *Model) ggui.Widget {
 	)
 }
 
-// engineGate is what the Containers page says of an engine that is not
-// running: how far it is from running, and whether it is stopping.
-type engineGate struct {
-	access   ContainersAccess
-	stopping bool
-}
-
-// engineNotRunning stands in for the containers while the engine does not
-// run, with what would start it.
-func engineNotRunning(m *Model, g engineGate) ggui.Widget {
-	media := glyph(lucide.Boxes, 32).Color(colorGray)
-	start := func(label string) *ui.ButtonWidget {
-		return ui.Button(label, func() { m.CreateFromRecipe(recipes.Docker) }).Icon(glyph(lucide.Play, 16))
+// dockerGate words the Containers page while the engine does not run.
+func dockerGate() gateWords {
+	return gateWords{
+		recipe: recipes.Docker, page: PageDocker, icon: lucide.Boxes,
+		openPage: tr("Open Docker page"),
+		notSetUp: [2]string{tr("The Docker Engine is not set up"),
+			tr("Set it up to run containers with the docker CLI on this machine. They show here while it runs.")},
+		starting: [2]string{tr("The Docker Engine is starting"), tr("Its containers show here once dockerd is ready.")},
+		stopped:  [2]string{tr("The Docker Engine is not running"), tr("Start it to see and manage its containers here.")},
+		start:    tr("Start Docker Engine"),
 	}
-	engine := ui.Button(tr("Open Docker page"), func() { m.Go(PageDocker) }).Outline()
-	switch g.access {
-	case ContainersNoEngine:
-		return ui.Empty(tr("The Docker Engine is not set up"),
-			tr("Set it up to run containers with the docker CLI on this machine. They show here while it runs.")).
-			Media(media).Action(widget.Row(start(tr("Set up and start")), engine).Gap(8)).Outline()
-	case ContainersStarting:
-		return ui.Empty(tr("The Docker Engine is starting"), tr("Its containers show here once dockerd is ready.")).
-			Media(ui.Spinner().Size(28).Color(colorAmber)).Action(engine).Outline()
-	}
-	return ui.Empty(tr("The Docker Engine is not running"), tr("Start it to see and manage its containers here.")).
-		Media(media).Action(widget.Row(start(tr("Start Docker Engine")).Disabled(g.stopping), engine).Gap(8)).Outline()
 }
 
 // containersTable is the engine's containers, filtered by the query.
@@ -188,15 +171,7 @@ func containerStatus(c dockerapi.Container) (col color.Color, text string, chang
 // with the engine's own words for it in a tip.
 func containerStatusLabel(c dockerapi.Container) ggui.Widget {
 	col, text, changing := containerStatus(c)
-	var mark ggui.Widget = widget.Box(dot(col, 8)).Pad(2)
-	if changing {
-		mark = ui.Spinner().Size(12).Color(col)
-	}
-	label := widget.Row(mark, widget.Text(text).Size(13).NoWrap()).Gap(8).Align(widget.AlignCenter)
-	if c.Status == "" {
-		return label
-	}
-	return tip(label, c.Status)
+	return stateLabel(col, text, changing, c.Status)
 }
 
 // containerPorts are a container's ports, each once: docker lists a port
@@ -300,40 +275,15 @@ func containerHeader(m *Model, c dockerapi.Container) ggui.Widget {
 		}
 		return strings.Join(parts, " · ")
 	})).Size(12)
-	head := widget.Column(
-		widget.Row(ui.Title(c.Name()).Size(20), containerStatusLabel(c)).Gap(12).Align(widget.AlignCenter),
-		meta,
-	).Gap(4)
-	return widget.Responsive(680,
-		widget.Row(widget.Expanded(head), widget.Row(actions...).Gap(8)).Gap(16).Align(widget.AlignCenter),
-		widget.Column(head, widget.Wrap(actions...).Gap(8)).Gap(12).Stretch(),
-	)
+	return detailHead(c.Name(), containerStatusLabel(c), meta, actions...)
 }
 
 // containerLogsView shows the last lines the chosen container wrote, read
 // again as often as the containers are.
 func containerLogsView(m *Model) ggui.Widget {
-	lines := ggui.Map(m.ContainerLogs, func(l ContainerLogs) []sandbox.LogLine { return l.Lines }).WithEqual(nil)
-	status := ggui.View(ggui.Map(m.ContainerLogs, func(l ContainerLogs) string {
-		switch {
-		case l.Err != "":
-			return l.Err
-		case !l.Loaded:
-			return "…"
-		}
-		return ""
-	}), func(s string) ggui.Widget {
-		switch s {
-		case "":
-			return ui.Caption(tr("The last %d lines, as docker logs shows them.", containerLogTail)).Size(12)
-		case "…":
-			return widget.Row(ui.Spinner().Size(12), ui.Caption(tr("Reading logs…")).Size(12)).Gap(8).Align(widget.AlignCenter)
-		}
-		return ui.Alert(tr("Could not read the logs"), s).Destructive().Icon(icons.Alert)
-	})
-	viewer := logViewer(m, lines, tr("The container has written nothing yet."),
+	return engineLogsView(m, m.ContainerLogs,
+		tr("The last %d lines, as docker logs shows them.", containerLogTail), tr("The container has written nothing yet."),
 		tip(iconButton(lucide.RefreshCw, tr("Refresh logs"), m.LoadContainerLogs), tr("Refresh")))
-	return widget.Column(viewer, status).Gap(8).Stretch()
 }
 
 // containerConnect tells how to reach what the container serves, and the

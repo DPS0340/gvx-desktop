@@ -50,6 +50,8 @@ func build(m *Model) ggui.Widget {
 			return sandboxesPage(m)
 		case PageContainers:
 			return containersPage(m)
+		case PagePods:
+			return podsPage(m)
 		case PageImages:
 			return imagesPage(m)
 		case PageVolumes:
@@ -109,37 +111,27 @@ func dragRegion(child ggui.Widget) ggui.Widget {
 	})
 }
 
-// sidebar is built again when the Containers item is enabled or disabled,
-// which a sidebar entry takes only as it is made; the sidebar carries its
-// highlight, hover and collapse across.
+// sidebar is built again when the Containers or Pods item is enabled or
+// disabled, which a sidebar entry takes only as it is made; the sidebar
+// carries its highlight, hover and collapse across.
 func sidebar(m *Model) ggui.Widget {
-	return ggui.View(m.ContainersAccess, func(a ContainersAccess) ggui.Widget { return sidebarFor(m, a) })
+	access := ggui.Combine(m.ContainersAccess, m.PodsAccess, func(c ContainersAccess, p PodsAccess) [2]string {
+		return [2]string{c.Reason(), p.Reason()}
+	})
+	return ggui.View(access, func(why [2]string) ggui.Widget { return sidebarFor(m, why[0], why[1]) })
 }
 
-func sidebarFor(m *Model, access ContainersAccess) ggui.Widget {
+// sidebarFor is the sidebar with the Containers and Pods items greyed out
+// for the reasons given, or not for none.
+func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 	nav := ggui.Bind(m.Page.Get, m.Go)
-	count := func(n ggui.Readable[int]) ggui.Widget {
-		return ggui.View(n, func(n int) ggui.Widget {
-			if n == 0 {
-				return widget.Box()
-			}
-			return ui.Badge(itoa(n))
-		})
-	}
 	item := func(key, label string, g *icons.Glyph) ui.SidebarEntry {
 		return ui.SidebarItem(key, label).Leading(glyph(g, 16)).Tooltip(label)
 	}
-	// The Containers item leads to the Docker Engine's containers, and is
-	// greyed out while the engine is not running; a mark at its end says
-	// why in a tip, as the sidebar tells the item's own Tooltip only on a
-	// rail of icons.
-	containers := item(PageContainers, tr("Containers"), lucide.Boxes)
-	if why := access.Reason(); why != "" {
-		containers = containers.Disabled(true).Tooltip(why).
-			Action(tip(widget.Box(glyph(lucide.PowerOff, 14).Color(colorGray)).Pad(3), why))
-	} else {
-		containers = containers.Action(count(m.RunningContainers))
-	}
+	// Containers and Pods lead into the recipes' engines, and are greyed
+	// out while those are not running.
+	containers := gatedItem(item(PageContainers, tr("Containers"), lucide.Boxes), noContainers, m.RunningContainers)
+	pods := gatedItem(item(PagePods, tr("Pods"), lucide.Hexagon), noPods, m.RunningPods)
 	brandTop := 4.0
 	if TitlebarHidden {
 		brandTop = 40 // room for the traffic lights
@@ -154,8 +146,9 @@ func sidebarFor(m *Model, access ContainersAccess) ggui.Widget {
 
 	return ui.Sidebar(nav,
 		item(PageDashboard, tr("Dashboard"), lucide.LayoutDashboard),
-		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(count(m.Running)),
+		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(countBadge(m.Running)),
 		containers,
+		pods,
 		item(PageImages, tr("Images"), lucide.Layers),
 		item(PageVolumes, tr("Volumes"), lucide.HardDrive),
 		item(PageSnapshots, tr("Snapshots"), lucide.Camera),
@@ -579,7 +572,7 @@ func palette(m *Model) ggui.Widget {
 	close := func(fn func()) func() {
 		return func() { m.PaletteOpen.Set(false); fn() }
 	}
-	entries := func(containers bool) []ui.CommandEntry {
+	entries := func(containers, pods bool) []ui.CommandEntry {
 		return []ui.CommandEntry{
 			ui.CommandItem(tr("New sandbox"), close(func() { m.NewSandbox("") })).Group(tr("Sandboxes")).Shortcut("cmd+n").Keywords("create run"),
 			ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Group(tr("Sandboxes")),
@@ -590,9 +583,10 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Group(tr("Go to")).Shortcut("cmd+1"),
 			ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Group(tr("Go to")).Shortcut("cmd+2"),
 			ui.CommandItem(tr("Containers"), close(func() { m.Go(PageContainers) })).Group(tr("Go to")).Shortcut("cmd+3").Keywords("docker ps").Disabled(!containers),
-			ui.CommandItem(tr("Images"), close(func() { m.Go(PageImages) })).Group(tr("Go to")).Shortcut("cmd+4"),
-			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Group(tr("Go to")).Shortcut("cmd+5"),
-			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Group(tr("Go to")).Shortcut("cmd+6"),
+			ui.CommandItem(tr("Pods"), close(func() { m.Go(PagePods) })).Group(tr("Go to")).Shortcut("cmd+4").Keywords("kubectl get pods k8s").Disabled(!pods),
+			ui.CommandItem(tr("Images"), close(func() { m.Go(PageImages) })).Group(tr("Go to")).Shortcut("cmd+5"),
+			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Group(tr("Go to")).Shortcut("cmd+6"),
+			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Group(tr("Go to")).Shortcut("cmd+7"),
 			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Group(tr("Go to")).Shortcut("cmd+,"),
 			ui.CommandItem(tr("Refresh"), close(m.RefreshAll)).Group(tr("App")).Shortcut("cmd+r"),
 			ui.CommandItem(tr("Toggle dark mode"), close(func() {
@@ -607,8 +601,10 @@ func palette(m *Model) ggui.Widget {
 		}
 	}
 	cmd := ui.Command(m.PaletteQuery).Height(300).StableHeight().Hints()
-	// The Containers entry is greyed out as the sidebar's item is.
-	ggui.Watch(m.ContainersOpen, func(on bool) { cmd.Entries(entries(on)...) })
+	// The Containers and Pods entries are greyed out as the sidebar's
+	// items are.
+	open := ggui.Combine(m.ContainersOpen, m.PodsOpen, func(c, p bool) [2]bool { return [2]bool{c, p} })
+	ggui.Watch(open, func(on [2]bool) { cmd.Entries(entries(on[0], on[1])...) })
 	return ui.CommandDialog(m.PaletteOpen, cmd)
 }
 
@@ -616,8 +612,12 @@ func palette(m *Model) ggui.Widget {
 func (m *Model) RefreshAll() {
 	m.DetectEngine(nil)
 	m.LoadDocker()
-	if ggui.Peek(m.Page) == PageContainers {
+	m.LoadPods()
+	switch ggui.Peek(m.Page) {
+	case PageContainers:
 		m.LoadContainerLogs()
+	case PagePods:
+		m.LoadPodLogs()
 	}
 	m.CheckKubeconfig()
 	for _, l := range m.Links() {

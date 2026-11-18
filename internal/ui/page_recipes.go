@@ -312,6 +312,10 @@ func kubernetesPage(m *Model) ggui.Widget {
 		recipeHero(m, recipes.Kubernetes, row, tr("k3s single-node cluster"),
 			tr("API server on 127.0.0.1:6443, NodePorts 30000–30019 on the host, cluster state in the k3s volume. Starting takes up to two minutes."),
 			lucide.ShipWheel),
+		widget.Column(
+			sectionTitle(tr("Pods"), tr("Pods run on the k3s node in the Kubernetes sandbox.")),
+			podsSummary(m),
+		).Gap(10).Stretch(),
 		widget.Responsive(900,
 			widget.Row(widget.Flex(kubectlCard(m, kubeconfig), 1), widget.Flex(kubeNotesCard(), 1)).Gap(16).Align(widget.AlignStart),
 			widget.Column(kubectlCard(m, kubeconfig), kubeNotesCard()).Gap(16).Stretch(),

@@ -6,12 +6,13 @@ import (
 	"github.com/ironpark/ggui"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
-// maxMenuContainers is how many containers the Docker menu lists; the
-// Containers page lists them all.
+// maxMenuContainers is how many containers the Docker menu lists, and
+// pods the Kubernetes menu; the Containers and Pods pages list them all.
 const maxMenuContainers = 10
 
 // EngineState is a recipe's engine as the menus tell of it.
@@ -32,14 +33,31 @@ type MenuState struct {
 	More       int
 	Listed     bool // the running engine answered with its containers
 	ListErr    bool // the running engine did not answer
-	DockerLink LinkView
-	KubeLink   LinkView
+	// Pods are the ones the Kubernetes menu lists, the user's first, and
+	// PodsMore the number left out; the others say as Listed and ListErr
+	// do, and PodsWaiting that the cluster's API has yet to answer.
+	Pods                             []MenuPod
+	PodsMore                         int
+	PodsListed, PodsErr, PodsWaiting bool
+	DockerLink                       LinkView
+	KubeLink                         LinkView
 }
 
-// Equal makes MenuState comparable for signals. Containers are equal when
-// the menu tells the same of them.
+// MenuPod is a pod as the Kubernetes menu tells of it.
+type MenuPod struct {
+	Pod    kubeapi.Pod
+	Status string
+	Health kubeapi.Health
+}
+
+// Equal makes MenuState comparable for signals. Containers and pods are
+// equal when the menu tells the same of them.
 func (s MenuState) Equal(o MenuState) bool {
 	return s.Docker == o.Docker && s.Kube == o.Kube && s.More == o.More && s.Listed == o.Listed && s.ListErr == o.ListErr &&
+		s.PodsMore == o.PodsMore && s.PodsListed == o.PodsListed && s.PodsErr == o.PodsErr && s.PodsWaiting == o.PodsWaiting &&
+		slices.EqualFunc(s.Pods, o.Pods, func(a, b MenuPod) bool {
+			return a.Pod.Key() == b.Pod.Key() && a.Status == b.Status && a.Health == b.Health
+		}) &&
 		s.DockerLink.Equal(o.DockerLink) && s.KubeLink.Equal(o.KubeLink) &&
 		slices.EqualFunc(s.Containers, o.Containers, func(a, b dockerapi.Container) bool {
 			return a.ID == b.ID && a.Name() == b.Name() && a.State == b.State
@@ -47,8 +65,8 @@ func (s MenuState) Equal(o MenuState) bool {
 }
 
 // menuState sums up for the menus the sandboxes, the Docker Engine's
-// containers and the contexts.
-func menuState(rows []Row, containers Listing[dockerapi.Container], docker, kube LinkView) MenuState {
+// containers, the cluster's pods and the contexts.
+func menuState(rows []Row, containers Listing[dockerapi.Container], pods Listing[kubeapi.Pod], podsWaiting bool, docker, kube LinkView) MenuState {
 	engine := func(recipe string) EngineState {
 		for _, r := range rows {
 			if r.Spec.Recipe == recipe {
@@ -58,6 +76,9 @@ func menuState(rows []Row, containers Listing[dockerapi.Container], docker, kube
 		return EngineState{}
 	}
 	s := MenuState{Docker: engine(recipes.Docker), Kube: engine(recipes.Kubernetes), DockerLink: docker, KubeLink: kube}
+	if s.Kube.Status == sandbox.Running {
+		s.menuPods(pods, podsWaiting)
+	}
 	if s.Docker.Status != sandbox.Running {
 		return s
 	}
@@ -121,6 +142,9 @@ func (m *Model) RecipeMenu(recipe string, show func()) []ggui.MenuItem {
 	if recipe == recipes.Docker && e.Status == sandbox.Running {
 		items = append(items, containerItems(m, s, show)...)
 	}
+	if recipe == recipes.Kubernetes && e.Status == sandbox.Running {
+		items = append(items, podItems(m, s, show)...)
+	}
 	return items
 }
 
@@ -183,6 +207,64 @@ func containerItems(m *Model, s MenuState, show func()) []ggui.MenuItem {
 	}
 	if s.More > 0 {
 		items = append(items, ggui.MenuAction(tr("All %d Containers…", len(s.Containers)+s.More), "", func() { show(); m.Go(PageContainers) }))
+	}
+	return items
+}
+
+// menuPods sums up the cluster's pods for the Kubernetes menu.
+func (s *MenuState) menuPods(pods Listing[kubeapi.Pod], waiting bool) {
+	s.PodsWaiting = waiting
+	s.PodsErr = pods.Err != ""
+	s.PodsListed = pods.Loaded && !s.PodsErr
+	if !s.PodsListed {
+		return
+	}
+	list := sortPods(pods.Items)
+	if len(list) > maxMenuContainers {
+		s.PodsMore = len(list) - maxMenuContainers
+		list = list[:maxMenuContainers]
+	}
+	for _, p := range list {
+		sum := p.Summarize()
+		s.Pods = append(s.Pods, MenuPod{Pod: p, Status: sum.Status, Health: sum.Health()})
+	}
+}
+
+// podItems are the Kubernetes menu's pods, each a submenu of what can be
+// done to it.
+func podItems(m *Model, s MenuState, show func()) []ggui.MenuItem {
+	items := []ggui.MenuItem{ggui.MenuSeparator()}
+	switch {
+	case s.PodsWaiting:
+		return append(items, off(tr("The cluster is starting…")))
+	case s.PodsErr:
+		return append(items, off(tr("Could not reach the API server")))
+	case !s.PodsListed:
+		return nil
+	case len(s.Pods) == 0:
+		return append(items, off(tr("No pods")))
+	}
+	items = append(items, off(tr("Pods")))
+	link := ggui.Peek(m.KubeLink.View)
+	for _, mp := range s.Pods {
+		p := mp.Pod
+		label := "○ " + p.Name()
+		if mp.Health == kubeapi.Healthy {
+			label = "● " + p.Name()
+		}
+		if mp.Status != "Running" {
+			label += " · " + mp.Status
+		}
+		ctr := podLogContainer(p, "")
+		items = append(items, ggui.Menu(label,
+			ggui.MenuAction(tr("Show Logs"), "", func() { show(); m.ShowPodLogs(p) }),
+			ggui.MenuAction(tr("Copy kubectl logs command"), "", func() { m.Copy(kubectlLogs(link, p, ctr), "kubectl logs") }),
+			ggui.MenuSeparator(),
+			ggui.MenuAction(tr("Delete…"), "", func() { show(); m.AskDeletePod(p) }),
+		))
+	}
+	if s.PodsMore > 0 {
+		items = append(items, ggui.MenuAction(tr("All %d Pods…", len(s.Pods)+s.PodsMore), "", func() { show(); m.Go(PagePods) }))
 	}
 	return items
 }

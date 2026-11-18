@@ -17,6 +17,7 @@ import (
 	"github.com/ironpark/ggui"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -373,7 +374,7 @@ func TestMenuState(t *testing.T) {
 		items = append(items, dockerapi.Container{ID: fmt.Sprint(i), Names: []string{fmt.Sprintf("/c%d", i)}, State: state, Status: "Up 1 minute"})
 	}
 	list := Listing[dockerapi.Container]{Items: items, Loaded: true}
-	s := menuState([]Row{engine}, list, LinkView{}, LinkView{})
+	s := menuState([]Row{engine}, list, Listing[kubeapi.Pod]{}, false, LinkView{}, LinkView{})
 	if len(s.Containers) != maxMenuContainers || s.More != 4 || !s.Listed {
 		t.Fatalf("%d listed, %d more", len(s.Containers), s.More)
 	}
@@ -385,16 +386,16 @@ func TestMenuState(t *testing.T) {
 	// A line of a log, or a container's uptime, leaves the menus as they are.
 	engine.State.LogSeq = 2
 	items[1].Status = "Up 2 minutes"
-	if !s.Equal(menuState([]Row{engine}, list, LinkView{}, LinkView{})) {
+	if !s.Equal(menuState([]Row{engine}, list, Listing[kubeapi.Pod]{}, false, LinkView{}, LinkView{})) {
 		t.Error("a log line or an uptime changed the menus")
 	}
 	items[1].State = "exited"
-	if s.Equal(menuState([]Row{engine}, list, LinkView{}, LinkView{})) {
+	if s.Equal(menuState([]Row{engine}, list, Listing[kubeapi.Pod]{}, false, LinkView{}, LinkView{})) {
 		t.Error("a container that stopped left the menus as they were")
 	}
 	// A stopped engine lists none.
 	engine.State.Status = sandbox.Stopped
-	if s := menuState([]Row{engine}, list, LinkView{}, LinkView{}); s.Listed || len(s.Containers) != 0 {
+	if s := menuState([]Row{engine}, list, Listing[kubeapi.Pod]{}, false, LinkView{}, LinkView{}); s.Listed || len(s.Containers) != 0 {
 		t.Errorf("a stopped engine lists %d", len(s.Containers))
 	}
 }

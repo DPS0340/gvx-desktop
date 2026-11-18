@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/record"
 	gguiruntime "github.com/ironpark/ggui/runtime"
 	uitheme "github.com/ironpark/ggui/ui/theme"
 
@@ -31,12 +32,15 @@ import (
 var version = "dev"
 
 func main() {
+	// ggui record runs the app to draw the README's tour (tour.go), which
+	// reads none of the user's data and must not hand off to a copy of the
+	// app already running, as SingleInstance would.
+	record.Main()
 	ui.AppVersion = version
 	dataDir := flag.String("data-dir", "", "directory for sandboxes, settings and snapshots (default: the user config dir)")
 	renderDir := flag.String("render-dir", "", "render the screens to PNG files in this directory, then exit")
-	renderLang := flag.String("render-lang", "en", "the language -render-dir and -render-tour render in: en or ko")
+	renderLang := flag.String("render-lang", "en", "the language -render-dir renders in: en or ko")
 	hidden := flag.Bool("hidden", false, "start in the tray without showing the window, as a start at login does")
-	tourDir := flag.String("render-tour", "", "render a walk through the app as PNG frames in this directory, then exit")
 	flag.Parse()
 
 	dir := *dataDir
@@ -50,12 +54,6 @@ func main() {
 		log.Fatal(err)
 	}
 	st := store.Store{Dir: dir}
-	if *tourDir != "" {
-		if err := renderTour(*renderLang, *tourDir); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
 	if *renderDir != "" {
 		if err := renderScreens(*renderLang, *renderDir); err != nil {
 			log.Fatal(err)
@@ -95,7 +93,9 @@ func run(st store.Store, dir string, hidden bool) error {
 			bindTheme(m)
 			m.Start()
 			if hidden {
-				ggui.SetDockIcon(false)
+				// The window is hidden already; this takes the app out of
+				// the Dock too, and ShowFromTray brings the window back.
+				app.HideToTray()
 			}
 			installTray(app, m)
 			// The menu bar is worded as it is built, so a change of
@@ -112,7 +112,7 @@ func run(st store.Store, dir string, hidden bool) error {
 		app.OnCloseRequest(func() bool {
 			set := ggui.Peek(m.Settings)
 			if set.HideOnClose && !set.NoTray && trayAvailable() {
-				hideWindow(app)
+				app.HideToTray()
 				return false
 			}
 			return requestQuit(app, m)
@@ -120,7 +120,10 @@ func run(st store.Store, dir string, hidden bool) error {
 	})
 	defer dispose()
 
-	err := app.SingleInstance("io.github.ironpark.gvx-desktop", func(gguiruntime.Launch) { showWindow(app) })
+	// Opening the app again, from another launch or (on macOS) from the
+	// Finder or the Dock, brings its window back from the tray.
+	app.OnReopen(app.ShowFromTray)
+	err := app.SingleInstance("io.github.ironpark.gvx-desktop", func(gguiruntime.Launch) { app.ShowFromTray() })
 	if errors.Is(err, gguiruntime.ErrRunning) {
 		return nil
 	}
@@ -140,22 +143,6 @@ func run(st store.Store, dir string, hidden bool) error {
 	return runErr
 }
 
-// hideWindow leaves the app to its tray icon: the window goes, and on
-// macOS the app goes out of the Dock and the ⌘-Tab switcher with it, as an
-// app that is only an icon in the menu bar is.
-func hideWindow(app *ggui.App) {
-	app.Hide()
-	ggui.SetDockIcon(false)
-}
-
-// showWindow brings the window back, and the app back into the Dock
-// first: a window out of the Dock has no menu bar.
-func showWindow(app *ggui.App) {
-	ggui.SetDockIcon(true)
-	app.Show()
-	app.Focus()
-}
-
 // requestQuit closes the app now when nothing runs, stops the sandboxes
 // first when the settings say so, and asks otherwise.
 func requestQuit(app *ggui.App, m *ui.Model) bool {
@@ -166,7 +153,7 @@ func requestQuit(app *ggui.App, m *ui.Model) bool {
 		m.StopAllAndThen(app.Close)
 		return false
 	}
-	showWindow(app)
+	app.ShowFromTray()
 	return m.PrepareQuit()
 }
 
@@ -242,7 +229,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 		return
 	}
 	var tray *ggui.Tray
-	show := func() { showWindow(app) }
+	show := app.ShowFromTray
 	rebuild := func() {
 		if tray == nil {
 			return
@@ -254,7 +241,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 			ggui.MenuAction(ui.EngineLine(engine), "", nil).BindEnabled(ggui.Const(false)),
 		}
 		if update.Available(engine) && !update.Installing {
-			items = append(items, ggui.MenuAction(fmt.Sprintf(ui.T("Update rungv to %s"), update.Name()), "", m.InstallRungv))
+			items = append(items, ggui.MenuAction(ui.T("Update rungv to %s", update.Name()), "", m.InstallRungv))
 		}
 		items = append(items, ggui.MenuSeparator())
 		rows := ggui.Peek(m.Rows)

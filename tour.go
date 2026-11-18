@@ -1,13 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
-	"github.com/ironpark/ggfx"
 	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/record"
 	uitheme "github.com/ironpark/ggui/ui/theme"
 
 	"github.com/ironpark/gvx-desktop/internal/registry"
@@ -16,100 +14,80 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/ui"
 )
 
-// tourFrame is the time between two frames of the tour: 15 a second.
-const tourFrame = time.Second / 15
+// tourStart is the time the tour's clock reads, as renderScreens's does.
+var tourStart = time.Date(2026, 11, 16, 15, 30, 0, 0, time.Local)
 
-// renderTour walks through the app with demo data, as renderScreens draws
-// it, and writes what the window shows as numbered PNG frames in out: its
-// motion included, since the frames are a tourFrame apart. The README's
-// animation is made from them (see assets/tour.sh).
-func renderTour(lang, out string) error {
-	if err := os.MkdirAll(out, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.MkdirTemp("", "gvxd-tour")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmp)
-	return offscreen(func() (bool, error) { return true, tour(tmp, out, lang) })
-}
+// The README's animation is a walk through the app with demo data, as
+// renderScreens draws it, with the app's motion and nothing captured from
+// the screen. ggui record draws it from the repository's root (main calls
+// record.Main):
+//
+//	ggui record -o assets/tour.gif --width 960 --fps 10
+//
+// It is drawn at twice its size, as a Retina display shows it, and scaled
+// down to 960 pixels wide, which reads sharper than drawing it at 1x.
+func init() {
+	var (
+		m    *ui.Model
+		dir  string
+		dark *ggui.StateValue[bool]
+	)
+	record.Register(record.Tour{
+		Size:  ggui.Sz(1280, 800),
+		Scale: 2,
+		Start: tourStart,
+		Setup: func(p *ggui.Probe) {
+			rungv.HomeDir = func() (string, error) { return demoHome, nil }
+			var err error
+			if dir, err = os.MkdirTemp("", "gvxd-tour"); err != nil {
+				panic(err)
+			}
+			st := store.Store{Dir: dir}
+			if err := st.SaveSandboxes(demoSpecs()); err != nil {
+				panic(err)
+			}
+			set := store.DefaultSettings()
+			set.Theme, set.Language = "dark", "en"
+			_ = st.SaveSettings(set)
 
-func tour(dir, out, lang string) error {
-	now := time.Date(2026, 11, 16, 15, 30, 0, 0, time.Local)
-	restore := ggui.SetClock(func() time.Time { return now })
-	defer restore()
+			m = ui.NewModel(st, dir)
+			m.Offline = true
+			m.Attach(p)
+			demoState(m, tourStart)
+			dark = ggui.State(true)
+			preset := uitheme.Preset{Base: uitheme.BaseZinc, Accent: uitheme.AccentBlue}
+			uitheme.Bind(dark, preset.Dark(), preset.Light())
+		},
+		Build: func() ggui.Widget { return ui.Build(m) },
+		Script: func(r *record.Recorder) {
+			defer os.RemoveAll(dir)
+			const look, glance = 1800 * time.Millisecond, 1100 * time.Millisecond
 
-	rungv.HomeDir = func() (string, error) { return demoHome, nil }
-	st := store.Store{Dir: dir}
-	if err := st.SaveSandboxes(demoSpecs()); err != nil {
-		return err
-	}
-	set := store.DefaultSettings()
-	set.Theme, set.Language = "dark", lang
-	_ = st.SaveSettings(set)
-
-	const w, h = 1280, 800
-	var m *ui.Model
-	dark := ggui.State(true)
-	p := ggui.ProbeBuilder(func() ggui.Widget { return ui.Build(m) }, ggui.Sz(w, h))
-	p.Setup(func() {
-		m = ui.NewModel(st, dir)
-		m.Offline = true
-		m.Attach(p)
-		demoState(m, now)
-		preset := uitheme.Preset{Base: uitheme.BaseZinc, Accent: uitheme.AccentBlue}
-		uitheme.Bind(dark, preset.Dark(), preset.Light())
+			r.Hold(look) // the dashboard
+			r.Then(look, func() { m.Page.Set(ui.PageSandboxes) })
+			r.Then(glance, func() { m.Select(demoIDs[1]) })
+			r.Then(look, func() { m.Detail.Set(1) })
+			r.Then(2400*time.Millisecond, func() { m.NewSandbox("postgres:17-alpine") })
+			r.Then(glance/2, func() { m.EditorOpen.Set(false) })
+			r.Then(look, func() { m.Page.Set(ui.PageImages) })
+			r.Then(2600*time.Millisecond, func() {
+				m.OpenPull("nginx")
+				m.SearchFor.Set("nginx")
+				m.SearchResults.Set(demoSearch())
+				m.SearchTagsOf.Set("nginx")
+				m.SearchTags.Set([]string{"stable-alpine", "mainline-alpine", "alpine", "1.31", "1.31-alpine", "stable", "latest", "bookworm"})
+			})
+			r.Then(glance/2, func() { m.PullOpen.Set(false) })
+			r.Then(look, func() { m.Page.Set(ui.PageDocker) })
+			r.Then(look, func() { m.Page.Set(ui.PageKubernetes) })
+			r.Then(look, func() { m.Page.Set(ui.PageSettings) })
+			r.Then(look, func() { dark.Set(false) })
+			r.Then(look, func() { m.PaletteOpen.Set(true) })
+			r.Then(glance/2, func() { m.PaletteOpen.Set(false) })
+			r.Then(look, func() { m.Page.Set(ui.PageDashboard) })
+			r.Then(glance, func() { dark.Set(true) })
+		},
 	})
-	defer p.Close()
-	p.Frame()
-
-	img := ggfx.NewImage(w, h)
-	defer img.Deallocate()
-	frame := 0
-	var failed error
-	// hold shows the window for d, a frame at a time.
-	hold := func(d time.Duration) {
-		for ; d > 0 && failed == nil; d -= tourFrame {
-			p.Advance(tourFrame)
-			img.Fill(ggui.Untrack(uitheme.Use).Bg)
-			p.Draw(img)
-			failed = savePNG(filepath.Join(out, fmt.Sprintf("%04d.png", frame)), img)
-			frame++
-		}
-	}
-	// then does a step of the tour and shows what follows from it.
-	then := func(d time.Duration, step func()) {
-		step()
-		p.Frame()
-		hold(d)
-	}
-	const look, glance = 1800 * time.Millisecond, 1100 * time.Millisecond
-
-	hold(look) // the dashboard
-	then(look, func() { m.Page.Set(ui.PageSandboxes) })
-	then(glance, func() { m.Select(demoIDs[1]) })
-	then(look, func() { m.Detail.Set(1) })
-	then(2400*time.Millisecond, func() { m.NewSandbox("postgres:17-alpine") })
-	then(glance/2, func() { m.EditorOpen.Set(false) })
-	then(look, func() { m.Page.Set(ui.PageImages) })
-	then(2600*time.Millisecond, func() {
-		m.OpenPull("nginx")
-		m.SearchFor.Set("nginx")
-		m.SearchResults.Set(demoSearch())
-		m.SearchTagsOf.Set("nginx")
-		m.SearchTags.Set([]string{"stable-alpine", "mainline-alpine", "alpine", "1.31", "1.31-alpine", "stable", "latest", "bookworm"})
-	})
-	then(glance/2, func() { m.PullOpen.Set(false) })
-	then(look, func() { m.Page.Set(ui.PageDocker) })
-	then(look, func() { m.Page.Set(ui.PageKubernetes) })
-	then(look, func() { m.Page.Set(ui.PageSettings) })
-	then(look, func() { dark.Set(false) })
-	then(look, func() { m.PaletteOpen.Set(true) })
-	then(glance/2, func() { m.PaletteOpen.Set(false) })
-	then(look, func() { m.Page.Set(ui.PageDashboard) })
-	then(glance, func() { dark.Set(true) })
-	return failed
 }
 
 // demoHome stands for the home directory in the pictures.

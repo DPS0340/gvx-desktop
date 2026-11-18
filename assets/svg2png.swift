@@ -1,12 +1,13 @@
 // Draws an SVG into a square PNG, as the app's icon and the mark the app
 // shows are made from the drawings beside this file:
 //
-//	swift assets/svg2png.swift assets/gvx-desktop-icon.svg assets/icon.png 1024 824
+//	swift assets/svg2png.swift assets/gvx-desktop-icon.svg assets/icon.png 1024
 //	swift assets/svg2png.swift assets/gvx-desktop-mark.svg internal/ui/mark.png 128
 //
-// The last number, when given, is the size the drawing takes in the middle
-// of the picture: macOS wants the body of an app icon 824 pixels wide in a
-// picture of 1024, clear around it.
+// The icon is drawn to the edges, as Windows shows it; ggui build insets
+// the Mac's in Apple's grid, 824 pixels of 1024, as ggui.toml's
+// macos.icon_inset asks. The last number, when given, is the size the
+// drawing takes in the middle of the picture, clear around it.
 import AppKit
 
 let a = CommandLine.arguments

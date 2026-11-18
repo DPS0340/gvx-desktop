@@ -151,7 +151,11 @@ GVXD_DOCKER_TEST=1 go test ./internal/recipes/
 ./bin/gvx-desktop -render-dir ./shots-ko -render-lang ko
 ```
 
-`-render-tour DIR`을 사용하면 앱 둘러보기를 애니메이션의 PNG 프레임으로 렌더링합니다. 저장소 루트에서 [assets/tour.sh](assets/tour.sh)를 실행하면 FFmpeg로 README의 GIF를 다시 만들 수 있습니다.
+README의 GIF는 [tour.go](tour.go)에 작성된 앱 둘러보기입니다. 저장소 루트에서 [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md)를 실행하면 다시 만들 수 있습니다. v0.4.0보다 새로운 ggui CLI가 필요합니다.
+
+```sh
+ggui record -o assets/tour.gif --width 960 --fps 10
+```
 
 [internal/ui/i18n_ko.go](internal/ui/i18n_ko.go)의 한국어 번역은 코드에 있는 영어 문구를 키로 사용합니다. 번역 테스트는 빠진 문구가 있는지 확인합니다.
 

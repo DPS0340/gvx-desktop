@@ -138,6 +138,8 @@ func demoSpecs() []sandbox.Spec {
 }
 
 func demoState(m *ui.Model, now time.Time) {
+	// The uptimes read the model's clock, which starts at the real time.
+	m.Now.Set(now)
 	m.Update.Set(ui.Update{Tag: "v0.17.10002026110900", Page: rungv.ReleasesURL})
 	m.Engine.Set(ui.Engine{
 		Path:    "/Users/me/.gvx/bin/rungv",

@@ -151,7 +151,11 @@ Render screens to PNG with demo data and no running engine.
 ./bin/gvx-desktop -render-dir ./shots-ko -render-lang ko
 ```
 
-Use `-render-tour DIR` to render an animated walkthrough as PNG frames. Run [assets/tour.sh](assets/tour.sh) from the repository root to regenerate the README GIF with FFmpeg.
+The README GIF is a walkthrough scripted in [tour.go](tour.go). To regenerate it, run [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md) from the repository root. It needs a ggui CLI newer than v0.4.0.
+
+```sh
+ggui record -o assets/tour.gif --width 960 --fps 10
+```
 
 Korean strings in [internal/ui/i18n_ko.go](internal/ui/i18n_ko.go) use the English text as keys. The localization test checks for missing translations.
 

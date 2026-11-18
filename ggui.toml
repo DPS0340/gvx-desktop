@@ -15,7 +15,7 @@ id = "io.github.ironpark.gvx-desktop"
 # User-visible version, one to three numbers: Info.plist's
 # CFBundleShortVersionString and CFBundleVersion, and the Windows
 # program's file and product version, where each number is at most 65535.
-version = "0.1.0"
+version = "0.2.0"
 # A square PNG, ideally 1024x1024, turned into the macOS app icon and the
 # Windows program's icon. This one is drawn to the edges from
 # assets/gvx-desktop-icon.svg by assets/svg2png.swift; macos.icon_inset
@@ -171,6 +171,17 @@ CFBundleLocalizations = ["en", "ko"]
 # UTF-8 code page and long paths, and runs as the user who starts it.
 # manifest = ""
 
+[linux]
+# What ggui build --target linux makes beyond [app]: the tree for /usr and,
+# of it, a tarball and Debian and RPM packages.
+formats = ["tar", "deb", "rpm"]
+description = "Run and manage gvx sandboxes: Linux containers with no VM or daemon"
+generic_name = "Container Manager"
+categories = ["Development"]
+maintainer = "ironpark <ironpark@users.noreply.github.com>"
+homepage = "https://github.com/ironpark/gvx-desktop"
+license = "Apache-2.0"
+
 [web]
 # The page title. Default: app.name.
 # title = ""
@@ -182,3 +193,14 @@ CFBundleLocalizations = ["en", "ko"]
 # ggui dev --web skips it unless --wasm-opt is given, to keep rebuilds
 # short. Without wasm-opt on PATH the binary ships as linked.
 # wasm_opt = "-O2"
+
+[i18n]
+# The app's own functions that pass a message on to the i18n package, for
+# ggui i18n check and extract to read their calls as i18n.T's: NAME, a
+# function or a method of any type called so, or pkg.Name, followed by
+# :POS when the message is not the first argument. As --func.
+# tr and trn are internal/ui's, and main reaches tr as ui.T.
+funcs = ["tr", "ui.T"]
+# Those like i18n.N: NAME, or NAME:ONE,OTHER when the singular and plural
+# forms are not the second and third arguments. As --plural.
+plurals = ["trn"]

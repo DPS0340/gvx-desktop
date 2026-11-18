@@ -37,9 +37,20 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -short ./...
+      # ggui_debug panics when state is read or written off the goroutine
+      # running the frames, as a worker that sets a signal instead of
+      # posting it would; the tests' probes arm it as a window does.
+      - name: Test off the UI goroutine
+        run: go test -tags ggui_debug -short ./...
+      - name: Install the ggui command
+        run: go install github.com/ironpark/ggui/cmd/ggui@latest
+      # A text the code translates that the Korean catalog lacks, or whose
+      # format verbs differ, fails here; ggui.toml names the app's tr, trn
+      # and ui.T for it.
+      - name: Translations
+        run: ggui i18n check
       - name: Bundle
         run: |
-          go install github.com/ironpark/ggui/cmd/ggui@latest
           ggui build
           release/check-bundle.sh
       # The Windows programs are cross-built for a release; that they still
@@ -71,3 +82,26 @@ jobs:
         run: |
           Get-Content -Raw install.ps1 | Invoke-Expression
           if (-not (Test-Path "$env:LOCALAPPDATA\Programs\GVX Desktop\GVX Desktop.exe")) { throw 'no program was installed' }
+
+  # The Linux packages are cross-built for a release too; here the Debian
+  # one is made and installed, on the system it is for.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Package
+        run: |
+          go install github.com/ironpark/ggui/cmd/ggui@latest
+          GOARCH=amd64 ggui build --target linux --format tar,deb,rpm --out build/linux
+          GOARCH=arm64 ggui build --target linux --format tar --out build/linux-arm64
+      - name: Install the Debian package
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ./build/linux/gvx-desktop_*_amd64.deb
+          test -x /usr/bin/gvx-desktop
+          test -f /usr/share/applications/io.github.ironpark.gvx-desktop.desktop

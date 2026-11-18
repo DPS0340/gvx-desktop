@@ -52,6 +52,17 @@ The [installer](install.ps1) verifies the release ZIP against its published SHA-
 
 For a manual install, download the ZIP from the [release page](https://github.com/ironpark/gvx-desktop/releases). Choose `windows-amd64` for Intel or AMD, or `windows-arm64` for Arm. Extract the ZIP and open `GVX Desktop.exe`.
 
+### Linux
+
+Download the package for your distribution and CPU from the [release page](https://github.com/ironpark/gvx-desktop/releases): `amd64`/`x86_64` for Intel or AMD, `arm64`/`aarch64` for Arm.
+
+```sh
+sudo apt install ./gvx-desktop_*_amd64.deb      # Debian, Ubuntu
+sudo dnf install ./gvx-desktop-*.x86_64.rpm     # Fedora, RHEL
+```
+
+The packages add **GVX Desktop** to the application menu and install the `gvx-desktop` command. On other distributions, extract the `linux-*.tar.gz` archive over `/` or into `~/.local`; it holds the same files under `usr/`. Each file has a `.sha256` beside it. Linux has no tray icon, so closing the window quits the app.
+
 For other platforms, see [Build and run](#build-and-run).
 
 ## Run your first sandbox
@@ -151,7 +162,7 @@ Render screens to PNG with demo data and no running engine.
 ./bin/gvx-desktop -render-dir ./shots-ko -render-lang ko
 ```
 
-The README GIF is a walkthrough scripted in [tour.go](tour.go). To regenerate it, run [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md) from the repository root. It needs a ggui CLI newer than v0.4.0.
+The README GIF is a walkthrough scripted in [tour.go](tour.go). To regenerate it, run [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md) from the repository root. It needs ggui CLI v0.5.0 or newer.
 
 ```sh
 ggui record -o assets/tour.gif --width 960 --fps 10
@@ -175,6 +186,10 @@ The gvx Go SDK restricts the process that calls it. To keep the GUI separate, th
 
 ### Release
 
-Update `version` in [ggui.toml](ggui.toml), then push the matching `vX.Y.Z` tag. The [release workflow](.github/workflows/release.yml) publishes the Apple silicon DMG and the Windows amd64 and arm64 ZIPs with their checksums. It generates the [Homebrew cask](https://github.com/ironpark/homebrew-tap) with [release/cask.sh](release/cask.sh).
+Update `version` in [ggui.toml](ggui.toml), then push the matching `vX.Y.Z` tag. The [release workflow](.github/workflows/release.yml) publishes the Apple silicon DMG, the Windows amd64 and arm64 ZIPs, and the Linux amd64 and arm64 tarballs and Debian and RPM packages, with their checksums. It generates the [Homebrew cask](https://github.com/ironpark/homebrew-tap) with [release/cask.sh](release/cask.sh).
 
 Set the repository variable `CHOCO_PUBLISH` to `true` to enable Chocolatey packaging with [release/choco.sh](release/choco.sh). The workflow header lists the relevant secrets. To regenerate the PNG assets for the app icon and sidebar mark, use [assets/svg2png.swift](assets/svg2png.swift).
+
+## License
+
+GVX Desktop is licensed under the [Apache License 2.0](LICENSE).

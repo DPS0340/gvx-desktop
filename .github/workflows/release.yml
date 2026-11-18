@@ -11,6 +11,11 @@ name: Release
 # build for the Mac. For Windows, on Intel and AMD and on Arm, ggui build
 # cross-builds GVX Desktop.exe, which is added to the release in a zip.
 #
+# For Linux, on amd64 and arm64, ggui build makes the tree for /usr and of
+# it a tarball and Debian and RPM packages, which are added to the release;
+# the Debian package for the runner's CPU is installed there first, to see
+# that it installs.
+#
 # A Chocolatey package that installs from those zips is set up but off: the
 # chocolatey job runs only when the repository variable CHOCO_PUBLISH is
 # true. It then makes the package of release/choco.sh's files, tries it on
@@ -22,7 +27,8 @@ name: Release
 # installs it once the package is listed there.
 #
 # Run by hand with a tag that is already released, the workflow builds the
-# Windows programs (and, when it is on, the Chocolatey package) for it again
+# Windows programs and the Linux packages (and, when it is on, the
+# Chocolatey package) for it again
 # and puts them in its release, leaving the disk image and the cask as they
 # are, and pushing nothing to chocolatey.org, where a version cannot be
 # replaced.
@@ -117,7 +123,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "$DMG" "$DMG.sha256" \
             --title "${{ steps.version.outputs.name }} $VERSION" \
             --generate-notes \
-            --notes "On an Apple silicon Mac (macOS 13 or later), install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. On Windows, unzip the program for your PC: amd64 for Intel and AMD, arm64 for Arm."
+            --notes "On an Apple silicon Mac (macOS 13 or later), install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. On Windows, unzip the program for your PC: amd64 for Intel and AMD, arm64 for Arm. On Linux, install the .deb or .rpm for your CPU, or unpack the tarball."
       - name: Update the Homebrew tap
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
@@ -180,6 +186,45 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" ./*.zip ./*.zip.sha256 --clobber
+
+  # The Linux packages join the release as the Windows programs do.
+  linux:
+    needs: release
+    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install the ggui command
+        run: go install github.com/ironpark/ggui/cmd/ggui@latest
+      - name: Build
+        run: |
+          version="${TAG#v}"
+          mkdir out
+          for arch in amd64 arm64; do
+            GOARCH="$arch" ggui build --target linux --format tar,deb,rpm --out "build/$arch" --ldflags "-X main.version=$version"
+            cp "build/$arch"/*.tar.gz "build/$arch"/*.deb "build/$arch"/*.rpm out/
+          done
+          cd out
+          for f in *; do sha256sum "$f" > "$f.sha256"; done
+          ls -l
+      - name: Try the Debian package
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ./out/gvx-desktop_*_amd64.deb
+          test -x /usr/bin/gvx-desktop
+          test -f /usr/share/applications/io.github.ironpark.gvx-desktop.desktop
+          dpkg -s gvx-desktop | grep -E '^(Version|Maintainer|Homepage)'
+      - name: Add to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" out/* --clobber
 
   # The Chocolatey package names the zips the job before put in the
   # release, by their checksums. It is installed here from the file, which

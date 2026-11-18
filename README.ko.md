@@ -52,6 +52,17 @@ irm https://raw.githubusercontent.com/ironpark/gvx-desktop/main/install.ps1 | ie
 
 직접 설치하려면 [릴리스 페이지](https://github.com/ironpark/gvx-desktop/releases)에서 PC에 맞는 ZIP을 다운로드합니다. Intel과 AMD는 `windows-amd64`, Arm은 `windows-arm64`를 선택합니다. 압축을 푼 뒤 `GVX Desktop.exe`를 실행합니다.
 
+### Linux
+
+[릴리스 페이지](https://github.com/ironpark/gvx-desktop/releases)에서 배포판과 CPU에 맞는 패키지를 다운로드합니다. Intel과 AMD는 `amd64`/`x86_64`, Arm은 `arm64`/`aarch64`를 선택합니다.
+
+```sh
+sudo apt install ./gvx-desktop_*_amd64.deb      # Debian, Ubuntu
+sudo dnf install ./gvx-desktop-*.x86_64.rpm     # Fedora, RHEL
+```
+
+패키지는 응용 프로그램 메뉴에 **GVX Desktop**을 추가하고 `gvx-desktop` 명령을 설치합니다. 다른 배포판에서는 `linux-*.tar.gz`를 `/` 또는 `~/.local`에 풉니다. 같은 파일이 `usr/` 아래에 들어 있습니다. 파일마다 `.sha256`이 함께 있습니다. Linux에는 트레이 아이콘이 없어서 창을 닫으면 앱이 종료됩니다.
+
 다른 플랫폼에서는 [빌드와 실행](#빌드와-실행)을 참고하세요.
 
 ## 첫 샌드박스 실행
@@ -151,7 +162,7 @@ GVXD_DOCKER_TEST=1 go test ./internal/recipes/
 ./bin/gvx-desktop -render-dir ./shots-ko -render-lang ko
 ```
 
-README의 GIF는 [tour.go](tour.go)에 작성된 앱 둘러보기입니다. 저장소 루트에서 [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md)를 실행하면 다시 만들 수 있습니다. v0.4.0보다 새로운 ggui CLI가 필요합니다.
+README의 GIF는 [tour.go](tour.go)에 작성된 앱 둘러보기입니다. 저장소 루트에서 [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md)를 실행하면 다시 만들 수 있습니다. ggui CLI v0.5.0 이상이 필요합니다.
 
 ```sh
 ggui record -o assets/tour.gif --width 960 --fps 10
@@ -175,6 +186,10 @@ gvx의 Go SDK는 자신을 호출한 프로세스의 동작을 제한합니다. 
 
 ### 릴리스
 
-[ggui.toml](ggui.toml)의 `version`을 바꾸고 해당 버전의 `vX.Y.Z` 태그를 푸시합니다. [릴리스 워크플로](.github/workflows/release.yml)는 Apple Silicon용 DMG와 Windows amd64·arm64용 ZIP을 체크섬과 함께 게시합니다. [release/cask.sh](release/cask.sh)로 [Homebrew cask](https://github.com/ironpark/homebrew-tap)도 갱신합니다.
+[ggui.toml](ggui.toml)의 `version`을 바꾸고 해당 버전의 `vX.Y.Z` 태그를 푸시합니다. [릴리스 워크플로](.github/workflows/release.yml)는 Apple Silicon용 DMG, Windows amd64·arm64용 ZIP, Linux amd64·arm64용 tarball과 Debian·RPM 패키지를 체크섬과 함께 게시합니다. [release/cask.sh](release/cask.sh)로 [Homebrew cask](https://github.com/ironpark/homebrew-tap)도 갱신합니다.
 
 저장소 변수 `CHOCO_PUBLISH`를 `true`로 설정하면 [release/choco.sh](release/choco.sh)를 사용하는 Chocolatey 패키징이 활성화됩니다. 관련 시크릿은 워크플로 파일 상단에 설명되어 있습니다. 앱 아이콘과 사이드바 마크의 PNG가 필요하면 [assets/svg2png.swift](assets/svg2png.swift)로 다시 생성합니다.
+
+## 라이선스
+
+GVX Desktop은 [Apache License 2.0](LICENSE)으로 배포됩니다.

@@ -31,6 +31,7 @@ cat > "$dir/gvx-desktop.nuspec" <<XML
     <authors>ironpark</authors>
     <owners>ironpark</owners>
     <projectUrl>https://github.com/ironpark/gvx-desktop</projectUrl>
+    <licenseUrl>https://github.com/ironpark/gvx-desktop/blob/v$version/LICENSE</licenseUrl>
     <packageSourceUrl>https://github.com/ironpark/gvx-desktop/tree/main/release</packageSourceUrl>
     <projectSourceUrl>https://github.com/ironpark/gvx-desktop</projectSourceUrl>
     <docsUrl>https://github.com/ironpark/gvx-desktop#readme</docsUrl>

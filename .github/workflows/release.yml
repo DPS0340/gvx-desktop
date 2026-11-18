@@ -1,0 +1,107 @@
+name: Release
+
+# A tag vX.Y.Z releases the app for Apple silicon Macs: ggui build makes
+# gvx Desktop.app and its disk image, the image becomes the tag's GitHub
+# release, and a cask for it goes to the Homebrew tap ironpark/homebrew-tap
+# (release/cask.sh writes it), so that
+#
+#	brew install --cask ironpark/tap/gvx-desktop
+#
+# installs it. gvx itself is released for Apple silicon only, hence no Intel
+# build.
+#
+# Secrets, all optional but the first:
+#
+#	TAP_GITHUB_TOKEN       a token that may write to ironpark/homebrew-tap
+#	GGUI_P12_BASE64        a Developer ID Application certificate and key,
+#	GGUI_P12_PASSWORD      as base64 of the .p12, and its password
+#	NOTARY_API_KEY_JSON    an App Store Connect API key to notarize with:
+#	                       {"issuer_id", "key_id", "private_key"}
+#
+# Without the certificate the app is signed ad hoc, and the cask takes the
+# download's quarantine off it with xattr, so that Gatekeeper lets it open.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Version
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          configured="$(sed -n 's/^version = "\(.*\)"$/\1/p' ggui.toml)"
+          if [ "$version" != "$configured" ]; then
+            echo "::error::the tag says $version, ggui.toml says $configured"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Test
+        run: go test -short ./...
+      - name: Install the ggui command
+        run: go install github.com/ironpark/ggui/cmd/ggui@latest
+      - name: Build
+        id: build
+        env:
+          GGUI_P12_BASE64: ${{ secrets.GGUI_P12_BASE64 }}
+          GGUI_P12_PASSWORD: ${{ secrets.GGUI_P12_PASSWORD }}
+          NOTARY_API_KEY_JSON: ${{ secrets.NOTARY_API_KEY_JSON }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          signing=adhoc
+          set -- --dmg --ldflags "-X main.version=$VERSION"
+          if [ -n "$GGUI_P12_BASE64" ]; then
+            signing=identity
+            set -- "$@" --identity "Developer ID Application"
+            if [ -n "$NOTARY_API_KEY_JSON" ]; then
+              printf '%s' "$NOTARY_API_KEY_JSON" > "$RUNNER_TEMP/notary.json"
+              set -- "$@" --notarize --api-key-file "$RUNNER_TEMP/notary.json"
+            fi
+          fi
+          ggui build "$@"
+          dmg="gvx-desktop-$VERSION-macos-arm64.dmg"
+          mv "build/gvx Desktop.dmg" "$dmg"
+          echo "signing=$signing" >> "$GITHUB_OUTPUT"
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(shasum -a 256 "$dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DMG: ${{ steps.build.outputs.dmg }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$DMG" \
+            --title "gvx Desktop $VERSION" \
+            --generate-notes \
+            --notes "Install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. Apple silicon, macOS 13 or later."
+      - name: Update the Homebrew tap
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA256: ${{ steps.build.outputs.sha256 }}
+          SIGNING: ${{ steps.build.outputs.signing }}
+        run: |
+          if [ -z "$TAP_GITHUB_TOKEN" ]; then
+            echo "::error::TAP_GITHUB_TOKEN is not set; the release is out, the tap is not updated"
+            exit 1
+          fi
+          release/cask.sh "$VERSION" "$SHA256" "$SIGNING" > gvx-desktop.rb
+          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/ironpark/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          cp gvx-desktop.rb tap/Casks/gvx-desktop.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/gvx-desktop.rb
+          git diff --cached --quiet && { echo "the cask is unchanged"; exit 0; }
+          git commit -m "Update gvx-desktop to $VERSION"
+          git push

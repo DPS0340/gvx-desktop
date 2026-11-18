@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1024" height="1024" viewBox="22 23 212 212" role="img" aria-labelledby="title">
+  <title id="title">gvx-desktop — helmeted Go gopher</title>
+  
+  <g id="helmeted-gopher" stroke-linejoin="round">
+    <!-- The dark silhouette also gives the standalone mark a keyline on light surfaces. -->
+    <path fill="#232052" stroke="#232052" stroke-width="8" d="M217 88C216 78 209 72 198 69C177 45 155 35 129 35C78 35 39 72 34 121C29 173 61 210 106 218C138 225 181 219 207 194C219 182 225 160 225 134C225 115 222 100 217 88Z"/>
+    <defs>
+      <path id="glass" d="M86 111C88 94 105 87 122 87L201 83Q216 83 218 94C224 110 225 135 221 157C218 175 215 185 204 191C188 200 168 202 145 199C110 196 88 178 83 156Q79 130 86 111Z"/>
+      <clipPath id="visor-edge"><use href="#glass" xlink:href="#glass"/></clipPath>
+      <linearGradient id="amber" x1="0" x2="1" y1="0" y2="0">
+        <stop stop-color="#FFB43F" stop-opacity=".34"/>
+        <stop offset=".8" stop-color="#FFB43F" stop-opacity=".52"/>
+        <stop offset="1" stop-color="#FFB43F" stop-opacity=".7"/>
+      </linearGradient>
+    </defs>
+    <g clip-path="url(#visor-edge)">
+    <g id="gopher" transform="translate(17 4)">
+    <!-- Face and the near ear, tucked under the helmet brow. -->
+    <path fill="#6DD9E9" d="M79 152C79 138 88 126 95 119C89 113 90 105 95 101C101 96 109 99 113 105C126 98 140 94 154 94C178 91 193 102 200 122C205 138 204 162 195 180C188 195 175 203 155 205C120 207 88 190 79 165Z"/>
+    <path fill="#308FA9" d="M97 110C95 107 96 104 99 103C102 102 105 104 107 107C103 108 101 110 99 113Z"/>
+    <!-- The near eye is larger to give the gopher a three-quarter gaze. -->
+    <ellipse cx="182" cy="122" rx="15" ry="18" fill="#FFFEF7" stroke="#232052" stroke-width="3.8"/>
+    <ellipse cx="186.5" cy="124" rx="5.6" ry="7.1" fill="#232052"/>
+    <ellipse cx="142" cy="129" rx="21" ry="23" fill="#FFFEF7" stroke="#232052" stroke-width="4"/>
+    <ellipse cx="150" cy="130" rx="7.4" ry="8.9" fill="#232052"/>
+    <circle cx="152.3" cy="127" r="2.5" fill="#FFFEF7"/>
+    <circle cx="188.2" cy="121.9" r="2" fill="#FFFEF7"/>
+    <!-- A single broad incisor echoes the original Go gopher's profile. -->
+    <path fill="#FFFEF7" stroke="#232052" stroke-width="3.8" d="M167 154L182 153L181 167Q180 172 175 172L172 172Q168 172 168 168Z"/>
+    <path fill="#F3D2AB" stroke="#232052" stroke-width="3.8" d="M157 149C158 145 163 141 169 141C173 140 178 140 182 142C188 144 190 148 188 152C186 156 181 157 176 155C172 160 164 161 159 158C156 156 155 152 157 149Z"/>
+    <path fill="#232052" d="M163 141C163 136 170 133 178 134C184 134 187 137 185 140C183 144 176 147 172 147C168 147 164 145 163 141Z"/>
+    </g>
+    <use href="#glass" xlink:href="#glass" fill="#354369" opacity=".12"/>
+    <path fill="url(#amber)" d="M186 83C193 120 188 158 159 199L228 201V82Z"/>
+    <g fill="#FFB43F">
+      <path d="M122 105C124 112 127 116 135 120C127 124 124 128 122 135C120 128 117 124 109 120C117 116 120 112 122 105Z"/>
+      <path d="M149 132Q150 137 155 139Q150 141 149 146Q148 141 143 139Q148 137 149 132Z"/>
+    </g>
+    </g>
+    <!-- Continuous ceramic shell, with a swept peak and raised chin guard. -->
+    <path fill="#FFFDF6" d="M215 94C215 83 210 77 198 74C176 69 145 71 117 80C131 67 160 59 191 66C172 46 151 36 128 36C81 36 43 68 36 115C27 162 52 199 93 214C109 220 122 221 138 220C113 215 91 199 81 181C107 205 142 216 173 209C194 205 209 193 216 177C200 189 184 194 161 194C129 194 100 181 90 158C83 142 83 119 91 107C97 97 107 92 121 91C145 89 180 87 201 88C208 88 212 90 215 94Z"/>
+    <!-- The ear pad and inset vent keep the shell legible at dock size. -->
+    <path fill="#302C65" d="M51 110C55 85 75 62 101 52C82 65 70 83 65 105C60 104 55 106 51 110Z"/>
+    <ellipse cx="57" cy="133" rx="16" ry="23" fill="#282459"/>
+    <ellipse cx="53.5" cy="131.5" rx="11.5" ry="18.5" fill="#DFE4F2"/>
+    <path fill="#FFFDF6" d="M44 130C44 121 48 114 54 114C58 114 61 118 62 123C58 120 55 120 52 122C48 125 47 133 49 140C45 138 44 134 44 130Z"/>
+  </g>
+</svg>

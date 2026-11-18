@@ -1,186 +1,176 @@
 <p align="center">
-  <img src="assets/gvx-desktop-icon.svg" width="128" height="128" alt="gvx Desktop: a Go gopher in a space helmet">
+  <img src="assets/gvx-desktop-icon.svg" width="128" height="128" alt="A Go gopher in a space helmet">
 </p>
 
 <h1 align="center">gvx Desktop</h1>
 
 <p align="center"><b>English</b> · <a href="README.ko.md">한국어</a></p>
 
-A desktop app for [gvx](https://github.com/gfire-sigs/gvx) — run Linux containers as
-unprivileged gvx sandboxes (no VM, no daemon, no root) and manage their images,
-volumes and snapshots, in the spirit of Docker Desktop. Built with
-[ggui](https://github.com/ironpark/ggui).
+gvx Desktop runs Linux containers as unprivileged [gvx](https://github.com/gfire-sigs/gvx) sandboxes without a separate Linux VM, a background daemon, or root privileges. Use it to manage sandboxes, images, volumes, and snapshots from a desktop interface built with [ggui](https://github.com/ironpark/ggui).
 
 <p align="center">
-  <img src="assets/tour.gif" width="960" alt="A walk through gvx Desktop: the dashboard, a sandbox's details, the new sandbox sheet, image search, the Docker Engine and Kubernetes recipes, settings and the command palette">
+  <img src="assets/tour.gif" width="960" alt="Demo of the dashboard, sandbox editor and details, image search, Docker Engine and Kubernetes recipes, settings, and command palette">
 </p>
 
 ## Install
 
-On an Apple silicon Mac, with [Homebrew](https://brew.sh):
+### macOS
+
+On an Apple silicon Mac running macOS 13 or later, install with [Homebrew](https://brew.sh).
 
 ```sh
 brew install --cask ironpark/tap/gvx-desktop
 ```
 
-or take the disk image from the [releases](https://github.com/ironpark/gvx-desktop/releases)
-and drag the app to Applications.
+For a manual install, download the DMG and its `.sha256` file from the [release page](https://github.com/ironpark/gvx-desktop/releases). Check the download from the folder containing both files, then open the DMG and drag **GVX Desktop** to **Applications**.
 
-> [!IMPORTANT]
-> The app is not signed with an Apple Developer ID, so macOS refuses to open
-> one that was downloaded: it says the app *is damaged and can't be opened*, or
-> that *Apple could not verify* it. Nothing is wrong with the download; macOS
-> marks every file a browser saves as quarantined, and only lets a quarantined
-> app run when Apple has notarized it. Take the mark off once, after copying
-> the app to Applications:
->
-> ```sh
-> xattr -dr com.apple.quarantine "/Applications/GVX Desktop.app"
-> ```
->
-> On macOS 14 and earlier, Control-clicking the app and choosing **Open** also
-> works. On macOS 15 and later, try to open it once, then allow it under
-> **System Settings → Privacy & Security → Open Anyway**. Installing with
-> Homebrew needs none of this: the cask takes the mark off itself. To check
-> what you downloaded, compare it with the `.sha256` file beside it in the
-> release: `shasum -a 256 -c gvx-desktop-*.dmg.sha256`.
+```sh
+shasum -a 256 -c gvx-desktop-*-macos-arm64.dmg.sha256
+```
 
-On Windows, in PowerShell:
+If macOS blocks an ad hoc signed build downloaded directly, try opening the app, then look for **Open Anyway** under **System Settings → Privacy & Security**. On macOS 14 and earlier, you can also try Control-clicking the app and choosing **Open**. After verifying the download, you can remove the quarantine attribute from the copy in **Applications** if needed.
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/GVX Desktop.app"
+```
+
+The Homebrew cask handles the quarantine attribute for ad hoc signed builds.
+
+### Windows
+
+Install from PowerShell. Windows Hypervisor Platform must be enabled to run sandboxes.
 
 ```powershell
 irm https://raw.githubusercontent.com/ironpark/gvx-desktop/main/install.ps1 | iex
 ```
 
-[`install.ps1`](install.ps1) takes the newest release for your PC, checks it
-against the checksum published with it, unpacks it into
-`%LOCALAPPDATA%\Programs\GVX Desktop` and adds it to the Start menu, for your
-user alone and without an administrator. Running it again updates the app;
-`$env:GVX_DESKTOP_VERSION = '0.1.0'` before it chooses a version. To remove the
-app, delete that folder and the Start menu's `GVX Desktop` shortcut.
+The [installer](install.ps1) verifies the release ZIP against its published SHA-256 checksum. It installs for the current user without administrator privileges and adds a Start menu shortcut.
 
-Or take the zip for your PC from the same releases — `windows-amd64`
-for Intel and AMD, `windows-arm64` for Arm — and run the `GVX Desktop.exe` in
-it. gvx runs guests through the *Windows Hypervisor Platform* feature, which
-has to be turned on.
+- **Update** by running the same command again.
+- **Install a specific version** by setting `$env:GVX_DESKTOP_VERSION = '0.1.0'` before running the command.
+- **Uninstall** by deleting `%LOCALAPPDATA%\Programs\GVX Desktop` and the **GVX Desktop** Start menu shortcut.
 
-gvx itself need not be there first: the app installs `rungv` and keeps it up
-to date (see [rungv](#rungv)). On other systems, [build it](#build-and-run).
+For a manual install, download the ZIP from the [release page](https://github.com/ironpark/gvx-desktop/releases). Choose `windows-amd64` for Intel or AMD, or `windows-arm64` for Arm. Extract the ZIP and open `GVX Desktop.exe`.
+
+For other platforms, see [Build and run](#build-and-run).
+
+## Run your first sandbox
+
+1. Open gvx Desktop. If the dashboard prompts you to set up the engine, select **Install rungv**. You can also point the app to an existing binary under **Settings → Engine → rungv path**.
+2. On the dashboard, select **New sandbox**. Set **Image** to `nginx:alpine` and **Name** to `web`.
+3. To open nginx from the host, enter `127.0.0.1:8080:80` under **Published ports**.
+4. Select **Save and start**. Open the sandbox details to view **Logs**. If you published the port, open `http://127.0.0.1:8080` in your browser.
 
 ## Features
 
 | Area | What you can do |
 | --- | --- |
-| Dashboard | Engine status, running/image/volume/snapshot counts, recipe quick start |
-| Sandboxes | Create/edit (with a live `rungv run …` preview), start/stop/restart, live logs with filter, published ports (open/copy), duplicate, delete, start with the app |
-| Images | List, search Docker Hub or Quay and choose a tag, pull (streaming progress), inspect JSON, run in a new sandbox, remove, prune |
-| Volumes | List with in-use state and users, create (ext4lite/hostfs), reveal, delete, prune |
-| Snapshots | Checkpoint a running sandbox (stop or keep running), list, restore, delete |
-| Docker Engine | One-click `docker:dind`, `docker context` setup, inner container list with start/stop/restart/remove |
-| Kubernetes | One-click single-node k3s, kubeconfig detection, kubectl snippets |
-| Engine | Install `rungv` from gvx's releases or build gvx's `main` from source, see when a newer one is out and update to it, sign it for the hypervisor (macOS) |
-| Desktop | Menu-bar tray (macOS/Windows) with the app out of the Dock while its window is closed, start at login, native menus, ⌘K palette, ⌘1–7 navigation, single instance, light/dark/system theme |
+| Dashboard | Check engine status, see resource counts, and launch recipes. |
+| Sandboxes | Create and edit with a live `rungv run` preview. Start, stop, restart, duplicate, or delete sandboxes. Filter live logs, open or copy published ports, and start selected sandboxes with the app. |
+| Images | Search Docker Hub or Quay, choose tags, and track pull progress. Inspect image metadata as JSON, run images in new sandboxes, or remove and prune images. |
+| Volumes | Create `ext4lite` or `hostfs` volumes, see which sandboxes use them, open their location, and delete or prune them. |
+| Snapshots | Enable checkpoint support for a sandbox to capture its running state. Choose whether to stop it or keep it running after capture. List, restore, and delete snapshots. |
+| Docker Engine | Start `docker:dind`, set up a `docker context`, and manage containers inside the sandbox. |
+| Kubernetes | Start a single-node k3s cluster, detect its kubeconfig, and copy `kubectl` commands. |
+| Desktop | Use native menus, start at login, and choose a light, dark, or system theme. On macOS and Windows, the app can keep running in the tray when you close its window. The app runs as a single instance. |
 
-## How it works
+On macOS, use **⌘K** to open the command palette and **⌘1** through **⌘7** to switch pages. When the app hides in the menu bar, it also leaves the Dock.
 
-gvx has no daemon, and its Go SDK locks down the process that calls it — so the
-app never loads gvx itself. It supervises one `rungv` child process per sandbox,
-parses its output (`rungv: publishing …`, ready patterns, exit codes) and reads
-the management commands through `--format json`. Quitting the app (or SIGINT /
-SIGTERM) stops every sandbox it started.
+The app follows the system language by default. Choose English or Korean under **Settings → General → Language**.
 
-```
-internal/rungv      rungv CLI wrapper: locate, info/images/volumes/df, pull/rm/prune, signing, releases
-internal/sandbox    Spec → rungv args, Supervisor (processes, logs, ports, ready, checkpoint/restore)
-internal/registry   Search of Docker Hub and Quay, and the tags of what it finds
-internal/dockerapi  Minimal Docker Engine API client over the dind Unix socket
-internal/recipes    Docker Engine and Kubernetes presets
-internal/store      sandboxes.json / settings.json in the user config dir
-internal/ui         ggui screens
-```
+## Manage the rungv engine
 
-## Build and run
+The app uses the first executable it finds in this order.
 
-Requires Go 1.27+.
+1. The path set under **Settings → Engine → rungv path**
+2. The `GVX_RUNGV` environment variable
+3. `PATH`
+4. `~/.gvx/bin`
+5. Locations relative to the app, including bundle resources, then `./bin` in the working directory
+6. `/opt/homebrew/bin` and `/usr/local/bin` on non-Windows systems
+
+On macOS, `rungv` needs the `com.apple.security.hypervisor` entitlement. The app signs binaries it installs and offers **Sign rungv** when it detects that an existing binary needs the entitlement.
+
+### Updates
+
+Choose a channel under **Settings → Updates → Channel**.
+
+| Channel | How it installs rungv |
+| --- | --- |
+| **Releases** | Downloads the latest [gvx release](https://github.com/gfire-sigs/gvx/releases) for your platform and verifies the archive against `SHA256SUMS`. |
+| **main, built here** | Fetches the latest commit on gvx's `main` branch and builds it locally. This requires Git and Go. The first build can take several minutes because it compiles gVisor. |
+
+By default, the app checks the selected channel at startup and offers to install available updates. You can turn off startup checks under **Settings → Updates** or select **Check for updates** to check manually.
+
+For source builds, the app keeps the gvx checkout in the `gvx-src` subdirectory of its data folder. It uses gvx's `scripts/repro-build.sh` when available on non-Windows systems and uses `go build` on Windows.
+
+The app replaces the active binary if it is a regular file in a writable directory. Otherwise, it installs to `~/.gvx/bin` and sets **rungv path** if needed to use that copy. Running sandboxes continue with the binary they started with.
+
+## Development
+
+### Build and run
+
+Use Go 1.27 or later. Run these commands from the repository root.
 
 ```sh
 go build -o bin/gvx-desktop .
 ./bin/gvx-desktop
 ```
 
-To build against a local checkout of ggui, name it in a `go.work` (which git
-ignores) rather than in `go.mod`:
+To develop against a local ggui checkout, create a Git-ignored `go.work` file. If you already have a workspace, run `go work use . ../ggui ../ggui/icons/lucide` to add the modules.
 
 ```sh
 go work init . ../ggui ../ggui/icons/lucide
 ```
 
-Bundle it as the release does, into `build/GVX Desktop.app` and a disk image,
-with the [ggui command](https://github.com/ironpark/ggui/blob/main/docs/cli.md):
+To build the macOS app bundle and DMG in `build/`, run the [ggui CLI](https://github.com/ironpark/ggui/blob/main/docs/cli.md).
 
 ```sh
 ggui build --dmg
 ```
 
-Render every screen with demo data, without an engine:
+### Tests
+
+```sh
+go test -short ./...
+```
+
+With a working `rungv`, run the sandbox integration tests and the Docker Engine integration test.
+
+```sh
+go test ./internal/sandbox/
+GVXD_DOCKER_TEST=1 go test ./internal/recipes/
+```
+
+### Preview and localization
+
+Render screens to PNG with demo data and no running engine.
 
 ```sh
 ./bin/gvx-desktop -render-dir ./shots
 ./bin/gvx-desktop -render-dir ./shots-ko -render-lang ko
 ```
 
-`-render-tour DIR` draws a walk through the app the same way, as frames with
-its motion in them; `assets/tour.sh` makes the animation above of those, with
-ffmpeg.
+Use `-render-tour DIR` to render an animated walkthrough as PNG frames. Run [assets/tour.sh](assets/tour.sh) from the repository root to regenerate the README GIF with FFmpeg.
 
-The app is worded in English and Korean. It follows the system language, and
-Settings → Language chooses one. The Korean text lives in
-`internal/ui/i18n_ko.go`, keyed by the English in the code; a test fails when
-a text has no Korean. This README is kept in both too: [README.ko.md](README.ko.md).
+Korean strings in [internal/ui/i18n_ko.go](internal/ui/i18n_ko.go) use the English text as keys. The localization test checks for missing translations.
 
-## rungv
+### Architecture
 
-The app looks for `rungv` in Settings → rungv path, `$GVX_RUNGV`, `PATH`,
-`~/.gvx/bin`, and next to the app / in `./bin`. On macOS rungv must carry the
-`com.apple.security.hypervisor` entitlement; the app detects an unsigned binary
-and can sign it (Settings → Sign rungv).
+The gvx Go SDK restricts the process that calls it. To keep the GUI separate, the app starts one `rungv` child process per sandbox and reads management command output with `--format json`. When the app quits or receives SIGINT or SIGTERM, it stops the sandboxes it started.
 
-With no `rungv` to be found, the dashboard offers to install one: the app
-downloads the newest [release of gvx](https://github.com/gfire-sigs/gvx/releases)
-for this system, checks it against the release's `SHA256SUMS`, puts it in
-`~/.gvx/bin` and signs it. At launch it asks GitHub for the newest release
-(Settings turns that off) and offers the update when there is one; Settings →
-Check for updates asks on demand. An update replaces the `rungv` in use when
-it is a plain file the app may write, and otherwise goes to `~/.gvx/bin`, which
-Settings → rungv path is then pointed at. Sandboxes that are running keep the
-`rungv` they started with.
+| Package | Responsibility |
+| --- | --- |
+| [internal/rungv](internal/rungv) | Locate, install, sign, and call the `rungv` CLI. |
+| [internal/sandbox](internal/sandbox) | Translate sandbox specs into CLI arguments and supervise processes, logs, ports, readiness, and snapshots. |
+| [internal/registry](internal/registry) | Search Docker Hub and Quay and list image tags. |
+| [internal/dockerapi](internal/dockerapi) | Call the Docker Engine API over the `docker:dind` Unix socket. |
+| [internal/recipes](internal/recipes) | Define the Docker Engine and Kubernetes presets. |
+| [internal/store](internal/store) | Store `sandboxes.json` and `settings.json` in the user configuration directory. |
+| [internal/ui](internal/ui) | Implement the ggui screens. |
 
-Settings → Updates → Channel chooses where a newer `rungv` comes from.
-*Releases* are gvx's published builds. *main, built here* follows the newest
-commit of gvx's `main` branch instead: the app asks GitHub for its head and how
-many commits it is past the `rungv` in use, and builds it on this computer —
-it clones gvx into the app's data folder (`gvx-src`), runs gvx's own
-`scripts/repro-build.sh`, and installs and signs the result. That needs `git`
-and Go, which are looked for on `PATH`, in the usual places and through the
-login shell, since an app started from the Dock has a short `PATH`. The first
-build compiles gVisor and takes minutes.
+### Release
 
-## Releasing
+Update `version` in [ggui.toml](ggui.toml), then push the matching `vX.Y.Z` tag. The [release workflow](.github/workflows/release.yml) publishes the Apple silicon DMG and the Windows amd64 and arm64 ZIPs with their checksums. It generates the [Homebrew cask](https://github.com/ironpark/homebrew-tap) with [release/cask.sh](release/cask.sh).
 
-Set `version` in `ggui.toml` and push the tag `vX.Y.Z`. The
-[release workflow](.github/workflows/release.yml) builds the app for Apple
-silicon, publishes the disk image as the tag's release, writes the cask
-to [ironpark/homebrew-tap](https://github.com/ironpark/homebrew-tap) with
-`release/cask.sh`, and adds the Windows programs, cross-built for amd64 and
-arm64; its header lists the secrets it reads. A Chocolatey package that
-installs those is set up in `release/choco.sh` and waits for the repository
-variable `CHOCO_PUBLISH` to be `true`. The icon and the
-mark in the sidebar are drawn in `assets/`; `assets/svg2png.swift` makes
-their PNGs.
-
-## Tests
-
-```sh
-go test -short ./...                       # unit tests
-go test ./internal/sandbox/                # + real sandboxes (needs a working rungv)
-GVXD_DOCKER_TEST=1 go test ./internal/recipes/   # + boots docker:dind and queries its API
-```
+Set the repository variable `CHOCO_PUBLISH` to `true` to enable Chocolatey packaging with [release/choco.sh](release/choco.sh). The workflow header lists the relevant secrets. To regenerate the PNG assets for the app icon and sidebar mark, use [assets/svg2png.swift](assets/svg2png.swift).

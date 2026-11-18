@@ -1,177 +1,176 @@
 <p align="center">
-  <img src="assets/gvx-desktop-icon.svg" width="128" height="128" alt="gvx Desktop: 우주 헬멧을 쓴 Go 고퍼">
+  <img src="assets/gvx-desktop-icon.svg" width="128" height="128" alt="우주 헬멧을 쓴 Go 고퍼">
 </p>
 
 <h1 align="center">gvx Desktop</h1>
 
 <p align="center"><a href="README.md">English</a> · <b>한국어</b></p>
 
-[gvx](https://github.com/gfire-sigs/gvx)를 위한 데스크톱 앱입니다. Linux 컨테이너를
-권한 없는 gvx 샌드박스로 실행하고(VM도, 데몬도, root도 없이) 이미지·볼륨·스냅샷을
-관리합니다. Docker Desktop과 같은 쓰임새를 지향하며,
-[ggui](https://github.com/ironpark/ggui)로 만들었습니다.
+gvx Desktop은 Linux 컨테이너를 별도의 Linux VM, 백그라운드 데몬, root 권한 없이 [gvx](https://github.com/gfire-sigs/gvx) 샌드박스에서 실행합니다. [ggui](https://github.com/ironpark/ggui)로 만든 데스크톱 인터페이스에서 샌드박스, 이미지, 볼륨, 스냅샷을 관리할 수 있습니다.
 
 <p align="center">
-  <img src="assets/tour.gif" width="960" alt="gvx Desktop 둘러보기: 대시보드, 샌드박스 상세, 새 샌드박스 시트, 이미지 검색, Docker Engine과 Kubernetes 레시피, 설정, 명령 팔레트">
+  <img src="assets/tour.gif" width="960" alt="대시보드, 샌드박스 편집 및 상세 화면, 이미지 검색, Docker Engine과 Kubernetes 레시피, 설정, 명령 팔레트 시연">
 </p>
 
 ## 설치
 
-Apple silicon Mac에서 [Homebrew](https://brew.sh)로 설치합니다.
+### macOS
+
+macOS 13 이상이 설치된 Apple Silicon Mac에서 [Homebrew](https://brew.sh)로 설치합니다.
 
 ```sh
 brew install --cask ironpark/tap/gvx-desktop
 ```
 
-또는 [릴리스](https://github.com/ironpark/gvx-desktop/releases)에서 디스크 이미지를
-받아 앱을 응용 프로그램 폴더로 끌어다 놓습니다.
+직접 설치하려면 [릴리스 페이지](https://github.com/ironpark/gvx-desktop/releases)에서 DMG와 함께 게시된 `.sha256` 파일을 다운로드합니다. 두 파일이 있는 폴더에서 체크섬을 확인한 다음, DMG를 열어 **GVX Desktop**을 **응용 프로그램** 폴더로 옮깁니다.
 
-> [!IMPORTANT]
-> 이 앱은 Apple Developer ID로 서명되어 있지 않아서, 내려받은 앱을 macOS가 열지
-> 않습니다. *"손상되었기 때문에 열 수 없습니다"* 또는 *"Apple에서 확인할 수
-> 없습니다"* 라는 경고가 뜹니다. 파일이 잘못된 것이 아닙니다. macOS는 브라우저로
-> 받은 모든 파일에 격리(quarantine) 표시를 붙이고, 격리된 앱은 Apple의 공증을
-> 받았을 때만 실행해 줍니다. 앱을 응용 프로그램 폴더로 복사한 뒤 이 표시를 한 번
-> 지우면 됩니다.
->
-> ```sh
-> xattr -dr com.apple.quarantine "/Applications/GVX Desktop.app"
-> ```
->
-> macOS 14 이하에서는 앱을 Control-클릭해 **열기**를 선택해도 됩니다. macOS 15
-> 이상에서는 한 번 열기를 시도한 뒤 **시스템 설정 → 개인정보 보호 및 보안 →
-> 그래도 열기**에서 허용합니다. Homebrew로 설치하면 이 과정이 필요 없습니다.
-> cask가 표시를 직접 지웁니다. 받은 파일을 확인하려면 릴리스에 함께 있는
-> `.sha256` 파일과 대조하세요: `shasum -a 256 -c gvx-desktop-*.dmg.sha256`.
+```sh
+shasum -a 256 -c gvx-desktop-*-macos-arm64.dmg.sha256
+```
 
-Windows에서는 PowerShell에서 한 줄로 설치합니다.
+직접 내려받은 ad hoc 서명 빌드를 macOS가 차단하면, 앱을 한 번 열어 본 뒤 **시스템 설정 → 개인정보 보호 및 보안 → 그래도 열기**를 확인합니다. macOS 14 이하에서는 앱을 Control 키를 누른 채 클릭하고 **열기**를 선택할 수도 있습니다. 다운로드를 검증한 뒤 필요한 경우 **응용 프로그램** 폴더에 있는 앱의 격리 속성을 제거합니다.
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/GVX Desktop.app"
+```
+
+Homebrew cask는 ad hoc 서명 빌드의 격리 속성을 자동으로 제거합니다.
+
+### Windows
+
+PowerShell에서 설치합니다. 샌드박스를 실행하려면 **Windows 하이퍼바이저 플랫폼** 기능을 켜야 합니다.
 
 ```powershell
 irm https://raw.githubusercontent.com/ironpark/gvx-desktop/main/install.ps1 | iex
 ```
 
-[`install.ps1`](install.ps1)은 PC에 맞는 최신 릴리스를 받아 함께 게시된 체크섬과
-대조하고, `%LOCALAPPDATA%\Programs\GVX Desktop`에 풀어 시작 메뉴에 등록합니다. 현재
-사용자에게만 설치하며 관리자 권한이 필요 없습니다. 다시 실행하면 앱을 업데이트하고,
-실행 전에 `$env:GVX_DESKTOP_VERSION = '0.1.0'`을 지정하면 버전을 고를 수 있습니다.
-제거하려면 그 폴더와 시작 메뉴의 `GVX Desktop` 바로 가기를 지우면 됩니다.
+[설치 스크립트](install.ps1)는 릴리스 ZIP을 다운로드하고 함께 게시된 SHA-256 체크섬으로 검증합니다. 관리자 권한 없이 현재 사용자 계정에 앱을 설치하고 시작 메뉴에 바로 가기를 추가합니다.
 
-또는 같은 릴리스에서 PC에 맞는 zip을 받아(`windows-amd64`는 Intel·AMD,
-`windows-arm64`는 Arm) 안의 `GVX Desktop.exe`를 실행합니다. gvx는 *Windows 하이퍼바이저
-플랫폼* 기능으로 게스트를 실행하므로 이 기능을 켜 두어야 합니다.
+- **업데이트**하려면 같은 명령을 다시 실행합니다.
+- **특정 버전**을 설치하려면 명령을 실행하기 전에 `$env:GVX_DESKTOP_VERSION = '0.1.0'`을 설정합니다.
+- **제거**하려면 `%LOCALAPPDATA%\Programs\GVX Desktop` 폴더와 시작 메뉴의 **GVX Desktop** 바로 가기를 삭제합니다.
 
-gvx를 먼저 설치할 필요는 없습니다. 앱이 `rungv`를 설치하고 최신으로
-유지합니다([rungv](#rungv) 참고). 다른 시스템에서는 [직접 빌드](#빌드와-실행)하세요.
+직접 설치하려면 [릴리스 페이지](https://github.com/ironpark/gvx-desktop/releases)에서 PC에 맞는 ZIP을 다운로드합니다. Intel과 AMD는 `windows-amd64`, Arm은 `windows-arm64`를 선택합니다. 압축을 푼 뒤 `GVX Desktop.exe`를 실행합니다.
+
+다른 플랫폼에서는 [빌드와 실행](#빌드와-실행)을 참고하세요.
+
+## 첫 샌드박스 실행
+
+1. gvx Desktop을 엽니다. 대시보드에 엔진 설치 안내가 표시되면 **rungv 설치**를 선택합니다. 이미 설치된 바이너리는 **설정 → 엔진 → rungv 경로**에서 지정할 수 있습니다.
+2. 대시보드에서 **새 샌드박스**를 선택합니다. **이미지**에 `nginx:alpine`을, **이름**에 `web`을 입력합니다.
+3. 호스트에서 nginx에 접속하려면 **게시 포트**에 `127.0.0.1:8080:80`을 입력합니다.
+4. **저장하고 시작**을 선택합니다. 샌드박스 상세 화면에서 **로그**를 확인할 수 있습니다. 포트를 게시했다면 브라우저에서 `http://127.0.0.1:8080`을 엽니다.
 
 ## 기능
 
 | 영역 | 할 수 있는 일 |
 | --- | --- |
-| 대시보드 | 엔진 상태, 실행 중·이미지·볼륨·스냅샷 개수, 레시피 빠른 시작 |
-| 샌드박스 | 생성·편집(`rungv run …` 미리 보기 포함), 시작·중지·재시작, 필터가 있는 실시간 로그, 게시 포트(열기·복사), 복제, 삭제, 앱과 함께 시작 |
-| 이미지 | 목록, Docker Hub·Quay 검색과 태그 선택, 가져오기(진행 상황 스트리밍), JSON 검사, 새 샌드박스에서 실행, 삭제, 정리 |
-| 볼륨 | 사용 여부와 사용처가 보이는 목록, 생성(ext4lite/hostfs), 위치 보기, 삭제, 정리 |
-| 스냅샷 | 실행 중인 샌드박스 체크포인트(중지 또는 계속 실행), 목록, 복원, 삭제 |
-| Docker Engine | 클릭 한 번으로 `docker:dind`, `docker context` 설정, 내부 컨테이너 목록과 시작·중지·재시작·삭제 |
-| Kubernetes | 클릭 한 번으로 단일 노드 k3s, kubeconfig 감지, kubectl 예시 |
-| 엔진 | gvx 릴리스에서 `rungv` 설치 또는 gvx `main`을 소스에서 빌드, 새 버전 확인과 업데이트, 하이퍼바이저용 서명(macOS) |
-| 데스크톱 | 메뉴 막대 트레이(macOS/Windows)와 창을 닫으면 Dock에서 숨김, 로그인 시 시작, 네이티브 메뉴, ⌘K 팔레트, ⌘1–7 이동, 단일 인스턴스, 라이트·다크·시스템 테마 |
+| 대시보드 | 엔진 상태와 리소스 개수를 확인하고 레시피를 실행합니다. |
+| 샌드박스 | 생성하거나 편집할 때 `rungv run` 명령을 미리 봅니다. 샌드박스를 시작, 중지, 재시작, 복제, 삭제할 수 있습니다. 실시간 로그를 필터링하고 게시 포트를 열거나 복사하며, 선택한 샌드박스를 앱과 함께 시작할 수 있습니다. |
+| 이미지 | Docker Hub와 Quay에서 이미지를 검색하고 태그를 선택합니다. 가져오기 진행 상황과 JSON 메타데이터를 확인하고, 이미지를 새 샌드박스에서 실행하거나 삭제 및 정리할 수 있습니다. |
+| 볼륨 | `ext4lite` 또는 `hostfs` 볼륨을 만들고 어느 샌드박스가 사용하는지 확인합니다. 볼륨의 위치를 열거나 볼륨을 삭제 및 정리할 수 있습니다. |
+| 스냅샷 | 샌드박스에서 체크포인트를 활성화하면 실행 상태를 저장할 수 있습니다. 저장 후 샌드박스를 계속 실행할지 선택하고, 스냅샷 목록을 보거나 복원 및 삭제할 수 있습니다. |
+| Docker Engine | `docker:dind`를 시작하고 `docker context`를 설정하며 샌드박스 안의 컨테이너를 관리합니다. |
+| Kubernetes | 단일 노드 k3s 클러스터를 시작하고 kubeconfig를 감지하며 `kubectl` 명령을 복사합니다. |
+| 데스크톱 | 네이티브 메뉴, 로그인 시 자동 시작, 라이트·다크·시스템 화면 모드를 지원합니다. macOS와 Windows에서는 창을 닫아도 트레이에서 앱을 계속 실행할 수 있습니다. 앱은 한 번에 하나만 실행됩니다. |
 
-## 동작 방식
+macOS에서는 **⌘K**로 명령 팔레트를 열고 **⌘1**부터 **⌘7**까지의 단축키로 화면을 전환합니다. 앱이 메뉴 막대로 숨겨지면 Dock에서도 아이콘이 사라집니다.
 
-gvx에는 데몬이 없고, Go SDK는 자신을 호출한 프로세스를 잠급니다. 그래서 앱은 gvx를
-직접 불러오지 않습니다. 샌드박스마다 `rungv` 자식 프로세스 하나를 관리하면서 그
-출력(`rungv: publishing …`, 준비 패턴, 종료 코드)을 해석하고, 관리 명령은
-`--format json`으로 읽습니다. 앱을 종료하면(또는 SIGINT/SIGTERM을 받으면) 앱이 시작한
-샌드박스를 모두 중지합니다.
+앱은 기본적으로 시스템 언어를 따릅니다. **설정 → 일반 → 언어**에서 영어 또는 한국어를 선택할 수 있습니다.
 
-```
-internal/rungv      rungv CLI 래퍼: 위치 찾기, info/images/volumes/df, pull/rm/prune, 서명, 릴리스
-internal/sandbox    Spec → rungv 인자, Supervisor(프로세스, 로그, 포트, 준비 상태, 체크포인트/복원)
-internal/registry   Docker Hub·Quay 검색과 찾은 저장소의 태그
-internal/dockerapi  dind Unix 소켓을 쓰는 최소한의 Docker Engine API 클라이언트
-internal/recipes    Docker Engine·Kubernetes 프리셋
-internal/store      사용자 설정 디렉터리의 sandboxes.json / settings.json
-internal/ui         ggui 화면
-```
+## rungv 엔진 관리
 
-## 빌드와 실행
+앱은 다음 순서로 검색해 처음 발견한 실행 파일을 사용합니다.
 
-Go 1.27 이상이 필요합니다.
+1. **설정 → 엔진 → rungv 경로**에 지정한 경로
+2. `GVX_RUNGV` 환경 변수
+3. `PATH`
+4. `~/.gvx/bin`
+5. 앱 실행 파일 기준 경로(번들 리소스 포함), 그다음 현재 작업 디렉터리의 `./bin`
+6. Windows 이외 환경의 `/opt/homebrew/bin`과 `/usr/local/bin`
+
+macOS에서 `rungv`에는 `com.apple.security.hypervisor` 권한이 필요합니다. 앱에서 설치한 바이너리는 자동으로 서명합니다. 기존 바이너리에 권한이 없으면 **rungv 서명**을 선택할 수 있습니다.
+
+### 업데이트
+
+**설정 → 업데이트 → 채널**에서 설치 및 업데이트에 사용할 채널을 선택합니다.
+
+| 채널 | rungv 설치 방식 |
+| --- | --- |
+| **릴리스** | 플랫폼에 맞는 최신 [gvx 릴리스](https://github.com/gfire-sigs/gvx/releases)를 내려받고 `SHA256SUMS`로 검증합니다. |
+| **main (소스 빌드)** | gvx의 `main` 브랜치에서 최신 커밋을 가져와 로컬에서 빌드합니다. Git과 Go가 필요하며, 첫 빌드에서는 gVisor를 컴파일하므로 몇 분 걸릴 수 있습니다. |
+
+앱은 기본적으로 시작할 때 선택한 채널을 확인하고 업데이트가 있으면 설치를 안내합니다. **설정 → 업데이트**에서 시작 시 확인을 끄거나 **업데이트 확인**을 눌러 직접 확인할 수 있습니다.
+
+소스 빌드에 쓰는 gvx 저장소는 앱 데이터 폴더의 `gvx-src`에 저장합니다. Windows에서는 `go build`를 사용합니다. 그 외 환경에서는 gvx의 `scripts/repro-build.sh`가 있으면 해당 스크립트를 실행합니다.
+
+현재 바이너리가 쓰기 가능한 디렉터리의 일반 파일이면 그 자리에 교체합니다. 그 외에는 `~/.gvx/bin`에 설치하고, 필요한 경우 **rungv 경로**를 그쪽으로 지정합니다. 실행 중인 샌드박스는 시작할 때 사용한 바이너리로 계속 실행됩니다.
+
+## 개발
+
+### 빌드와 실행
+
+Go 1.27 이상이 필요합니다. 저장소 루트에서 다음 명령을 실행합니다.
 
 ```sh
 go build -o bin/gvx-desktop .
 ./bin/gvx-desktop
 ```
 
-로컬에 체크아웃한 ggui로 빌드하려면 `go.mod`가 아니라 `go.work`(git이 무시합니다)에
-적습니다.
+로컬에 체크아웃한 ggui로 개발하려면 Git에서 추적하지 않는 `go.work`를 만듭니다. 워크스페이스가 이미 있으면 `go work use . ../ggui ../ggui/icons/lucide`로 모듈을 추가합니다.
 
 ```sh
 go work init . ../ggui ../ggui/icons/lucide
 ```
 
-릴리스와 같은 방식으로 `build/GVX Desktop.app`과 디스크 이미지를 만들려면
-[ggui 명령](https://github.com/ironpark/ggui/blob/main/docs/cli.md)을 씁니다.
+macOS 앱 번들과 DMG를 `build/`에 만들려면 [ggui CLI](https://github.com/ironpark/ggui/blob/main/docs/cli.md)를 사용합니다.
 
 ```sh
 ggui build --dmg
 ```
 
-엔진 없이 데모 데이터로 모든 화면을 렌더합니다.
+### 테스트
+
+```sh
+go test -short ./...
+```
+
+`rungv`가 작동하는 환경에서는 샌드박스와 Docker Engine 통합 테스트도 실행할 수 있습니다.
+
+```sh
+go test ./internal/sandbox/
+GVXD_DOCKER_TEST=1 go test ./internal/recipes/
+```
+
+### 화면 미리 보기와 번역
+
+엔진을 실행하지 않고 데모 데이터로 화면을 PNG로 렌더링합니다.
 
 ```sh
 ./bin/gvx-desktop -render-dir ./shots
 ./bin/gvx-desktop -render-dir ./shots-ko -render-lang ko
 ```
 
-`-render-tour DIR`은 같은 방식으로 앱을 둘러보는 과정을 움직임이 담긴 프레임으로
-그립니다. `assets/tour.sh`가 그 프레임을 ffmpeg로 묶어 위의 애니메이션을 만듭니다.
+`-render-tour DIR`을 사용하면 앱 둘러보기를 애니메이션의 PNG 프레임으로 렌더링합니다. 저장소 루트에서 [assets/tour.sh](assets/tour.sh)를 실행하면 FFmpeg로 README의 GIF를 다시 만들 수 있습니다.
 
-앱은 영어와 한국어로 표시됩니다. 시스템 언어를 따르며, 설정 → 언어에서 고를 수
-있습니다. 한국어 문구는 `internal/ui/i18n_ko.go`에 있고 코드의 영어 문구가 키입니다.
-한국어가 없는 문구가 있으면 테스트가 실패합니다. 이 README도 두 언어로 둡니다:
-[README.md](README.md).
+[internal/ui/i18n_ko.go](internal/ui/i18n_ko.go)의 한국어 번역은 코드에 있는 영어 문구를 키로 사용합니다. 번역 테스트는 빠진 문구가 있는지 확인합니다.
 
-## rungv
+### 동작 방식
 
-앱은 `rungv`를 설정 → rungv 경로, `$GVX_RUNGV`, `PATH`, `~/.gvx/bin`, 앱 옆과 `./bin`
-순으로 찾습니다. macOS에서 rungv에는 `com.apple.security.hypervisor` 권한이 있어야
-합니다. 앱이 서명되지 않은 바이너리를 감지하고 서명할 수 있습니다(설정 → rungv 서명).
+gvx의 Go SDK는 자신을 호출한 프로세스의 동작을 제한합니다. GUI는 샌드박스마다 별도의 `rungv` 자식 프로세스를 실행하고, 관리 명령의 출력은 `--format json`으로 읽습니다. 앱을 종료하거나 앱이 SIGINT 또는 SIGTERM을 받으면, 앱이 시작한 샌드박스도 중지됩니다.
 
-`rungv`를 찾지 못하면 대시보드가 설치를 제안합니다. 앱은 이 시스템에 맞는 최신
-[gvx 릴리스](https://github.com/gfire-sigs/gvx/releases)를 내려받아 릴리스의
-`SHA256SUMS`와 대조하고, `~/.gvx/bin`에 넣은 뒤 서명합니다. 시작할 때 GitHub에 최신
-릴리스를 묻고(설정에서 끌 수 있습니다) 새 버전이 있으면 업데이트를 제안합니다.
-설정 → 업데이트 확인으로 직접 물을 수도 있습니다. 업데이트는 쓰고 있는 `rungv`가
-앱이 쓸 수 있는 일반 파일이면 그 자리를 교체하고, 아니면 `~/.gvx/bin`에 설치한 뒤
-설정 → rungv 경로를 그쪽으로 바꿉니다. 실행 중인 샌드박스는 시작할 때의 `rungv`를
-계속 씁니다.
+| 패키지 | 역할 |
+| --- | --- |
+| [internal/rungv](internal/rungv) | `rungv` CLI를 검색, 설치, 서명, 실행합니다. |
+| [internal/sandbox](internal/sandbox) | 샌드박스 설정을 CLI 인자로 변환하고 프로세스, 로그, 포트, 준비 상태, 스냅샷을 관리합니다. |
+| [internal/registry](internal/registry) | Docker Hub와 Quay에서 이미지를 검색하고 태그 목록을 가져옵니다. |
+| [internal/dockerapi](internal/dockerapi) | `docker:dind`의 Unix 소켓으로 Docker Engine API를 호출합니다. |
+| [internal/recipes](internal/recipes) | Docker Engine과 Kubernetes 프리셋을 정의합니다. |
+| [internal/store](internal/store) | 사용자 설정 디렉터리에 `sandboxes.json`과 `settings.json`을 저장합니다. |
+| [internal/ui](internal/ui) | ggui 화면을 구현합니다. |
 
-설정 → 업데이트 → 채널에서 새 `rungv`를 어디서 가져올지 고릅니다. *릴리스*는 gvx가
-배포한 빌드입니다. *main (소스 빌드)*는 gvx `main` 브랜치의 최신 커밋을 따라갑니다.
-앱이 GitHub에 head 커밋과, 그것이 쓰고 있는 `rungv`보다 몇 커밋 앞서 있는지를 묻고,
-이 컴퓨터에서 빌드합니다. gvx를 앱 데이터 폴더(`gvx-src`)에 클론하고 gvx의
-`scripts/repro-build.sh`를 실행한 다음, 결과물을 설치하고 서명합니다. `git`과 Go가
-필요하며, Dock에서 시작한 앱은 `PATH`가 짧기 때문에 `PATH`, 흔한 설치 위치, 로그인
-셸 순으로 찾습니다. 첫 빌드는 gVisor를 컴파일하므로 몇 분 걸립니다.
+### 릴리스
 
-## 릴리스
+[ggui.toml](ggui.toml)의 `version`을 바꾸고 해당 버전의 `vX.Y.Z` 태그를 푸시합니다. [릴리스 워크플로](.github/workflows/release.yml)는 Apple Silicon용 DMG와 Windows amd64·arm64용 ZIP을 체크섬과 함께 게시합니다. [release/cask.sh](release/cask.sh)로 [Homebrew cask](https://github.com/ironpark/homebrew-tap)도 갱신합니다.
 
-`ggui.toml`의 `version`을 바꾸고 `vX.Y.Z` 태그를 푸시합니다.
-[릴리스 워크플로](.github/workflows/release.yml)가 Apple silicon용 앱을 빌드해 디스크
-이미지를 태그의 릴리스로 올리고, `release/cask.sh`로 만든 cask를
-[ironpark/homebrew-tap](https://github.com/ironpark/homebrew-tap)에 씁니다. amd64·arm64용
-Windows 프로그램도 교차 빌드해 릴리스에 추가합니다. 이 zip을 설치하는 Chocolatey
-패키지는 `release/choco.sh`에 준비되어 있고, 저장소 변수 `CHOCO_PUBLISH`를 `true`로 두면
-켜집니다. 워크플로가
-읽는 시크릿은 파일 머리말에 적혀 있습니다. 앱 아이콘과 사이드바의 마크는 `assets/`에
-그려져 있고, `assets/svg2png.swift`가 PNG로 만듭니다.
-
-## 테스트
-
-```sh
-go test -short ./...                       # 단위 테스트
-go test ./internal/sandbox/                # + 실제 샌드박스 (동작하는 rungv 필요)
-GVXD_DOCKER_TEST=1 go test ./internal/recipes/   # + docker:dind를 띄우고 API 조회
-```
+저장소 변수 `CHOCO_PUBLISH`를 `true`로 설정하면 [release/choco.sh](release/choco.sh)를 사용하는 Chocolatey 패키징이 활성화됩니다. 관련 시크릿은 워크플로 파일 상단에 설명되어 있습니다. 앱 아이콘과 사이드바 마크의 PNG가 필요하면 [assets/svg2png.swift](assets/svg2png.swift)로 다시 생성합니다.

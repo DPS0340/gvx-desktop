@@ -149,7 +149,7 @@ func detailPanel(m *Model) ggui.Widget {
 		return ggui.If(hasSelection, func() ggui.Widget {
 			header := ggui.View(current, func(r Row) ggui.Widget { return detailHeader(m, r) })
 			tabs := ui.Tabs(m.Detail,
-				ui.Tab(tr("Logs"), logsView(m, current)),
+				ui.Tab(tr("Logs"), logsView(m)),
 				ui.Tab(tr("Connect"), ggui.View(current, func(r Row) ggui.Widget { return connectView(m, r) })),
 				ui.Tab(tr("Configuration"), ggui.View(ggui.Map(current, func(r Row) sandbox.Spec { return r.Spec }).WithEqual(sandbox.Spec.Equal), func(s sandbox.Spec) ggui.Widget { return configView(m, s) })),
 				ui.Tab(tr("Snapshots"), ggui.View(current, func(r Row) ggui.Widget { return sandboxSnapshots(m, r) })),
@@ -219,9 +219,16 @@ func shortPath(p string) string {
 }
 
 // logsView follows the selected sandbox's output.
-func logsView(m *Model, current ggui.Readable[Row]) ggui.Widget {
+func logsView(m *Model) ggui.Widget {
+	return logViewer(m, m.Logs, tr("No output yet. Start the sandbox to see what it writes."),
+		tip(iconButton(lucide.Eraser, tr("Clear logs"), func() { m.ClearLogs(ggui.Peek(m.Selected)) }), tr("Clear")))
+}
+
+// logViewer shows lines of a log, with a field that filters them, their
+// count, a button that copies them and the actions given after it.
+func logViewer(m *Model, lines ggui.Readable[[]sandbox.LogLine], empty string, actions ...ggui.Widget) ggui.Widget {
 	filter := ggui.State("")
-	shown := ggui.Combine(m.Logs, filter, func(lines []sandbox.LogLine, f string) []sandbox.LogLine {
+	shown := ggui.Combine(lines, filter, func(lines []sandbox.LogLine, f string) []sandbox.LogLine {
 		f = strings.ToLower(strings.TrimSpace(f))
 		if f == "" {
 			return lines
@@ -250,10 +257,10 @@ func logsView(m *Model, current ggui.Readable[Row]) ggui.Widget {
 			widget.Expanded(t),
 		).Gap(10)
 	}).ItemExtent(19).Else(func() ggui.Widget {
-		return widget.Padding(ui.Caption(tr("No output yet. Start the sandbox to see what it writes.")), 12)
+		return widget.Padding(ui.Caption(empty), 12)
 	})
 	scroll := widget.Scroll(widget.Padding(rows, 8, 12)).FollowEnd()
-	toolbar := widget.Row(
+	bar := []ggui.Widget{
 		widget.Box(ui.TextField(filter).Placeholder(tr("Filter lines")).Name(tr("Filter logs"))).Width(260),
 		widget.Spacer(),
 		ui.CaptionOf(ggui.Map(shown, func(l []sandbox.LogLine) string { return fmt.Sprintf(tr("%d lines"), len(l)) })).Size(12),
@@ -265,8 +272,8 @@ func logsView(m *Model, current ggui.Readable[Row]) ggui.Widget {
 			}
 			m.Copy(b.String(), tr("The visible log lines are on the clipboard."))
 		}), tr("Copy")),
-		tip(iconButton(lucide.Eraser, tr("Clear logs"), func() { m.ClearLogs(ggui.Peek(m.Selected)) }), tr("Clear")),
-	).Gap(6).Align(widget.AlignCenter)
+	}
+	toolbar := widget.Row(append(bar, actions...)...).Gap(6).Align(widget.AlignCenter)
 	return widget.Column(
 		toolbar,
 		widget.Box(scroll).Height(380).Radius(8).Border(1, colorGrayA).Fill(rgbA(0x000000, 0x08)),

@@ -26,6 +26,7 @@ import (
 const (
 	PageDashboard  = "dashboard"
 	PageSandboxes  = "sandboxes"
+	PageContainers = "containers"
 	PageImages     = "images"
 	PageVolumes    = "volumes"
 	PageSnapshots  = "snapshots"
@@ -116,7 +117,21 @@ type Model struct {
 
 	DockerContainers *ggui.StateValue[Listing[dockerapi.Container]]
 	DockerVersion    *ggui.StateValue[dockerapi.Version]
-	KubeconfigReady  *ggui.StateValue[bool]
+	// ContainersAccess says whether the Containers page can be used, which
+	// is while the Docker Engine runs, and ContainersOpen is its yes.
+	ContainersAccess *ggui.DerivedValue[ContainersAccess]
+	ContainersOpen   *ggui.DerivedValue[bool]
+	// RunningContainers counts the engine's running containers.
+	RunningContainers *ggui.DerivedValue[int]
+	// The Containers page: what filters its table, the container chosen in
+	// it, which is the first when none is, the tab of its details, and the
+	// last lines of its logs.
+	ContainerQuery    *ggui.StateValue[string]
+	SelectedContainer *ggui.StateValue[string]
+	Container         *ggui.DerivedValue[dockerapi.Container]
+	ContainerDetail   *ggui.StateValue[int]
+	ContainerLogs     *ggui.StateValue[ContainerLogs]
+	KubeconfigReady   *ggui.StateValue[bool]
 	// DockerEndpoint is the DOCKER_HOST value that reaches the Docker
 	// Engine, as DockerHost says it.
 	DockerEndpoint *ggui.DerivedValue[string]
@@ -178,6 +193,7 @@ type Model struct {
 
 	runCLI                     cliRunner // runs docker and kubectl; tests replace it
 	dockerLoading, dockerAgain bool      // LoadDocker runs; it is wanted again after
+	logsLoading, logsAgain     bool      // LoadContainerLogs runs; it is wanted again after
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -209,10 +225,14 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Disk:      ggui.State([]rungv.DiskUsage(nil)).WithEqual(slices.Equal[[]rungv.DiskUsage]),
 		Snapshots: ggui.State([]sandbox.Snapshot(nil)).WithEqual(slices.Equal[[]sandbox.Snapshot]),
 
-		DockerContainers: ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
-		DockerVersion:    ggui.State(dockerapi.Version{}),
-		KubeconfigReady:  ggui.State(false),
-		LinkCommandsOpen: ggui.State(false),
+		DockerContainers:  ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
+		DockerVersion:     ggui.State(dockerapi.Version{}),
+		ContainerQuery:    ggui.State(""),
+		SelectedContainer: ggui.State(""),
+		ContainerDetail:   ggui.State(0),
+		ContainerLogs:     ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
+		KubeconfigReady:   ggui.State(false),
+		LinkCommandsOpen:  ggui.State(false),
 
 		EditorOpen: ggui.State(false),
 		Draft:      ggui.State(Draft{}),
@@ -265,6 +285,20 @@ func NewModel(st store.Store, dataDir string) *Model {
 		return m.dockerAPIOf(rows, set).Host()
 	})
 	m.newLinks()
+	m.ContainersAccess = ggui.Map(m.Rows, containersAccess)
+	m.ContainersOpen = ggui.Map(m.ContainersAccess, func(a ContainersAccess) bool { return a == ContainersOpen })
+	m.RunningContainers = ggui.Map(m.DockerContainers, func(l Listing[dockerapi.Container]) int {
+		n := 0
+		for _, c := range l.Items {
+			if c.State == "running" {
+				n++
+			}
+		}
+		return n
+	})
+	m.Container = ggui.Combine(m.DockerContainers, m.SelectedContainer, func(l Listing[dockerapi.Container], id string) dockerapi.Container {
+		return chosenContainer(l.Items, id)
+	}).WithEqual(dockerapi.Container.Equal)
 	m.Menus = ggui.Derived(func() MenuState {
 		return menuState(m.Rows.Get(), m.DockerContainers.Get(), m.DockerLink.View.Get(), m.KubeLink.View.Get())
 	}).WithEqual(MenuState.Equal)
@@ -400,8 +434,12 @@ func (m *Model) RunConfirmed() {
 	}
 }
 
-// Go switches the page.
+// Go switches the page. The Containers page opens only while the Docker
+// Engine runs, as the sidebar and the menus that lead there say.
 func (m *Model) Go(page string) {
+	if page == PageContainers && ggui.Peek(m.ContainersAccess) != ContainersOpen {
+		return
+	}
 	m.Page.Set(page)
 	switch page {
 	case PageImages:
@@ -412,7 +450,7 @@ func (m *Model) Go(page string) {
 		m.LoadSnapshots()
 	case PageDashboard, PageSettings:
 		m.LoadDisk()
-	case PageDocker:
+	case PageDocker, PageContainers:
 		m.LoadDocker()
 	case PageKubernetes:
 		m.CheckKubeconfig()

@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"image/png"
+	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ironpark/ggfx"
@@ -50,6 +52,14 @@ func renderAll(tmp, out, lang string) error {
 		{"sandboxes-logs", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(0) }},
 		{"sandboxes-connect", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(1) }},
 		{"sandboxes-config", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(2) }},
+		{"containers-logs", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(0) }},
+		{"containers-connect", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(1) }},
+		// The engine stopped while its containers were on screen: the page
+		// says so, and the sidebar's item is greyed out.
+		{"containers-stopped", func(m *ui.Model) {
+			m.Go(ui.PageContainers)
+			stopEngine(m)
+		}},
 		{"images", func(m *ui.Model) { m.Page.Set(ui.PageImages) }},
 		{"volumes", func(m *ui.Model) { m.Page.Set(ui.PageVolumes) }},
 		{"docker", func(m *ui.Model) { m.Page.Set(ui.PageDocker) }},
@@ -207,13 +217,58 @@ func demoState(m *ui.Model, now time.Time) {
 		Current: "desktop-linux", Contexts: []string{"default", "desktop-linux", ui.DockerContextName}})
 	m.KubeLink.State.Set(ui.CLIContext{Checked: true, CLI: "/opt/homebrew/bin/kubectl", Current: "kind-dev", Contexts: []string{"kind-dev"}})
 	m.DockerVersion.Set(dockerapi.Version{Version: "29.9.3", APIVersion: "1.56", OS: "linux", Arch: "arm64", KernelVersion: "4.19.0-gvisor"})
-	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{Loaded: true, Items: []dockerapi.Container{
-		{ID: "3f2a9c1b7d4e5f60", Names: []string{"/shop-web-1"}, Image: "nginx:alpine", State: "running", Status: "Up 2 hours",
-			Ports: []dockerapi.Port{{PrivatePort: 80, PublicPort: 9000, Type: "tcp"}}},
-		{ID: "8b7c6d5e4f3a2b10", Names: []string{"/shop-redis-1"}, Image: "redis:alpine", State: "running", Status: "Up 2 hours",
-			Ports: []dockerapi.Port{{PrivatePort: 6379, Type: "tcp"}}},
-		{ID: "1a2b3c4d5e6f7081", Names: []string{"/migrate"}, Image: "app:dev", State: "exited", Status: "Exited (0) 2 hours ago"},
-	}})
+	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{Loaded: true, Items: demoContainers()})
+	m.ContainerLogs.Set(demoContainerLogs(now))
+}
+
+// stopEngine stops the demo's Docker Engine, as its sandbox and the model
+// would tell it.
+func stopEngine(m *ui.Model) {
+	states := maps.Clone(ggui.Peek(m.States))
+	states[demoIDs[1]] = sandbox.State{Status: sandbox.Stopped, ExitedAt: ggui.Peek(m.Now).Add(-time.Minute)}
+	m.States.Set(states)
+	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{})
+	m.ContainerLogs.Set(ui.ContainerLogs{})
+}
+
+// demoContainerLogs is what the demo's shop-web-1 wrote.
+func demoContainerLogs(now time.Time) ui.ContainerLogs {
+	text := []string{
+		"/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration",
+		"/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh",
+		"10-listen-on-ipv6-by-default.sh: info: Enabled listen on IPv6 in /etc/nginx/conf.d/default.conf",
+		"/docker-entrypoint.sh: Configuration complete; ready for start up",
+		"2026/11/16 04:18:02 [notice] 1#1: nginx/1.31.8",
+		"2026/11/16 04:18:02 [notice] 1#1: start worker processes",
+		`172.18.0.1 - - [16/Nov/2026:06:12:44 +0000] "GET / HTTP/1.1" 200 615 "-" "Mozilla/5.0" "-"`,
+		`172.18.0.1 - - [16/Nov/2026:06:12:44 +0000] "GET /favicon.ico HTTP/1.1" 404 153 "-" "Mozilla/5.0" "-"`,
+		`2026/11/16 06:12:44 [error] 29#29: *2 open() "/usr/share/nginx/html/favicon.ico" failed (2: No such file or directory)`,
+		`172.18.0.1 - - [16/Nov/2026:06:20:03 +0000] "GET /cart HTTP/1.1" 200 1204 "-" "curl/8.7.1" "-"`,
+	}
+	l := ui.ContainerLogs{ID: demoContainers()[0].ID, Loaded: true}
+	start := now.Add(-2 * time.Hour)
+	for i, t := range text {
+		stream := sandbox.Stdout
+		if strings.Contains(t, "[error]") || strings.Contains(t, "[notice]") {
+			stream = sandbox.Stderr
+		}
+		l.Lines = append(l.Lines, sandbox.LogLine{Seq: int64(i + 1), Time: start.Add(time.Duration(i) * 7 * time.Minute), Stream: stream, Text: t})
+	}
+	return l
+}
+
+// demoContainers are the demo Docker Engine's.
+func demoContainers() []dockerapi.Container {
+	created := time.Date(2026, 11, 16, 13, 18, 0, 0, time.Local).Unix()
+	return []dockerapi.Container{
+		{ID: "3f2a9c1b7d4e5f60", Names: []string{"/shop-web-1"}, Image: "nginx:alpine", State: "running", Status: "Up 2 hours", Created: created,
+			Ports:  []dockerapi.Port{{IP: "0.0.0.0", PrivatePort: 80, PublicPort: 9000, Type: "tcp"}, {IP: "::", PrivatePort: 80, PublicPort: 9000, Type: "tcp"}},
+			Labels: map[string]string{"com.docker.compose.project": "shop"}},
+		{ID: "8b7c6d5e4f3a2b10", Names: []string{"/shop-redis-1"}, Image: "redis:alpine", State: "running", Status: "Up 2 hours", Created: created,
+			Ports:  []dockerapi.Port{{PrivatePort: 6379, Type: "tcp"}},
+			Labels: map[string]string{"com.docker.compose.project": "shop"}},
+		{ID: "1a2b3c4d5e6f7081", Names: []string{"/migrate"}, Image: "app:dev", State: "exited", Status: "Exited (0) 2 hours ago", Created: created - 60},
+	}
 }
 
 // offscreen runs step on frames of a hidden window: the graphics driver

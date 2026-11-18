@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ironpark/ggui"
@@ -72,95 +73,6 @@ func dockerPage(m *Model) ggui.Widget {
 	// The model follows the engine's containers; see followDocker.
 	running := ggui.Map(row, func(r Row) bool { return r.State.Status == sandbox.Running })
 
-	containers := ggui.Map(m.DockerContainers, func(l Listing[dockerapi.Container]) []dockerapi.Container { return l.Items }).WithEqual(nil)
-	table := ui.Table(containers, func(c dockerapi.Container) string { return c.ID },
-		ui.Col(tr("Container"), func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
-			return widget.Column(
-				widget.TextOf(ggui.Map(r, dockerapi.Container.Name)).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
-				ui.CaptionOf(ggui.Map(r, func(c dockerapi.Container) string { return c.ID[:min(12, len(c.ID))] })).Size(11),
-			).Gap(1)
-		}).Grow(2),
-		ui.TextCol(tr("Image"), func(c dockerapi.Container) string { return c.Image }).Grow(2),
-		ui.Col(tr("State"), func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
-			return ggui.View(r, func(c dockerapi.Container) ggui.Widget {
-				col := colorGray
-				switch c.State {
-				case "running":
-					col = colorGreen
-				case "restarting", "paused":
-					col = colorAmber
-				case "dead":
-					col = colorRed
-				}
-				return widget.Column(
-					widget.Row(dot(col, 7), widget.Text(c.State).Size(12)).Gap(6),
-					ui.Caption(c.Status).Size(11).NoWrap().Ellipsis(),
-				).Gap(2)
-			})
-		}).W(170),
-		ui.Col(tr("Ports"), func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
-			return ggui.View(r, func(c dockerapi.Container) ggui.Widget {
-				var links []ggui.Widget
-				for _, p := range c.Ports {
-					if p.PublicPort == 0 || p.Type != "tcp" {
-						continue
-					}
-					url := fmt.Sprintf("http://127.0.0.1:%d", p.PublicPort)
-					links = append(links, ui.Badge(fmt.Sprintf("%d→%d", p.PublicPort, p.PrivatePort)).Outline().OnTap(func() { m.Open(url) }))
-				}
-				if len(links) == 0 {
-					return ui.Caption(orDash(c.PortsText())).Size(12)
-				}
-				return widget.Wrap(links...).Gap(4)
-			})
-		}).Grow(2),
-		ui.Col("", func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
-			return ggui.View(r, func(c dockerapi.Container) ggui.Widget {
-				var main ggui.Widget
-				if c.State == "running" {
-					main = tip(iconButton(lucide.Square, tr("Stop %s", c.Name()), func() { m.DockerAction("stop", c) }), tr("Stop"))
-				} else {
-					main = tip(iconButton(lucide.Play, tr("Start %s", c.Name()), func() { m.DockerAction("start", c) }), tr("Start"))
-				}
-				return widget.Row(main,
-					ui.MenuOf(glyph(lucide.Ellipsis, 16),
-						ui.MenuItem(tr("Restart"), func() { m.DockerAction("restart", c) }),
-						ui.MenuItem(tr("Copy ID"), func() { m.Copy(c.ID, c.ID[:min(12, len(c.ID))]) }),
-						ui.MenuItem(tr("Copy docker logs command"), func() { m.Copy("docker logs -f "+c.Name(), "docker logs") }),
-						ui.MenuDivider(),
-						ui.MenuItem(tr("Remove"), func() { m.AskRemoveContainer(c) }).Destructive(),
-					).Name(tr("More actions for %s", c.Name())),
-				).Gap(2).Justify(widget.JustifyEnd)
-			})
-		}).W(84).Identified("actions"),
-	).RowName(dockerapi.Container.Name).RowHeight(52)
-
-	containersCard := ggui.View(ggui.Combine(running, m.DockerContainers, func(run bool, l Listing[dockerapi.Container]) int {
-		switch {
-		case !run:
-			return 0
-		case l.Err != "":
-			return 1
-		case !l.Loaded:
-			return 2
-		case len(l.Items) == 0:
-			return 3
-		}
-		return 4
-	}), func(state int) ggui.Widget {
-		switch state {
-		case 0:
-			return ui.Empty(tr("The engine is not running"), tr("Containers show here while the Docker Engine sandbox runs.")).Media(glyph(lucide.Container, 28).Color(colorGray)).Outline()
-		case 1:
-			return ui.Alert(tr("Could not reach dockerd"), ggui.Peek(m.DockerContainers).Err).Destructive().Icon(icons.Alert)
-		case 2:
-			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking dockerd…"))).Gap(8)
-		case 3:
-			return ui.Empty(tr("No containers"), tr("Run one with the docker CLI: docker run -d -p 9000:80 nginx:alpine")).Media(glyph(lucide.Container, 28).Color(colorGray)).Outline()
-		}
-		return tableCard(table)
-	})
-
 	version := ui.CaptionOf(ggui.Combine(running, m.DockerVersion, func(run bool, v dockerapi.Version) string {
 		if !run || v.Version == "" {
 			return tr("Containers run inside the sandbox; the docker CLI on this machine talks to dockerd over a Unix socket.")
@@ -177,7 +89,7 @@ func dockerPage(m *Model) ggui.Widget {
 			lucide.Container),
 		widget.Column(
 			sectionTitle(tr("Containers"), tr("Published container ports must be inside 9000–9019, the range the sandbox opened at start.")),
-			containersCard,
+			containersSummary(m),
 		).Gap(10).Stretch(),
 		widget.Responsive(900,
 			widget.Row(widget.Flex(dockerCLICard(m), 1), widget.Flex(dockerNotesCard(), 1)).Gap(16).Align(widget.AlignStart),
@@ -186,11 +98,39 @@ func dockerPage(m *Model) ggui.Widget {
 	)
 }
 
-func orDash(s string) string {
-	if s == "" {
-		return "—"
-	}
-	return s
+// containersSummary counts the engine's containers and leads to the
+// Containers page, which lists them.
+func containersSummary(m *Model) ggui.Widget {
+	line := ggui.Combine(m.ContainersAccess, m.DockerContainers, func(a ContainersAccess, l Listing[dockerapi.Container]) [2]string {
+		switch {
+		case a != ContainersOpen:
+			return [2]string{a.Reason(), ""}
+		case l.Err != "":
+			return [2]string{tr("Could not reach dockerd"), l.Err}
+		case !l.Loaded:
+			return [2]string{tr("Asking dockerd…"), ""}
+		}
+		var running []string
+		for _, c := range l.Items {
+			if c.State == "running" {
+				running = append(running, c.Name())
+			}
+		}
+		return [2]string{tr("%d running · %d total", len(running), len(l.Items)), strings.Join(running, ", ")}
+	})
+	text := ggui.View(line, func(t [2]string) ggui.Widget {
+		col := []ggui.Widget{widget.Text(t[0]).Size(13).Weight(ggui.WeightMedium)}
+		if t[1] != "" {
+			col = append(col, ui.Caption(t[1]).Size(12).NoWrap().Ellipsis())
+		}
+		return widget.Column(col...).Gap(2)
+	})
+	return ui.Card(widget.Row(
+		glyph(lucide.Boxes, 20).Color(colorGray),
+		widget.Expanded(text),
+		ui.Button(tr("Open Containers"), func() { m.Go(PageContainers) }).Outline().Size(ui.ButtonSmall).
+			Icon(glyph(lucide.ArrowRight, 14)).BindDisabled(ggui.Not(m.ContainersOpen)),
+	).Gap(14).Align(widget.AlignCenter))
 }
 
 func dockerCLICard(m *Model) ggui.Widget {

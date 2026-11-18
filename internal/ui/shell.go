@@ -48,6 +48,8 @@ func build(m *Model) ggui.Widget {
 		switch p {
 		case PageSandboxes:
 			return sandboxesPage(m)
+		case PageContainers:
+			return containersPage(m)
 		case PageImages:
 			return imagesPage(m)
 		case PageVolumes:
@@ -107,16 +109,36 @@ func dragRegion(child ggui.Widget) ggui.Widget {
 	})
 }
 
+// sidebar is built again when the Containers item is enabled or disabled,
+// which a sidebar entry takes only as it is made; the sidebar carries its
+// highlight, hover and collapse across.
 func sidebar(m *Model) ggui.Widget {
+	return ggui.View(m.ContainersAccess, func(a ContainersAccess) ggui.Widget { return sidebarFor(m, a) })
+}
+
+func sidebarFor(m *Model, access ContainersAccess) ggui.Widget {
 	nav := ggui.Bind(m.Page.Get, m.Go)
-	running := ggui.View(m.Running, func(n int) ggui.Widget {
-		if n == 0 {
-			return widget.Box()
-		}
-		return ui.Badge(itoa(n))
-	})
+	count := func(n ggui.Readable[int]) ggui.Widget {
+		return ggui.View(n, func(n int) ggui.Widget {
+			if n == 0 {
+				return widget.Box()
+			}
+			return ui.Badge(itoa(n))
+		})
+	}
 	item := func(key, label string, g *icons.Glyph) ui.SidebarEntry {
 		return ui.SidebarItem(key, label).Leading(glyph(g, 16)).Tooltip(label)
+	}
+	// The Containers item leads to the Docker Engine's containers, and is
+	// greyed out while the engine is not running; a mark at its end says
+	// why in a tip, as the sidebar tells the item's own Tooltip only on a
+	// rail of icons.
+	containers := item(PageContainers, tr("Containers"), lucide.Boxes)
+	if why := access.Reason(); why != "" {
+		containers = containers.Disabled(true).Tooltip(why).
+			Action(tip(widget.Box(glyph(lucide.PowerOff, 14).Color(colorGray)).Pad(3), why))
+	} else {
+		containers = containers.Action(count(m.RunningContainers))
 	}
 	brandTop := 4.0
 	if TitlebarHidden {
@@ -132,7 +154,8 @@ func sidebar(m *Model) ggui.Widget {
 
 	return ui.Sidebar(nav,
 		item(PageDashboard, tr("Dashboard"), lucide.LayoutDashboard),
-		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(running),
+		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(count(m.Running)),
+		containers,
 		item(PageImages, tr("Images"), lucide.Layers),
 		item(PageVolumes, tr("Volumes"), lucide.HardDrive),
 		item(PageSnapshots, tr("Snapshots"), lucide.Camera),
@@ -556,30 +579,36 @@ func palette(m *Model) ggui.Widget {
 	close := func(fn func()) func() {
 		return func() { m.PaletteOpen.Set(false); fn() }
 	}
-	cmd := ui.Command(m.PaletteQuery,
-		ui.CommandItem(tr("New sandbox"), close(func() { m.NewSandbox("") })).Group(tr("Sandboxes")).Shortcut("cmd+n").Keywords("create run"),
-		ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Group(tr("Sandboxes")),
-		ui.CommandItem(tr("Pull image"), close(func() { m.OpenPull("") })).Group(tr("Images")).Keywords("download"),
-		ui.CommandItem(tr("Start Docker Engine"), close(func() { m.CreateFromRecipe(recipes.Docker); m.Go(PageDocker) })).Group(tr("Recipes")).Keywords("dind dockerd"),
-		ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
-		ui.CommandItem(tr("Create volume"), close(func() { m.VolumeOpen.Set(true) })).Group(tr("Volumes")),
-		ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Group(tr("Go to")).Shortcut("cmd+1"),
-		ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Group(tr("Go to")).Shortcut("cmd+2"),
-		ui.CommandItem(tr("Images"), close(func() { m.Go(PageImages) })).Group(tr("Go to")).Shortcut("cmd+3"),
-		ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Group(tr("Go to")).Shortcut("cmd+4"),
-		ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Group(tr("Go to")).Shortcut("cmd+5"),
-		ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Group(tr("Go to")).Shortcut("cmd+,"),
-		ui.CommandItem(tr("Refresh"), close(m.RefreshAll)).Group(tr("App")).Shortcut("cmd+r"),
-		ui.CommandItem(tr("Toggle dark mode"), close(func() {
-			m.UpdateSettings(func(s *storeSettings) {
-				if s.Theme == "dark" {
-					s.Theme = "light"
-				} else {
-					s.Theme = "dark"
-				}
-			})
-		})).Group(tr("App")).Keywords("theme appearance"),
-	).Height(300).StableHeight().Hints()
+	entries := func(containers bool) []ui.CommandEntry {
+		return []ui.CommandEntry{
+			ui.CommandItem(tr("New sandbox"), close(func() { m.NewSandbox("") })).Group(tr("Sandboxes")).Shortcut("cmd+n").Keywords("create run"),
+			ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Group(tr("Sandboxes")),
+			ui.CommandItem(tr("Pull image"), close(func() { m.OpenPull("") })).Group(tr("Images")).Keywords("download"),
+			ui.CommandItem(tr("Start Docker Engine"), close(func() { m.CreateFromRecipe(recipes.Docker); m.Go(PageDocker) })).Group(tr("Recipes")).Keywords("dind dockerd"),
+			ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
+			ui.CommandItem(tr("Create volume"), close(func() { m.VolumeOpen.Set(true) })).Group(tr("Volumes")),
+			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Group(tr("Go to")).Shortcut("cmd+1"),
+			ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Group(tr("Go to")).Shortcut("cmd+2"),
+			ui.CommandItem(tr("Containers"), close(func() { m.Go(PageContainers) })).Group(tr("Go to")).Shortcut("cmd+3").Keywords("docker ps").Disabled(!containers),
+			ui.CommandItem(tr("Images"), close(func() { m.Go(PageImages) })).Group(tr("Go to")).Shortcut("cmd+4"),
+			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Group(tr("Go to")).Shortcut("cmd+5"),
+			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Group(tr("Go to")).Shortcut("cmd+6"),
+			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Group(tr("Go to")).Shortcut("cmd+,"),
+			ui.CommandItem(tr("Refresh"), close(m.RefreshAll)).Group(tr("App")).Shortcut("cmd+r"),
+			ui.CommandItem(tr("Toggle dark mode"), close(func() {
+				m.UpdateSettings(func(s *storeSettings) {
+					if s.Theme == "dark" {
+						s.Theme = "light"
+					} else {
+						s.Theme = "dark"
+					}
+				})
+			})).Group(tr("App")).Keywords("theme appearance"),
+		}
+	}
+	cmd := ui.Command(m.PaletteQuery).Height(300).StableHeight().Hints()
+	// The Containers entry is greyed out as the sidebar's item is.
+	ggui.Watch(m.ContainersOpen, func(on bool) { cmd.Entries(entries(on)...) })
 	return ui.CommandDialog(m.PaletteOpen, cmd)
 }
 
@@ -587,6 +616,9 @@ func palette(m *Model) ggui.Widget {
 func (m *Model) RefreshAll() {
 	m.DetectEngine(nil)
 	m.LoadDocker()
+	if ggui.Peek(m.Page) == PageContainers {
+		m.LoadContainerLogs()
+	}
 	m.CheckKubeconfig()
 	for _, l := range m.Links() {
 		m.CheckLink(l)

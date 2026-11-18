@@ -1,15 +1,19 @@
 // Package dockerapi is a small client of the Docker Engine API, enough to
-// list and control the containers of a dockerd that runs in a gvx sandbox.
+// list, control and read the logs of the containers of a dockerd that runs
+// in a gvx sandbox.
 package dockerapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,31 +59,42 @@ type apiError struct {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, out any) error {
+	body, err := c.send(ctx, method, path)
+	if err != nil || body == nil {
+		return err
+	}
+	defer body.Close()
+	if out == nil {
+		_, _ = io.Copy(io.Discard, body)
+		return nil
+	}
+	return json.NewDecoder(body).Decode(out)
+}
+
+// send makes a request and returns the body of a successful answer, which
+// the caller closes, or nil for a 304, which has none.
+func (c *Client) send(ctx context.Context, method, path string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	res, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if res.StatusCode < 300 {
+		return res.Body, nil
 	}
 	defer res.Body.Close()
-	if res.StatusCode >= 300 {
-		if res.StatusCode == http.StatusNotModified {
-			return nil
-		}
-		var e apiError
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
-		if json.Unmarshal(body, &e) == nil && e.Message != "" {
-			return fmt.Errorf("%s", e.Message)
-		}
-		return fmt.Errorf("%s %s: %s", method, path, res.Status)
+	if res.StatusCode == http.StatusNotModified {
+		return nil, nil
 	}
-	if out == nil {
-		_, _ = io.Copy(io.Discard, res.Body)
-		return nil
+	var e apiError
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+	if json.Unmarshal(body, &e) == nil && e.Message != "" {
+		return nil, fmt.Errorf("%s", e.Message)
 	}
-	return json.NewDecoder(res.Body).Decode(out)
+	return nil, fmt.Errorf("%s %s: %s", method, path, res.Status)
 }
 
 // Ping checks that the engine answers.
@@ -125,7 +140,7 @@ type Container struct {
 // Name is the container's first name without the leading slash.
 func (c Container) Name() string {
 	if len(c.Names) == 0 {
-		return c.ID[:min(12, len(c.ID))]
+		return c.ShortID()
 	}
 	return strings.TrimPrefix(c.Names[0], "/")
 }
@@ -191,6 +206,117 @@ func (c *Client) Remove(ctx context.Context, id string, force bool) error {
 		q = "?force=1"
 	}
 	return c.do(ctx, http.MethodDelete, "/containers/"+url.PathEscape(id)+q, nil)
+}
+
+// ShortID is the first twelve characters of the ID, as docker ps shows it.
+func (c Container) ShortID() string { return c.ID[:min(12, len(c.ID))] }
+
+// ExitCode is the code an exited container ended with, as its Status tells
+// it ("Exited (137) 2 hours ago"), and ok false for a container that has
+// not exited.
+func (c Container) ExitCode() (code int, ok bool) {
+	if c.State != "exited" {
+		return 0, false
+	}
+	rest, found := strings.CutPrefix(c.Status, "Exited (")
+	if !found {
+		return 0, false
+	}
+	num, _, found := strings.Cut(rest, ")")
+	if !found {
+		return 0, false
+	}
+	code, err := strconv.Atoi(num)
+	return code, err == nil
+}
+
+// LogLine is a line a container wrote.
+type LogLine struct {
+	Stderr bool      // written to standard error, not standard output
+	Time   time.Time // when the engine received it
+	Text   string
+}
+
+// maxLogBytes bounds how much of a container's log Logs reads.
+const maxLogBytes = 4 << 20
+
+// Logs reads the last tail lines a container wrote to its standard output
+// and error, oldest first, with the time of each.
+func (c *Client) Logs(ctx context.Context, id string, tail int) ([]LogLine, error) {
+	path := fmt.Sprintf("/containers/%s/logs?stdout=1&stderr=1&timestamps=1&tail=%d", url.PathEscape(id), tail)
+	body, err := c.send(ctx, http.MethodGet, path)
+	if err != nil || body == nil {
+		return nil, err
+	}
+	defer body.Close()
+	raw, err := io.ReadAll(io.LimitReader(body, maxLogBytes))
+	if err != nil {
+		return nil, err
+	}
+	return parseLogs(raw), nil
+}
+
+// parseLogs splits what GET /containers/{id}/logs answers into lines. A
+// container without a terminal has its two streams multiplexed, each run of
+// bytes behind an eight-byte header: the stream (1 or 2), three zeros, and
+// the run's length, big-endian. One with a terminal has a single stream,
+// sent as it is. With timestamps on, every line starts with an RFC 3339
+// time, which no header does.
+func parseLogs(raw []byte) []LogLine {
+	var out []LogLine
+	pending := [3][]byte{}
+	emit := func(stream byte, b []byte) {
+		for {
+			i := bytes.IndexByte(b, '\n')
+			if i < 0 {
+				pending[stream] = append(pending[stream], b...)
+				return
+			}
+			line := append(pending[stream], b[:i]...)
+			pending[stream] = nil
+			b = b[i+1:]
+			out = append(out, logLine(stream == 2, line))
+		}
+	}
+	if multiplexed(raw) {
+		for len(raw) >= 8 {
+			stream, n := raw[0], int(binary.BigEndian.Uint32(raw[4:8]))
+			raw = raw[8:]
+			n = min(n, len(raw))
+			if stream > 2 {
+				stream = 1
+			}
+			emit(stream, raw[:n])
+			raw = raw[n:]
+		}
+	} else {
+		emit(1, raw)
+	}
+	for stream, rest := range pending {
+		if len(rest) > 0 {
+			out = append(out, logLine(stream == 2, rest))
+		}
+	}
+	return out
+}
+
+// multiplexed reports whether raw starts with a stream header.
+func multiplexed(raw []byte) bool {
+	return len(raw) >= 8 && raw[0] <= 2 && raw[1] == 0 && raw[2] == 0 && raw[3] == 0
+}
+
+// logLine splits the time from the front of a line.
+func logLine(stderr bool, b []byte) LogLine {
+	s := strings.TrimSuffix(string(b), "\r")
+	l := LogLine{Stderr: stderr, Text: s}
+	if stamp, text, ok := strings.Cut(s, " "); ok {
+		if t, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+			l.Time, l.Text = t, text
+		}
+	} else if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		l.Time, l.Text = t, ""
+	}
+	return l
 }
 
 // Image is an entry of GET /images/json.

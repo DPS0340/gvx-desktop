@@ -11,7 +11,7 @@ import (
 )
 
 // maxMenuContainers is how many containers the Docker menu lists; the
-// Docker page lists them all.
+// Containers page lists them all.
 const maxMenuContainers = 10
 
 // EngineState is a recipe's engine as the menus tell of it.
@@ -174,6 +174,7 @@ func containerItems(m *Model, s MenuState, show func()) []ggui.MenuItem {
 			acts = append(acts, ggui.MenuAction(tr("Start"), "", func() { m.DockerAction("start", c) }))
 		}
 		acts = append(acts,
+			ggui.MenuAction(tr("Show Logs"), "", func() { show(); m.ShowContainerLogs(c.ID) }),
 			ggui.MenuAction(tr("Copy docker logs command"), "", func() { m.Copy("docker logs -f "+c.Name(), "docker logs") }),
 			ggui.MenuSeparator(),
 			ggui.MenuAction(tr("Remove…"), "", func() { show(); m.AskRemoveContainer(c) }),
@@ -181,7 +182,7 @@ func containerItems(m *Model, s MenuState, show func()) []ggui.MenuItem {
 		items = append(items, ggui.Menu(label, acts...))
 	}
 	if s.More > 0 {
-		items = append(items, ggui.MenuAction(tr("All %d Containers…", len(s.Containers)+s.More), "", func() { show(); m.Go(PageDocker) }))
+		items = append(items, ggui.MenuAction(tr("All %d Containers…", len(s.Containers)+s.More), "", func() { show(); m.Go(PageContainers) }))
 	}
 	return items
 }

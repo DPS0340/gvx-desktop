@@ -183,7 +183,9 @@ func bindTheme(m *ui.Model) {
 }
 
 func installShortcuts(app *ggui.App, m *ui.Model) {
-	pages := []string{ui.PageDashboard, ui.PageSandboxes, ui.PageImages, ui.PageVolumes, ui.PageSnapshots, ui.PageDocker, ui.PageKubernetes}
+	// ⌘1 and on go to the sidebar's pages in its order. Go does not open the
+	// Containers page while the Docker Engine is not running.
+	pages := []string{ui.PageDashboard, ui.PageSandboxes, ui.PageContainers, ui.PageImages, ui.PageVolumes, ui.PageSnapshots, ui.PageDocker, ui.PageKubernetes}
 	for i, p := range pages {
 		app.Shortcut(fmt.Sprintf("cmd+%d", i+1), func() { m.Go(p) })
 	}
@@ -219,6 +221,7 @@ func installMenus(app *ggui.App, m *ui.Model) {
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("Dashboard"), "", func() { m.Go(ui.PageDashboard) }),
 			ggui.MenuAction(ui.T("Sandboxes"), "", func() { m.Go(ui.PageSandboxes) }),
+			ggui.MenuAction(ui.T("Containers"), "", func() { m.Go(ui.PageContainers) }).BindEnabled(m.ContainersOpen),
 			ggui.MenuAction(ui.T("Images"), "", func() { m.Go(ui.PageImages) }),
 			ggui.MenuAction(ui.T("Volumes"), "", func() { m.Go(ui.PageVolumes) }),
 			ggui.MenuAction(ui.T("Snapshots"), "", func() { m.Go(ui.PageSnapshots) }),

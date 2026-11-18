@@ -9,11 +9,19 @@ name: Release
 #
 # installs it. gvx itself is released for Apple silicon only, hence no Intel
 # build for the Mac. For Windows, on Intel and AMD and on Arm, ggui build
-# cross-builds GVX Desktop.exe, which is added to the release in a zip.
+# cross-builds GVX Desktop.exe, which is added to the release in a zip, and
+# a Chocolatey package that installs from those zips is made of
+# release/choco.sh's files, tried on a Windows runner, and added too, so
+# that
+#
+#	choco install gvx-desktop
+#
+# installs it once the package is on chocolatey.org.
 #
 # Run by hand with a tag that is already released, the workflow builds the
-# Windows programs for it again and puts them in its release, leaving the
-# disk image and the cask as they are.
+# Windows programs and the Chocolatey package for it again and puts them in
+# its release, leaving the disk image and the cask as they are, and pushing
+# nothing to chocolatey.org, where a version cannot be replaced.
 #
 # Secrets, all optional but the first:
 #
@@ -22,6 +30,9 @@ name: Release
 #	GGUI_P12_PASSWORD      as base64 of the .p12, and its password
 #	NOTARY_API_KEY_JSON    an App Store Connect API key to notarize with:
 #	                       {"issuer_id", "key_id", "private_key"}
+#	CHOCO_API_KEY          a chocolatey.org API key, to push the package
+#	                       there; without it the package is only added to
+#	                       the release
 #
 # Without the certificate the app is signed ad hoc, and the cask takes the
 # download's quarantine off it with xattr, so that Gatekeeper lets it open.
@@ -134,6 +145,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
+    outputs:
+      amd64: ${{ steps.build.outputs.amd64 }}
+      arm64: ${{ steps.build.outputs.arm64 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -144,6 +158,7 @@ jobs:
       - name: Install the ggui command
         run: go install github.com/ironpark/ggui/cmd/ggui@latest
       - name: Build
+        id: build
         env:
           CGO_ENABLED: '0'
         run: |
@@ -154,9 +169,54 @@ jobs:
             zip="gvx-desktop-$version-windows-$arch.zip"
             (cd "build/$arch" && zip -q "../../$zip" "$name.exe")
             sha256sum "$zip" > "$zip.sha256"
+            echo "$arch=$(cut -d' ' -f1 "$zip.sha256")" >> "$GITHUB_OUTPUT"
           done
           ls -l ./*.zip
       - name: Add to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" ./*.zip ./*.zip.sha256 --clobber
+
+  # The Chocolatey package names the zips the job before put in the
+  # release, by their checksums. It is installed here from the file, which
+  # downloads and checks them as it will for anyone, before it goes out.
+  chocolatey:
+    needs: windows
+    if: always() && needs.windows.result == 'success'
+    runs-on: windows-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The files that make the package are read as the workflow has them,
+      # which a tag released before they were written does not.
+      - uses: actions/checkout@v7
+      - name: Pack
+        run: |
+          version="${TAG#v}"
+          release/choco.sh "$version" "${{ needs.windows.outputs.amd64 }}" "${{ needs.windows.outputs.arm64 }}" choco
+          choco pack choco/gvx-desktop.nuspec --outputdirectory .
+          ls -l ./*.nupkg
+      - name: Try it
+        run: |
+          choco install gvx-desktop --source . --yes --no-progress
+          exe="$(cygpath "$ChocolateyInstall")/lib/gvx-desktop/tools/$(sed -n 's/^name = "\(.*\)"$/\1/p' ggui.toml).exe"
+          [ -f "$exe" ] || { echo "::error::the package installed no program at $exe"; exit 1; }
+          [ -f "$exe.gui" ] || { echo "::error::the program's shim is not marked as a GUI's"; exit 1; }
+          choco uninstall gvx-desktop --yes --no-progress
+      - name: Add to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" ./*.nupkg --clobber
+      - name: Push to chocolatey.org
+        if: github.event_name == 'push'
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+        run: |
+          if [ -z "$CHOCO_API_KEY" ]; then
+            echo "::warning::CHOCO_API_KEY is not set; the package is in the release, not on chocolatey.org"
+            exit 0
+          fi
+          choco push ./*.nupkg --source https://push.chocolatey.org/ --api-key "$CHOCO_API_KEY"

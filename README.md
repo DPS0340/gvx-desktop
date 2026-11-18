@@ -23,9 +23,38 @@ On an Apple silicon Mac, with [Homebrew](https://brew.sh):
 brew install --cask ironpark/tap/gvx-desktop
 ```
 
-or take the disk image from the [releases](https://github.com/ironpark/gvx-desktop/releases).
+or take the disk image from the [releases](https://github.com/ironpark/gvx-desktop/releases)
+and drag the app to Applications.
 
-On Windows, take the zip for your PC from the same releases — `windows-amd64`
+> [!IMPORTANT]
+> The app is not signed with an Apple Developer ID, so macOS refuses to open
+> one that was downloaded: it says the app *is damaged and can't be opened*, or
+> that *Apple could not verify* it. Nothing is wrong with the download; macOS
+> marks every file a browser saves as quarantined, and only lets a quarantined
+> app run when Apple has notarized it. Take the mark off once, after copying
+> the app to Applications:
+>
+> ```sh
+> xattr -dr com.apple.quarantine "/Applications/GVX Desktop.app"
+> ```
+>
+> On macOS 14 and earlier, Control-clicking the app and choosing **Open** also
+> works. On macOS 15 and later, try to open it once, then allow it under
+> **System Settings → Privacy & Security → Open Anyway**. Installing with
+> Homebrew needs none of this: the cask takes the mark off itself. To check
+> what you downloaded, compare it with the `.sha256` file beside it in the
+> release: `shasum -a 256 -c gvx-desktop-*.dmg.sha256`.
+
+On Windows, with [Chocolatey](https://chocolatey.org), the release's
+`gvx-desktop.<version>.nupkg` installs the program for your PC and puts it in
+the Start menu — from the folder you saved it in:
+
+```powershell
+choco install gvx-desktop --source .
+```
+
+(`choco install gvx-desktop` alone, once the package is listed on
+chocolatey.org.) Or take the zip for your PC from the same releases — `windows-amd64`
 for Intel and AMD, `windows-arm64` for Arm — and run the `GVX Desktop.exe` in
 it. gvx runs guests through the *Windows Hypervisor Platform* feature, which
 has to be turned on.
@@ -45,7 +74,7 @@ to date (see [rungv](#rungv)). On other systems, [build it](#build-and-run).
 | Docker Engine | One-click `docker:dind`, `docker context` setup, inner container list with start/stop/restart/remove |
 | Kubernetes | One-click single-node k3s, kubeconfig detection, kubectl snippets |
 | Engine | Install `rungv` from gvx's releases or build gvx's `main` from source, see when a newer one is out and update to it, sign it for the hypervisor (macOS) |
-| Desktop | Menu-bar tray (macOS/Windows), native menus, ⌘K palette, ⌘1–7 navigation, single instance, light/dark/system theme |
+| Desktop | Menu-bar tray (macOS/Windows) with the app out of the Dock while its window is closed, start at login, native menus, ⌘K palette, ⌘1–7 navigation, single instance, light/dark/system theme |
 
 ## How it works
 
@@ -138,7 +167,8 @@ Set `version` in `ggui.toml` and push the tag `vX.Y.Z`. The
 silicon, publishes the disk image as the tag's release, writes the cask
 to [ironpark/homebrew-tap](https://github.com/ironpark/homebrew-tap) with
 `release/cask.sh`, and adds the Windows programs, cross-built for amd64 and
-arm64; its header lists the secrets it reads. The icon and the
+arm64, with a Chocolatey package made by `release/choco.sh` that installs
+them; its header lists the secrets it reads. The icon and the
 mark in the sidebar are drawn in `assets/`; `assets/svg2png.swift` makes
 their PNGs.
 

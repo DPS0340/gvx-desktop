@@ -24,9 +24,36 @@ brew install --cask ironpark/tap/gvx-desktop
 ```
 
 또는 [릴리스](https://github.com/ironpark/gvx-desktop/releases)에서 디스크 이미지를
-받습니다.
+받아 앱을 응용 프로그램 폴더로 끌어다 놓습니다.
 
-Windows에서는 같은 릴리스에서 PC에 맞는 zip을 받아(`windows-amd64`는 Intel·AMD,
+> [!IMPORTANT]
+> 이 앱은 Apple Developer ID로 서명되어 있지 않아서, 내려받은 앱을 macOS가 열지
+> 않습니다. *"손상되었기 때문에 열 수 없습니다"* 또는 *"Apple에서 확인할 수
+> 없습니다"* 라는 경고가 뜹니다. 파일이 잘못된 것이 아닙니다. macOS는 브라우저로
+> 받은 모든 파일에 격리(quarantine) 표시를 붙이고, 격리된 앱은 Apple의 공증을
+> 받았을 때만 실행해 줍니다. 앱을 응용 프로그램 폴더로 복사한 뒤 이 표시를 한 번
+> 지우면 됩니다.
+>
+> ```sh
+> xattr -dr com.apple.quarantine "/Applications/GVX Desktop.app"
+> ```
+>
+> macOS 14 이하에서는 앱을 Control-클릭해 **열기**를 선택해도 됩니다. macOS 15
+> 이상에서는 한 번 열기를 시도한 뒤 **시스템 설정 → 개인정보 보호 및 보안 →
+> 그래도 열기**에서 허용합니다. Homebrew로 설치하면 이 과정이 필요 없습니다.
+> cask가 표시를 직접 지웁니다. 받은 파일을 확인하려면 릴리스에 함께 있는
+> `.sha256` 파일과 대조하세요: `shasum -a 256 -c gvx-desktop-*.dmg.sha256`.
+
+Windows에서는 [Chocolatey](https://chocolatey.org)로 설치할 수 있습니다. 릴리스의
+`gvx-desktop.<버전>.nupkg`를 받은 폴더에서 아래를 실행하면 PC에 맞는 프로그램을 설치하고
+시작 메뉴에 등록합니다.
+
+```powershell
+choco install gvx-desktop --source .
+```
+
+(패키지가 chocolatey.org에 등록된 뒤에는 `choco install gvx-desktop`만으로 됩니다.)
+또는 같은 릴리스에서 PC에 맞는 zip을 받아(`windows-amd64`는 Intel·AMD,
 `windows-arm64`는 Arm) 안의 `GVX Desktop.exe`를 실행합니다. gvx는 *Windows 하이퍼바이저
 플랫폼* 기능으로 게스트를 실행하므로 이 기능을 켜 두어야 합니다.
 
@@ -45,7 +72,7 @@ gvx를 먼저 설치할 필요는 없습니다. 앱이 `rungv`를 설치하고 �
 | Docker Engine | 클릭 한 번으로 `docker:dind`, `docker context` 설정, 내부 컨테이너 목록과 시작·중지·재시작·삭제 |
 | Kubernetes | 클릭 한 번으로 단일 노드 k3s, kubeconfig 감지, kubectl 예시 |
 | 엔진 | gvx 릴리스에서 `rungv` 설치 또는 gvx `main`을 소스에서 빌드, 새 버전 확인과 업데이트, 하이퍼바이저용 서명(macOS) |
-| 데스크톱 | 메뉴 막대 트레이(macOS/Windows), 네이티브 메뉴, ⌘K 팔레트, ⌘1–7 이동, 단일 인스턴스, 라이트·다크·시스템 테마 |
+| 데스크톱 | 메뉴 막대 트레이(macOS/Windows)와 창을 닫으면 Dock에서 숨김, 로그인 시 시작, 네이티브 메뉴, ⌘K 팔레트, ⌘1–7 이동, 단일 인스턴스, 라이트·다크·시스템 테마 |
 
 ## 동작 방식
 
@@ -132,7 +159,8 @@ ggui build --dmg
 [릴리스 워크플로](.github/workflows/release.yml)가 Apple silicon용 앱을 빌드해 디스크
 이미지를 태그의 릴리스로 올리고, `release/cask.sh`로 만든 cask를
 [ironpark/homebrew-tap](https://github.com/ironpark/homebrew-tap)에 씁니다. amd64·arm64용
-Windows 프로그램도 교차 빌드해 릴리스에 추가합니다. 워크플로가
+Windows 프로그램도 교차 빌드해 릴리스에 추가합니다. 이 zip을 설치하는 Chocolatey
+패키지도 `release/choco.sh`로 만들어 함께 올립니다. 워크플로가
 읽는 시크릿은 파일 머리말에 적혀 있습니다. 앱 아이콘과 사이드바의 마크는 `assets/`에
 그려져 있고, `assets/svg2png.swift`가 PNG로 만듭니다.
 

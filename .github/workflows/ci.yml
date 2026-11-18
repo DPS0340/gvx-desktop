@@ -19,8 +19,8 @@ concurrency:
 
 jobs:
   test:
-    # The app is released for Apple silicon, which is what macos-latest is.
-    runs-on: macos-latest
+    # The app is released for Apple silicon, which is what macos-26 is.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

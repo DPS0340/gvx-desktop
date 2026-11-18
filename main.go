@@ -304,11 +304,11 @@ func trayIcon() image.Image {
 	b := src.Bounds()
 	n := b.Dx() / glyph
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
-	for y := 0; y < glyph; y++ {
-		for x := 0; x < glyph; x++ {
+	for y := range glyph {
+		for x := range glyph {
 			var light float64
-			for dy := 0; dy < n; dy++ {
-				for dx := 0; dx < n; dx++ {
+			for dy := range n {
+				for dx := range n {
 					r, g, bl, a := src.At(b.Min.X+x*n+dx, b.Min.Y+y*n+dy).RGBA()
 					if a == 0 {
 						continue

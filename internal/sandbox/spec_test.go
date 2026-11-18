@@ -149,7 +149,7 @@ func TestEqualAndClone(t *testing.T) {
 
 func TestLogBuffer(t *testing.T) {
 	b := NewLogBuffer(100)
-	for i := 0; i < 250; i++ {
+	for range 250 {
 		b.Add(Stdout, "x")
 	}
 	b.Add(Stderr, "err")

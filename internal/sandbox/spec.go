@@ -225,8 +225,8 @@ var portRe = regexp.MustCompile(`^(?:(\[[0-9a-fA-F:.]+\]|\d{1,3}(?:\.\d{1,3}){3}
 // ValidatePort checks a -p specification.
 func ValidatePort(p string) error {
 	p = strings.TrimSpace(p)
-	if strings.HasPrefix(p, "unix:") {
-		rest := strings.TrimPrefix(p, "unix:")
+	if after, ok := strings.CutPrefix(p, "unix:"); ok {
+		rest := after
 		i := strings.LastIndexByte(rest, ':')
 		if i <= 0 {
 			return fmt.Errorf("Port %q: write unix:PATH:GUEST_PORT.", p)

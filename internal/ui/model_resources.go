@@ -530,7 +530,7 @@ func mountLine(src, dst string, ro bool) string {
 
 func lines(s string) []string {
 	var out []string
-	for _, l := range strings.Split(s, "\n") {
+	for l := range strings.SplitSeq(s, "\n") {
 		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
 			out = append(out, l)
 		}
@@ -592,7 +592,7 @@ func (d Draft) Spec() (sandbox.Spec, error) {
 	for _, l := range lines(d.Tmpfs) {
 		target, opts, _ := strings.Cut(l, ":")
 		mt := sandbox.Mount{Type: sandbox.MountTmpfs, Target: target}
-		for _, o := range strings.Split(opts, ",") {
+		for o := range strings.SplitSeq(opts, ",") {
 			switch {
 			case strings.HasPrefix(o, "size="):
 				mt.Size = strings.TrimPrefix(o, "size=")

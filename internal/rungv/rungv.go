@@ -169,8 +169,7 @@ func (c *Client) output(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		e := &Error{Args: args, Stderr: stderr.String(), Err: err}
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			e.Code = exit.ExitCode()
 		}
 		return stdout.Bytes(), e
@@ -216,8 +215,7 @@ func (c *Client) Stream(ctx context.Context, line func(string), args ...string) 
 	wg.Wait()
 	if err := cmd.Wait(); err != nil {
 		e := &Error{Args: args, Stderr: tail.String(), Err: err}
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			e.Code = exit.ExitCode()
 		}
 		return e
@@ -256,7 +254,7 @@ type Version struct {
 // ParseVersion reads the three lines rungv version prints.
 func ParseVersion(out string) Version {
 	v := Version{Raw: strings.TrimSpace(out)}
-	for _, line := range strings.Split(v.Raw, "\n") {
+	for line := range strings.SplitSeq(v.Raw, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 2 {
 			continue

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -30,12 +31,7 @@ func NeedsSigning(info Info) bool {
 	if info.OS != "darwin" {
 		return false
 	}
-	for _, b := range info.AvailableBackends {
-		if b == "hvf" {
-			return false
-		}
-	}
-	return true
+	return !slices.Contains(info.AvailableBackends, "hvf")
 }
 
 // SignCommand is the command line Sign runs, for display.

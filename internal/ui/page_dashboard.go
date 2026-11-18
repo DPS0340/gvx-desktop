@@ -199,7 +199,6 @@ func engineCard(m *Model) ggui.Widget {
 func recipeCards(m *Model) ggui.Widget {
 	var cards []ggui.Widget
 	for _, r := range recipes.All() {
-		r := r
 		icon := lucide.Container
 		page := PageDocker
 		if r.Key == recipes.Kubernetes {

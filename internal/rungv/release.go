@@ -139,7 +139,7 @@ func versionNumbers(v string) ([]uint64, bool) {
 		return nil, false
 	}
 	var out []uint64
-	for _, part := range strings.Split(v, ".") {
+	for part := range strings.SplitSeq(v, ".") {
 		n, err := strconv.ParseUint(part, 10, 64)
 		if err != nil {
 			return nil, false

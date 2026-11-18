@@ -292,7 +292,6 @@ func connectView(m *Model, r Row) ggui.Widget {
 	parts = append(parts, sectionTitle(tr("Published ports"), tr("Bound on the host before the guest starts. A guest port outside these is reachable only inside the sandbox.")))
 	if r.State.Status.Active() && len(r.State.Ports) > 0 {
 		for _, p := range r.State.Ports {
-			p := p
 			label := fmt.Sprintf("%s → %d/%s", p.Host, p.Guest, p.Proto)
 			var act ggui.Widget = widget.Box()
 			if url := p.URL(); url != "" {

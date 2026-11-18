@@ -52,7 +52,6 @@ func editorSheet(m *Model) ggui.Widget {
 		}
 		var chips []ggui.Widget
 		for _, ref := range refs {
-			ref := ref
 			chips = append(chips, ui.Badge(ref).Outline().OnTap(func() {
 				d.Update(func(x Draft) Draft {
 					x.Image = ref

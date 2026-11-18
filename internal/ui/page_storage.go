@@ -29,13 +29,14 @@ func imagesPage(m *Model) ggui.Widget {
 		return out
 	}).WithEqual(nil)
 	summary := ui.CaptionOf(ggui.Combine(m.Images, m.Disk, func(l Listing[rungv.Image], d []rungv.DiskUsage) string {
-		s := fmt.Sprintf(tr("%d cached images"), len(l.Items))
+		var s strings.Builder
+		s.WriteString(fmt.Sprintf(tr("%d cached images"), len(l.Items)))
 		for _, r := range d {
 			if r.Type == "Images" {
-				s += fmt.Sprintf(tr(" · %s on disk · %s reclaimable"), r.Size, r.Reclaimable)
+				s.WriteString(fmt.Sprintf(tr(" · %s on disk · %s reclaimable"), r.Size, r.Reclaimable))
 			}
 		}
-		return s + tr(". Layers are compiled to read-only EROFS files, never extracted onto the host.")
+		return s.String() + tr(". Layers are compiled to read-only EROFS files, never extracted onto the host.")
 	}))
 	used := func(ref string) []string {
 		var names []string
@@ -121,13 +122,14 @@ func imagesPage(m *Model) ggui.Widget {
 
 func volumesPage(m *Model) ggui.Widget {
 	summary := ui.CaptionOf(ggui.Combine(m.Volumes, m.Disk, func(l Listing[rungv.Volume], d []rungv.DiskUsage) string {
-		s := fmt.Sprintf(tr("%d volumes"), len(l.Items))
+		var s strings.Builder
+		s.WriteString(fmt.Sprintf(tr("%d volumes"), len(l.Items)))
 		for _, r := range d {
 			if r.Type == "Local Volumes" {
-				s += tr(" · %s on disk", r.Size)
+				s.WriteString(tr(" · %s on disk", r.Size))
 			}
 		}
-		return s + tr(". Each ext4lite volume is one journaled ext4 image file that grows on demand.")
+		return s.String() + tr(". Each ext4lite volume is one journaled ext4 image file that grows on demand.")
 	}))
 	table := ui.Table(ggui.Map(m.Volumes, func(l Listing[rungv.Volume]) []rungv.Volume { return l.Items }).WithEqual(nil),
 		func(v rungv.Volume) string { return v.Name },

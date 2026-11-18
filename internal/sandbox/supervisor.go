@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,8 +65,8 @@ func (p PublishedPort) URL() string {
 		return ""
 	}
 	host := p.Host
-	if strings.HasPrefix(host, "0.0.0.0:") {
-		host = "127.0.0.1:" + strings.TrimPrefix(host, "0.0.0.0:")
+	if after, ok := strings.CutPrefix(host, "0.0.0.0:"); ok {
+		host = "127.0.0.1:" + after
 	}
 	return "http://" + host
 }
@@ -420,8 +421,8 @@ func (s *Supervisor) exited(id string, p *proc, err error) {
 		p.state.Status = Failed
 		tail := logs.Tail(8, Stderr)
 		msg := ""
-		for i := len(tail) - 1; i >= 0; i-- {
-			if t := strings.TrimSpace(tail[i]); t != "" && !publishRe.MatchString(t) {
+		for _, t := range slices.Backward(tail) {
+			if t := strings.TrimSpace(t); t != "" && !publishRe.MatchString(t) {
 				msg = t
 				break
 			}
@@ -491,11 +492,9 @@ func (s *Supervisor) Stop(id string, timeout time.Duration) error {
 func (s *Supervisor) StopAll(timeout time.Duration) {
 	var wg sync.WaitGroup
 	for _, id := range s.Running() {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = s.Stop(id, timeout)
-		}()
+		})
 	}
 	wg.Wait()
 }

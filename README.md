@@ -45,16 +45,7 @@ and drag the app to Applications.
 > what you downloaded, compare it with the `.sha256` file beside it in the
 > release: `shasum -a 256 -c gvx-desktop-*.dmg.sha256`.
 
-On Windows, with [Chocolatey](https://chocolatey.org), the release's
-`gvx-desktop.<version>.nupkg` installs the program for your PC and puts it in
-the Start menu — from the folder you saved it in:
-
-```powershell
-choco install gvx-desktop --source .
-```
-
-(`choco install gvx-desktop` alone, once the package is listed on
-chocolatey.org.) Or take the zip for your PC from the same releases — `windows-amd64`
+On Windows, take the zip for your PC from the same releases — `windows-amd64`
 for Intel and AMD, `windows-arm64` for Arm — and run the `GVX Desktop.exe` in
 it. gvx runs guests through the *Windows Hypervisor Platform* feature, which
 has to be turned on.
@@ -167,8 +158,9 @@ Set `version` in `ggui.toml` and push the tag `vX.Y.Z`. The
 silicon, publishes the disk image as the tag's release, writes the cask
 to [ironpark/homebrew-tap](https://github.com/ironpark/homebrew-tap) with
 `release/cask.sh`, and adds the Windows programs, cross-built for amd64 and
-arm64, with a Chocolatey package made by `release/choco.sh` that installs
-them; its header lists the secrets it reads. The icon and the
+arm64; its header lists the secrets it reads. A Chocolatey package that
+installs those is set up in `release/choco.sh` and waits for the repository
+variable `CHOCO_PUBLISH` to be `true`. The icon and the
 mark in the sidebar are drawn in `assets/`; `assets/svg2png.swift` makes
 their PNGs.
 

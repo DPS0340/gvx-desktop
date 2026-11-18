@@ -44,16 +44,7 @@ brew install --cask ironpark/tap/gvx-desktop
 > cask가 표시를 직접 지웁니다. 받은 파일을 확인하려면 릴리스에 함께 있는
 > `.sha256` 파일과 대조하세요: `shasum -a 256 -c gvx-desktop-*.dmg.sha256`.
 
-Windows에서는 [Chocolatey](https://chocolatey.org)로 설치할 수 있습니다. 릴리스의
-`gvx-desktop.<버전>.nupkg`를 받은 폴더에서 아래를 실행하면 PC에 맞는 프로그램을 설치하고
-시작 메뉴에 등록합니다.
-
-```powershell
-choco install gvx-desktop --source .
-```
-
-(패키지가 chocolatey.org에 등록된 뒤에는 `choco install gvx-desktop`만으로 됩니다.)
-또는 같은 릴리스에서 PC에 맞는 zip을 받아(`windows-amd64`는 Intel·AMD,
+Windows에서는 같은 릴리스에서 PC에 맞는 zip을 받아(`windows-amd64`는 Intel·AMD,
 `windows-arm64`는 Arm) 안의 `GVX Desktop.exe`를 실행합니다. gvx는 *Windows 하이퍼바이저
 플랫폼* 기능으로 게스트를 실행하므로 이 기능을 켜 두어야 합니다.
 
@@ -160,7 +151,8 @@ ggui build --dmg
 이미지를 태그의 릴리스로 올리고, `release/cask.sh`로 만든 cask를
 [ironpark/homebrew-tap](https://github.com/ironpark/homebrew-tap)에 씁니다. amd64·arm64용
 Windows 프로그램도 교차 빌드해 릴리스에 추가합니다. 이 zip을 설치하는 Chocolatey
-패키지도 `release/choco.sh`로 만들어 함께 올립니다. 워크플로가
+패키지는 `release/choco.sh`에 준비되어 있고, 저장소 변수 `CHOCO_PUBLISH`를 `true`로 두면
+켜집니다. 워크플로가
 읽는 시크릿은 파일 머리말에 적혀 있습니다. 앱 아이콘과 사이드바의 마크는 `assets/`에
 그려져 있고, `assets/svg2png.swift`가 PNG로 만듭니다.
 

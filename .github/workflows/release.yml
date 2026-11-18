@@ -9,19 +9,23 @@ name: Release
 #
 # installs it. gvx itself is released for Apple silicon only, hence no Intel
 # build for the Mac. For Windows, on Intel and AMD and on Arm, ggui build
-# cross-builds GVX Desktop.exe, which is added to the release in a zip, and
-# a Chocolatey package that installs from those zips is made of
-# release/choco.sh's files, tried on a Windows runner, and added too, so
-# that
+# cross-builds GVX Desktop.exe, which is added to the release in a zip.
+#
+# A Chocolatey package that installs from those zips is set up but off: the
+# chocolatey job runs only when the repository variable CHOCO_PUBLISH is
+# true. It then makes the package of release/choco.sh's files, tries it on
+# a Windows runner, adds it to the release, and pushes it to chocolatey.org,
+# so that
 #
 #	choco install gvx-desktop
 #
-# installs it once the package is on chocolatey.org.
+# installs it once the package is listed there.
 #
 # Run by hand with a tag that is already released, the workflow builds the
-# Windows programs and the Chocolatey package for it again and puts them in
-# its release, leaving the disk image and the cask as they are, and pushing
-# nothing to chocolatey.org, where a version cannot be replaced.
+# Windows programs (and, when it is on, the Chocolatey package) for it again
+# and puts them in its release, leaving the disk image and the cask as they
+# are, and pushing nothing to chocolatey.org, where a version cannot be
+# replaced.
 #
 # Secrets, all optional but the first:
 #
@@ -182,7 +186,7 @@ jobs:
   # downloads and checks them as it will for anyone, before it goes out.
   chocolatey:
     needs: windows
-    if: always() && needs.windows.result == 'success'
+    if: always() && needs.windows.result == 'success' && vars.CHOCO_PUBLISH == 'true'
     runs-on: windows-latest
     env:
       TAG: ${{ inputs.tag || github.ref_name }}

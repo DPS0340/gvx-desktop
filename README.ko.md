@@ -24,7 +24,13 @@ brew install --cask ironpark/tap/gvx-desktop
 ```
 
 또는 [릴리스](https://github.com/ironpark/gvx-desktop/releases)에서 디스크 이미지를
-받습니다. gvx를 먼저 설치할 필요는 없습니다. 앱이 `rungv`를 설치하고 최신으로
+받습니다.
+
+Windows에서는 같은 릴리스에서 PC에 맞는 zip을 받아(`windows-amd64`는 Intel·AMD,
+`windows-arm64`는 Arm) 안의 `GVX Desktop.exe`를 실행합니다. gvx는 *Windows 하이퍼바이저
+플랫폼* 기능으로 게스트를 실행하므로 이 기능을 켜 두어야 합니다.
+
+gvx를 먼저 설치할 필요는 없습니다. 앱이 `rungv`를 설치하고 최신으로
 유지합니다([rungv](#rungv) 참고). 다른 시스템에서는 [직접 빌드](#빌드와-실행)하세요.
 
 ## 기능
@@ -125,7 +131,8 @@ ggui build --dmg
 `ggui.toml`의 `version`을 바꾸고 `vX.Y.Z` 태그를 푸시합니다.
 [릴리스 워크플로](.github/workflows/release.yml)가 Apple silicon용 앱을 빌드해 디스크
 이미지를 태그의 릴리스로 올리고, `release/cask.sh`로 만든 cask를
-[ironpark/homebrew-tap](https://github.com/ironpark/homebrew-tap)에 씁니다. 워크플로가
+[ironpark/homebrew-tap](https://github.com/ironpark/homebrew-tap)에 씁니다. amd64·arm64용
+Windows 프로그램도 교차 빌드해 릴리스에 추가합니다. 워크플로가
 읽는 시크릿은 파일 머리말에 적혀 있습니다. 앱 아이콘과 사이드바의 마크는 `assets/`에
 그려져 있고, `assets/svg2png.swift`가 PNG로 만듭니다.
 

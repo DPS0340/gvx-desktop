@@ -1,6 +1,6 @@
 name: Release
 
-# A tag vX.Y.Z releases the app for Apple silicon Macs: ggui build makes
+# A tag vX.Y.Z releases the app. For Apple silicon Macs ggui build makes
 # gvx Desktop.app and its disk image, the image becomes the tag's GitHub
 # release, and a cask for it goes to the Homebrew tap ironpark/homebrew-tap
 # (release/cask.sh writes it), so that
@@ -8,7 +8,12 @@ name: Release
 #	brew install --cask ironpark/tap/gvx-desktop
 #
 # installs it. gvx itself is released for Apple silicon only, hence no Intel
-# build.
+# build for the Mac. For Windows, on Intel and AMD and on Arm, ggui build
+# cross-builds GVX Desktop.exe, which is added to the release in a zip.
+#
+# Run by hand with a tag that is already released, the workflow builds the
+# Windows programs for it again and puts them in its release, leaving the
+# disk image and the cask as they are.
 #
 # Secrets, all optional but the first:
 #
@@ -23,6 +28,11 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: A released tag to build the Windows programs for again, such as v0.1.0
+        required: true
 
 permissions:
   contents: write
@@ -34,6 +44,7 @@ concurrency:
 
 jobs:
   release:
+    if: github.event_name == 'push'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -91,7 +102,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "$DMG" "$DMG.sha256" \
             --title "${{ steps.version.outputs.name }} $VERSION" \
             --generate-notes \
-            --notes "Install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. Apple silicon, macOS 13 or later."
+            --notes "On an Apple silicon Mac (macOS 13 or later), install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. On Windows, unzip the program for your PC: amd64 for Intel and AMD, arm64 for Arm."
       - name: Update the Homebrew tap
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
@@ -114,3 +125,38 @@ jobs:
           git diff --cached --quiet && { echo "the cask is unchanged"; exit 0; }
           git commit -m "Update gvx-desktop to $VERSION"
           git push
+
+  # The Windows programs join the release the Mac job made, or, run by
+  # hand, the one the tag already has.
+  windows:
+    needs: release
+    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install the ggui command
+        run: go install github.com/ironpark/ggui/cmd/ggui@latest
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          version="${TAG#v}"
+          name="$(sed -n 's/^name = "\(.*\)"$/\1/p' ggui.toml)"
+          for arch in amd64 arm64; do
+            GOARCH="$arch" ggui build --target windows --out "build/$arch" --ldflags "-X main.version=$version"
+            zip="gvx-desktop-$version-windows-$arch.zip"
+            (cd "build/$arch" && zip -q "../../$zip" "$name.exe")
+            sha256sum "$zip" > "$zip.sha256"
+          done
+          ls -l ./*.zip
+      - name: Add to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" ./*.zip ./*.zip.sha256 --clobber

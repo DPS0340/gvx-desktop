@@ -42,3 +42,13 @@ jobs:
           go install github.com/ironpark/ggui/cmd/ggui@latest
           ggui build
           release/check-bundle.sh
+      # The Windows programs are cross-built for a release; that they still
+      # build is found here.
+      - name: Windows
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          for arch in amd64 arm64; do
+            GOOS=windows GOARCH="$arch" go vet ./...
+            GOARCH="$arch" ggui build --target windows --out "build/windows-$arch"
+          done

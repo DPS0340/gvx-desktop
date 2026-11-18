@@ -24,6 +24,12 @@ brew install --cask ironpark/tap/gvx-desktop
 ```
 
 or take the disk image from the [releases](https://github.com/ironpark/gvx-desktop/releases).
+
+On Windows, take the zip for your PC from the same releases — `windows-amd64`
+for Intel and AMD, `windows-arm64` for Arm — and run the `GVX Desktop.exe` in
+it. gvx runs guests through the *Windows Hypervisor Platform* feature, which
+has to be turned on.
+
 gvx itself need not be there first: the app installs `rungv` and keeps it up
 to date (see [rungv](#rungv)). On other systems, [build it](#build-and-run).
 
@@ -129,9 +135,10 @@ build compiles gVisor and takes minutes.
 
 Set `version` in `ggui.toml` and push the tag `vX.Y.Z`. The
 [release workflow](.github/workflows/release.yml) builds the app for Apple
-silicon, publishes the disk image as the tag's release, and writes the cask
+silicon, publishes the disk image as the tag's release, writes the cask
 to [ironpark/homebrew-tap](https://github.com/ironpark/homebrew-tap) with
-`release/cask.sh`; its header lists the secrets it reads. The icon and the
+`release/cask.sh`, and adds the Windows programs, cross-built for amd64 and
+arm64; its header lists the secrets it reads. The icon and the
 mark in the sidebar are drawn in `assets/`; `assets/svg2png.swift` makes
 their PNGs.
 

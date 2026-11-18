@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/fonts/gofont"
 	"github.com/ironpark/ggui/record"
 	uitheme "github.com/ironpark/ggui/ui/theme"
 
@@ -42,6 +43,9 @@ func init() {
 		Start:          tourStart,
 		Setup: func(p *ggui.Probe) {
 			rungv.HomeDir = func() (string, error) { return demoHome, nil }
+			// A probe has no system fonts: without a mono font of its own the
+			// terminal would space Go Regular out over a grid.
+			ggui.SetDefaultMonoFont(gofont.Mono())
 			var err error
 			if dir, err = os.MkdirTemp("", "gvxd-tour"); err != nil {
 				panic(err)
@@ -65,7 +69,7 @@ func init() {
 		Build: func() ggui.Widget { return ui.Build(m) },
 		Script: func(r *record.Recorder) {
 			defer os.RemoveAll(dir)
-			const look, glance = 1700 * time.Millisecond, 1000 * time.Millisecond
+			const look, glance = 1300 * time.Millisecond, 700 * time.Millisecond
 			// press glides the cursor to a point of the window and clicks
 			// there: the tour goes through the app as a person would, by
 			// its sidebar and its buttons.
@@ -85,17 +89,19 @@ func init() {
 			press(side, sandboxes, glance)
 			press(520, 314, glance)                 // the docker-engine row
 			press(364, 554, look)                   // its Connect tab
-			press(1195, 107, 2200*time.Millisecond) // New sandbox
+			press(1195, 107, 1700*time.Millisecond) // New sandbox
 			r.Key("escape")
 			r.Hold(glance / 2)
 
 			press(side, containers, glance)
-			press(437, 495, look) // the Terminal tab of the container chosen
-			press(side, pods, look)
+			press(437, 543, look) // the Terminal tab of the container chosen
+			press(side, pods, glance)
+			press(352, 171, glance) // its workloads
+			press(428, 171, look)   // and its services, with the ports forwarded
 
 			press(side, images, glance)
 			r.MoveTo(ggui.Pt(1183, 107), 550*time.Millisecond) // Pull image
-			r.Then(2400*time.Millisecond, func() {
+			r.Then(1900*time.Millisecond, func() {
 				m.OpenPull("nginx")
 				m.SearchFor.Set("nginx")
 				m.SearchResults.Set(demoSearch())

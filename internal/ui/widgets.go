@@ -196,11 +196,17 @@ const tableRow = 44
 // cardRadius is the corner of a card under the stock theme.
 const cardRadius = 14
 
-// tableCard is a card around a table, which it clips to its corners: a
+// tableCard is a card around a table, with the bars given above it, such
+// as the field that filters it. It clips what it holds to its corners: a
 // row's highlight is square, and the last row's would cover them.
-func tableCard(table ggui.Widget) ggui.Widget {
+func tableCard(table ggui.Widget, bars ...ggui.Widget) ggui.Widget {
 	const r = cardRadius - 1
-	return ui.Card(widget.ClipPath(table, func(b ggui.Rect) *ggui.Path {
+	var body []ggui.Widget
+	for _, bar := range bars {
+		body = append(body, bar, ui.Divider())
+	}
+	body = append(body, table)
+	return ui.Card(widget.ClipPath(widget.Column(body...).Stretch(), func(b ggui.Rect) *ggui.Path {
 		x0, y0, x1, y1 := b.Origin.X, b.Origin.Y, b.Origin.X+b.Size.W, b.Origin.Y+b.Size.H
 		p := &ggui.Path{}
 		p.MoveTo(x0+r, y0)
@@ -215,6 +221,28 @@ func tableCard(table ggui.Widget) ggui.Widget {
 		p.Close()
 		return p
 	})).Pad(1)
+}
+
+// filterBar heads a table with the field that filters it: what is typed
+// in query chooses the rows, and count says how many are showing.
+func filterBar(query ggui.Binding[string], placeholder string, count ggui.Readable[string]) ggui.Widget {
+	clear := ggui.If(ggui.Map(query, func(q string) bool { return q != "" }), func() ggui.Widget {
+		return iconButton(lucide.X, tr("Clear the filter"), func() { query.Set("") })
+	})
+	return widget.Box(widget.Row(
+		glyph(lucide.Search, 15).Color(colorGray),
+		widget.Expanded(widget.TextInput(query).Placeholder(placeholder).Name(placeholder)),
+		clear,
+		ui.CaptionOf(count).Size(12).NoWrap(),
+	).Gap(10).Align(widget.AlignCenter)).Pad(0, 12).Height(tableRow)
+}
+
+// showing words how many of total rows a filter leaves.
+func showing(shown, total int) string {
+	if shown == total {
+		return tr("%d items", total)
+	}
+	return tr("%d of %d", shown, total)
 }
 
 // buildStamp is the ten digits gvx ends a version with, the day and hour

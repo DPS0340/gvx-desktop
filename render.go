@@ -14,6 +14,7 @@ import (
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
+	"github.com/ironpark/gvx-desktop/internal/registry"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -55,6 +56,21 @@ func renderAll(tmp, out, lang string) error {
 		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes) }},
 		{"settings", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
 		{"editor", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.NewSandbox("postgres:17-alpine") }},
+		{"pull-search", func(m *ui.Model) {
+			m.Page.Set(ui.PageImages)
+			m.OpenPull("nginx")
+			m.SearchFor.Set("nginx")
+			m.SearchResults.Set([]registry.Result{
+				{Name: "nginx", Description: "Official build of Nginx.", Stars: 21422, Pulls: 13593185359, Official: true},
+				{Name: "nginx/nginx-ingress", Description: "NGINX and NGINX Plus Ingress Controllers for Kubernetes", Stars: 124, Pulls: 1088795042},
+				{Name: "nginx/nginx-prometheus-exporter", Description: "NGINX Prometheus Exporter for NGINX and NGINX Plus", Stars: 53, Pulls: 92683082},
+				{Name: "bitnami/nginx", Description: "Bitnami Secure Image for nginx", Stars: 208, Pulls: 310412345},
+				{Name: "nginxinc/nginx-unprivileged", Description: "Unprivileged NGINX Dockerfiles", Stars: 189, Pulls: 912000111},
+				{Name: "linuxserver/nginx", Description: "An Nginx container, brought to you by LinuxServer.io.", Stars: 231, Pulls: 43000000},
+			})
+			m.SearchTagsOf.Set("nginx")
+			m.SearchTags.Set([]string{"stable-alpine", "mainline-alpine", "alpine", "1.31", "1.31-alpine", "stable", "latest", "bookworm"})
+		}},
 		{"palette", func(m *ui.Model) { m.PaletteOpen.Set(true) }},
 		{"sidebar-hidden", func(m *ui.Model) { m.Page.Set(ui.PageImages); m.SidebarNarrow.Set(true) }},
 	}
@@ -85,6 +101,7 @@ func renderAll(tmp, out, lang string) error {
 			}, ggui.Sz(w, h))
 			p.Setup(func() {
 				m = ui.NewModel(st, dir)
+				m.Offline = true
 				m.Attach(p)
 				demoState(m, now)
 				preset := uitheme.Preset{Base: uitheme.BaseZinc, Accent: uitheme.AccentBlue}

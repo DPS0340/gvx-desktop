@@ -16,9 +16,11 @@ import (
 	"github.com/ironpark/ggui/icons/lucide"
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/ui/icons"
+	uitheme "github.com/ironpark/ggui/ui/theme"
 	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/recipes"
+	"github.com/ironpark/gvx-desktop/internal/registry"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -204,7 +206,7 @@ func engineShort(e Engine) string {
 	case len(e.Info.AvailableBackends) == 0:
 		return tr("No backend")
 	}
-	v := shortVersion(e.Version.Version)
+	v := engineVersion(e)
 	if v == "" {
 		v = "rungv"
 	}
@@ -289,7 +291,7 @@ func statusBar(m *Model) ggui.Widget {
 		if e.Err != "" || !e.Checked {
 			return engineShort(e)
 		}
-		return fmt.Sprintf(tr("rungv %s · %s · %s lockdown"), shortVersion(e.Version.Version), e.Info.DefaultBackend, e.Info.HostLockdown)
+		return fmt.Sprintf(tr("rungv %s · %s · %s lockdown"), engineVersion(e), e.Info.DefaultBackend, e.Info.HostLockdown)
 	})).Size(11).NoWrap()
 	running := ui.CaptionOf(ggui.Combine(m.Running, m.Specs, func(n int, specs []sandbox.Spec) string {
 		return fmt.Sprintf(tr("%d of %d sandboxes running"), n, len(specs))
@@ -338,26 +340,161 @@ func confirmDialog(m *Model) ggui.Widget {
 }
 
 func pullDialog(m *Model) ggui.Widget {
-	field := ui.TextField(m.PullRef).Placeholder("alpine:3.20, nginx:alpine, ghcr.io/org/app:1.0").
+	// What is typed is searched for, once the typing pauses.
+	ggui.Watch(m.PullRef, func(string) { m.SearchTyped() })
+	ggui.Watch(m.PullOpen, func(bool) { m.SearchTyped() })
+	ggui.Watch(m.Pulling, func(bool) { m.SearchTyped() })
+	source := ggui.Bind(m.SearchSource, func(v registry.Source) {
+		m.UpdateSettings(func(s *storeSettings) { s.SearchRegistry = string(v) })
+		m.SearchTyped()
+	})
+
+	field := ui.TextField(m.PullRef).Placeholder(tr("Search, or a reference: nginx, ghcr.io/org/app:1.0")).
 		Name(tr("Image reference")).OnSubmit(func(string) { m.Pull() }).BindDisabled(m.Pulling)
+	searchBar := widget.Row(
+		ui.Caption(tr("Search in")).Size(12),
+		ui.ToggleGroup[registry.Source](source).Options(registry.Sources()).Format(registry.Source.Title).
+			Outline().Size(ui.ButtonExtraSmall).Spacing(0).Name(tr("Registry to search")),
+		ggui.If(m.SearchBusy, func() ggui.Widget { return ui.Spinner().Size(12) }),
+		widget.Spacer(),
+		ui.CaptionOf(ggui.Combine(m.SearchResults, m.SearchFor, func(r []registry.Result, q string) string {
+			if q == "" {
+				return ""
+			}
+			return tr("%d for “%s”", len(r), q)
+		})).Size(12).NoWrap(),
+	).Gap(8).Align(widget.AlignCenter)
+
 	suggestions := widget.Wrap(
 		suggestion(m, "alpine:3.20"), suggestion(m, "nginx:alpine"), suggestion(m, "python:3.12-alpine"),
 		suggestion(m, "postgres:17-alpine"), suggestion(m, "redis:alpine"), suggestion(m, "docker:dind"),
 	).Gap(6)
+
+	// 0: nothing searched, 1: results, 2: none found, 3: the search failed.
+	state := ggui.Combine(ggui.Combine(m.SearchResults, m.SearchFor, func(r []registry.Result, q string) int {
+		switch {
+		case q == "":
+			return 0
+		case len(r) == 0:
+			return 2
+		}
+		return 1
+	}), m.SearchErr, func(s int, err string) int {
+		if err != "" {
+			return 3
+		}
+		return s
+	})
+	found := ggui.View(state, func(s int) ggui.Widget {
+		switch s {
+		case 1:
+			return widget.Box(widget.Scroll(ggui.View(m.SearchResults, func(rs []registry.Result) ggui.Widget {
+				rows := make([]ggui.Widget, len(rs))
+				for i, r := range rs {
+					rows[i] = searchResult(m, r)
+				}
+				return widget.Column(rows...).Gap(2).Stretch()
+			})).FadeEdges(10)).Height(248)
+		case 2:
+			return ui.CaptionOf(ggui.Map(m.SearchFor, func(q string) string {
+				return tr("Nothing found for “%s”. A full reference can still be pulled.", q)
+			}))
+		case 3:
+			return ui.CaptionOf(ggui.Map(m.SearchErr, func(e string) string { return tr("The search failed: %s", e) })).Color(colorRed)
+		}
+		return suggestions
+	})
+	tags := ggui.View(ggui.Combine(m.SearchTags, m.SearchTagsBusy, func(t []string, busy bool) int {
+		if busy {
+			return -1
+		}
+		return len(t)
+	}), func(n int) ggui.Widget {
+		switch {
+		case n < 0:
+			return widget.Row(ui.Spinner().Size(12), ui.Caption(tr("Reading tags…")).Size(12)).Gap(8).Align(widget.AlignCenter)
+		case n == 0:
+			return widget.Box()
+		}
+		chips := make([]ggui.Widget, 0, n)
+		for _, t := range ggui.Peek(m.SearchTags) {
+			chips = append(chips, ui.Badge(t).Outline().OnTap(func() { m.PickTag(t) }))
+		}
+		return widget.Column(
+			ui.CaptionOf(ggui.Map(m.SearchTagsOf, func(ref string) string { return tr("Tags of %s, newest first", ref) })).Size(12),
+			widget.Wrap(chips...).Gap(6),
+		).Gap(6).Stretch()
+	})
+	// While a pull runs, its output has the room.
+	browse := ggui.If(m.Pulling, func() ggui.Widget { return widget.Box() }).Else(func() ggui.Widget {
+		return widget.Column(searchBar, found, tags).Gap(10).Stretch()
+	})
 	logs := ggui.If(ggui.Map(m.PullLog, func(s string) bool { return s != "" }), func() ggui.Widget {
 		return ui.CodeBlockOf(m.PullLog).Height(180).Small().CopyButton(false)
 	})
 	return ui.Dialog(m.PullOpen, widget.Column(
 		ui.Field(tr("Image"), field).Help(tr("Images run natively on this CPU (linux/%s). Layers are compiled to read-only EROFS files once and cached.", goarch())),
-		suggestions,
+		browse,
 		logs,
-	).Gap(14).Stretch()).Title(tr("Pull an image")).Width(560).Footer(
+	).Gap(14).Stretch()).Title(tr("Pull an image")).Width(600).Footer(
 		ui.Button(tr("Close"), func() { m.PullOpen.Set(false) }).Outline(),
 		ui.ButtonOf(ggui.If(m.Pulling, func() ggui.Widget {
 			return widget.Row(ui.Spinner().Size(14), widget.Text(tr("Pulling…"))).Gap(8)
 		}).Else(func() ggui.Widget { return widget.Text(tr("Pull")) }), m.Pull).
 			Name(tr("Pull")).BindDisabled(ggui.Or(m.Pulling, ggui.Map(m.PullRef, func(s string) bool { return strings.TrimSpace(s) == "" }))),
 	)
+}
+
+// searchResult is one repository a registry search found: choosing it puts
+// it in the field.
+func searchResult(m *Model, r registry.Result) ggui.Widget {
+	title := []ggui.Widget{widget.Text(r.Name).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()}
+	if r.Official {
+		title = append(title, ui.Badge(tr("Official")).Outline())
+	}
+	text := []ggui.Widget{widget.Row(title...).Gap(8).Align(widget.AlignCenter)}
+	if r.Description != "" {
+		text = append(text, ui.Caption(r.Description).Size(12).NoWrap().Ellipsis())
+	}
+	var stats []ggui.Widget
+	if r.Stars > 0 {
+		stats = append(stats, glyph(lucide.Star, 12).Color(colorGray), ui.Caption(compact(int64(r.Stars))).Size(12))
+	}
+	if r.Pulls > 0 {
+		stats = append(stats, glyph(lucide.Download, 12).Color(colorGray), ui.Caption(compact(r.Pulls)).Size(12))
+	}
+	row := widget.Row(
+		widget.Expanded(widget.Column(text...).Gap(2)),
+		widget.Row(stats...).Gap(5).Align(widget.AlignCenter),
+	).Gap(12).Align(widget.AlignCenter)
+	hover := ggui.State(false)
+	fill := ggui.Map(hover, func(over bool) color.Color {
+		if over {
+			return uitheme.Var("accent")
+		}
+		return color.RGBA{}
+	})
+	return widget.Tap(widget.AnimatedBox(row).Pad(8, 10).Radius(8).BindFill(fill).Duration(hoverDuration), func() { m.PickResult(r) }).
+		OnHover(hover.Set).Cursor(ggui.CursorShapePointer)
+}
+
+// compact writes a count in a few characters: 950, 21k, 1.4M, 13B.
+func compact(n int64) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprint(n)
+	case n < 10_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1e3)
+	case n < 1_000_000:
+		return fmt.Sprintf("%dk", n/1000)
+	case n < 10_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n < 1_000_000_000:
+		return fmt.Sprintf("%dM", n/1_000_000)
+	case n < 10_000_000_000:
+		return fmt.Sprintf("%.1fB", float64(n)/1e9)
+	}
+	return fmt.Sprintf("%dB", n/1_000_000_000)
 }
 
 func goarch() string {

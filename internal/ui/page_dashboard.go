@@ -72,12 +72,12 @@ func engineAlert(m *Model) ggui.Widget {
 		case len(e.Info.BackendWarnings) > 0:
 			return shown(ui.Alert(tr("Engine warnings"), strings.Join(e.Info.BackendWarnings, " ")).Icon(icons.Info))
 		case u.Available(e):
-			return shown(ui.Alert(tr("rungv %s is available", shortVersion(u.Tag)),
-				tr("This computer has %s. Sandboxes that are running keep the rungv they started with.", shortVersion(e.Version.Version))).
+			return shown(ui.Alert(updateTitle(u),
+				tr("This computer has %s. Sandboxes that are running keep the rungv they started with.", engineVersion(e))).
 				Icon(icons.Info).
 				Action(widget.Row(
-					installButton(m, u, tr("Update")).Size(ui.ButtonExtraSmall),
-					small(tr("Release notes"), func() { m.Open(u.Page) }).Outline(),
+					installButton(m, u, updateVerb(u)).Size(ui.ButtonExtraSmall),
+					small(updateNotes(u), func() { m.Open(u.Page) }).Outline(),
 				).Gap(8)))
 		}
 		return widget.Box()
@@ -88,7 +88,11 @@ func engineAlert(m *Model) ggui.Widget {
 // is while it does.
 func installButton(m *Model, u Update, label string) *ui.ButtonWidget {
 	if u.Installing {
-		return ui.ButtonOf(widget.Row(ui.Spinner().Size(12), widget.Text(tr("Downloading… %d%%", u.Percent))).Gap(6).Align(widget.AlignCenter), func() {}).
+		doing := tr("Downloading… %d%%", u.Percent)
+		if u.Source {
+			doing = u.Phase
+		}
+		return ui.ButtonOf(widget.Row(ui.Spinner().Size(12), widget.Text(doing)).Gap(6).Align(widget.AlignCenter), func() {}).
 			Name(label).Disabled(true)
 	}
 	return ui.Button(label, m.InstallRungv).Icon(glyph(lucide.Download, 14))
@@ -167,7 +171,7 @@ func engineCard(m *Model) ggui.Widget {
 			backends = tr("none")
 		}
 		return widget.Column(
-			kvText(tr("Version"), shortVersion(e.Version.Version)),
+			kvText(tr("Version"), engineVersion(e)),
 			kvText(tr("Host"), e.Info.OS+"/"+e.Info.Architecture+fmt.Sprintf(tr(" · %d CPUs"), e.Info.NumCPU)),
 			kvText(tr("Default backend"), e.Info.DefaultBackend),
 			kvText(tr("Available"), backends),
@@ -223,4 +227,31 @@ func recipeCards(m *Model) ggui.Widget {
 		).Gap(12).Stretch()))
 	}
 	return widget.Responsive(760, widget.Grid(2, cards...).Gap(12), widget.Column(cards...).Gap(12).Stretch())
+}
+
+// updateTitle heads the notice of a newer rungv.
+func updateTitle(u Update) string {
+	switch {
+	case !u.Source:
+		return tr("rungv %s is available", u.Name())
+	case u.Ahead > 0:
+		return tr("%d new commits on main: %s", u.Ahead, u.Subject)
+	}
+	return tr("main has moved: %s", u.Subject)
+}
+
+// updateVerb is what the button that installs it says.
+func updateVerb(u Update) string {
+	if u.Source {
+		return tr("Build and install")
+	}
+	return tr("Update")
+}
+
+// updateNotes is what the button that tells more of it says.
+func updateNotes(u Update) string {
+	if u.Source {
+		return tr("Commits")
+	}
+	return tr("Release notes")
 }

@@ -73,8 +73,9 @@ func sandboxesPage(m *Model) ggui.Widget {
 		if scrolls {
 			t.Height((mostRows + 1) * rowHeight)
 		}
-		return tableCard(t)
+		return t
 	})
+	count := ggui.Combine(visible, m.Rows, func(v, all []Row) string { return showing(len(v), len(all)) })
 
 	empty := ui.Empty(tr("No sandboxes"), tr("A sandbox runs one OCI image in its own unprivileged process. Create one, or start the Docker Engine or Kubernetes recipe.")).
 		Media(glyph(lucide.Box, 32).Color(colorGray)).
@@ -85,8 +86,7 @@ func sandboxesPage(m *Model) ggui.Widget {
 
 	list := ggui.If(ggui.Map(m.Specs, func(s []sandbox.Spec) bool { return len(s) > 0 }), func() ggui.Widget {
 		return widget.Column(
-			widget.Box(ui.TextField(m.Query).Placeholder(tr("Filter by name or image")).Name(tr("Filter sandboxes"))).MaxWidth(320),
-			table,
+			tableCard(table, filterBar(m.Query, tr("Filter by name or image"), count)),
 			detailPanel(m),
 		).Gap(16).Stretch()
 	}).Else(func() ggui.Widget { return empty })

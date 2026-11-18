@@ -16,6 +16,7 @@ import (
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
+	"github.com/ironpark/gvx-desktop/internal/registry"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -91,7 +92,8 @@ type Model struct {
 	Settings *ggui.StateValue[store.Settings]
 	Engine   *ggui.StateValue[Engine]
 	Update   *ggui.StateValue[Update]
-	release  rungv.Release // what Update tells of
+	BuildLog *ggui.StateValue[string] // the end of what a build from source printed
+	release  rungv.Release            // what Update tells of
 	Now      *ggui.StateValue[time.Time]
 	// Lang is the language the app is worded in, from the settings or the
 	// system: LangEnglish or LangKorean.
@@ -122,15 +124,28 @@ type Model struct {
 	DraftLine  *ggui.DerivedValue[string]
 
 	// Dialogs
-	ConfirmOpen    *ggui.StateValue[bool]
-	ConfirmTitle   *ggui.StateValue[string]
-	ConfirmText    *ggui.StateValue[string]
-	ConfirmLabel   *ggui.StateValue[string]
-	confirmAction  func()
-	PullOpen       *ggui.StateValue[bool]
-	PullRef        *ggui.StateValue[string]
-	PullLog        *ggui.StateValue[string]
-	Pulling        *ggui.StateValue[bool]
+	ConfirmOpen   *ggui.StateValue[bool]
+	ConfirmTitle  *ggui.StateValue[string]
+	ConfirmText   *ggui.StateValue[string]
+	ConfirmLabel  *ggui.StateValue[string]
+	confirmAction func()
+	PullOpen      *ggui.StateValue[bool]
+	PullRef       *ggui.StateValue[string]
+	PullLog       *ggui.StateValue[string]
+	Pulling       *ggui.StateValue[bool]
+
+	// What the pull dialog's search of a registry found; see SearchTyped.
+	SearchResults  *ggui.StateValue[[]registry.Result]
+	SearchFor      *ggui.StateValue[string] // the words SearchResults answer
+	SearchBusy     *ggui.StateValue[bool]
+	SearchErr      *ggui.StateValue[string]
+	SearchTags     *ggui.StateValue[[]string]
+	SearchTagsOf   *ggui.StateValue[string] // the repository SearchTags are of
+	SearchTagsBusy *ggui.StateValue[bool]
+	search         search
+	// Offline keeps the model from asking the network anything, as the
+	// screens rendered with made-up state must not.
+	Offline        bool
 	InspectOpen    *ggui.StateValue[bool]
 	InspectTitle   *ggui.StateValue[string]
 	InspectBody    *ggui.StateValue[string]
@@ -163,7 +178,8 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Page:     ggui.State(PageDashboard),
 		Settings: ggui.State(settings),
 		Engine:   ggui.State(Engine{Loading: true}),
-		Update:   ggui.State(Update{}),
+		Update:   ggui.State(Update{Source: settings.UpdateChannel == ChannelSource}),
+		BuildLog: ggui.State(""),
 		Now:      ggui.State(time.Now()),
 
 		Specs:    ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
@@ -193,6 +209,13 @@ func NewModel(st store.Store, dataDir string) *Model {
 		PullRef:        ggui.State(""),
 		PullLog:        ggui.State(""),
 		Pulling:        ggui.State(false),
+		SearchResults:  ggui.State([]registry.Result(nil)),
+		SearchFor:      ggui.State(""),
+		SearchBusy:     ggui.State(false),
+		SearchErr:      ggui.State(""),
+		SearchTags:     ggui.State([]string(nil)),
+		SearchTagsOf:   ggui.State(""),
+		SearchTagsBusy: ggui.State(false),
 		InspectOpen:    ggui.State(false),
 		InspectTitle:   ggui.State(""),
 		InspectBody:    ggui.State(""),

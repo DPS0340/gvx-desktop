@@ -227,7 +227,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 			ggui.MenuAction(ui.EngineLine(engine), "", nil).BindEnabled(ggui.Const(false)),
 		}
 		if update.Available(engine) && !update.Installing {
-			items = append(items, ggui.MenuAction(fmt.Sprintf(ui.T("Update rungv to %s"), ui.ShortVersion(update.Tag)), "", m.InstallRungv))
+			items = append(items, ggui.MenuAction(fmt.Sprintf(ui.T("Update rungv to %s"), update.Name()), "", m.InstallRungv))
 		}
 		items = append(items, ggui.MenuSeparator())
 		rows := ggui.Peek(m.Rows)

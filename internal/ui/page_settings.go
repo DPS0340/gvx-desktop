@@ -76,15 +76,21 @@ func settingsPage(m *Model) ggui.Widget {
 	timeout := ggui.Bind(func() float64 { return float64(m.Settings.Get().StopTimeout) }, func(v float64) {
 		m.UpdateSettings(func(s *storeSettings) { s.StopTimeout = max(1, int(v)) })
 	})
+	channel := ggui.Bind(func() string {
+		if m.Settings.Get().UpdateChannel == ChannelSource {
+			return ChannelSource
+		}
+		return ChannelRelease
+	}, m.SetChannel)
 	noTray := ggui.Map(m.Settings, func(s storeSettings) bool { return s.NoTray })
 
 	groups := []ggui.Widget{
 		headed(pageHeader(tr("Settings"), ui.Caption(tr("Where rungv lives and how the app treats running sandboxes."))), engineAlert(m)),
 		settingsGroup(lucide.Palette, tr("General"),
 			settingRow(tr("Appearance"), tr("Light, dark, or as the system is."),
-				ui.ToggleGroup[string](theme).Options([]string{"system", "light", "dark"}).Format(themeName).Outline().Name(tr("Appearance"))),
+				ui.ToggleGroup[string](theme).Options([]string{"system", "light", "dark"}).Format(themeName).Icon(themeIcon).Outline().Spacing(0).Name(tr("Appearance"))),
 			settingRow(tr("Language"), tr("The language the app is worded in."),
-				ui.ToggleGroup[string](language).Options([]string{LangSystem, LangEnglish, LangKorean}).Format(languageName).Outline().Name(tr("Language"))),
+				ui.ToggleGroup[string](language).Options([]string{LangSystem, LangEnglish, LangKorean}).Format(languageName).Outline().Spacing(0).Name(tr("Language"))),
 		),
 	}
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
@@ -124,6 +130,10 @@ func settingsPage(m *Model) ggui.Widget {
 			engineFacts(m),
 		),
 		settingsGroup(lucide.Download, tr("Updates"),
+			settingRow(tr("Channel"),
+				tr("Releases are gvx's published builds. main is its newest commit, cloned and built on this computer, which needs git and Go."),
+				ui.ToggleGroup[string](channel).Options([]string{ChannelRelease, ChannelSource}).Format(channelName).Outline().Spacing(0).
+					BindDisabled(ggui.Map(m.Update, func(u Update) bool { return u.Installing })).Name(tr("Channel"))),
 			releaseRow(m),
 			settingRow(tr("Look for a newer rungv when the app starts"),
 				tr("Asks GitHub for the newest release of gvx. Nothing is installed until you say so."),
@@ -179,35 +189,48 @@ func aboutCard(m *Model) ggui.Widget {
 	).Gap(16).Align(widget.AlignCenter))
 }
 
-// releaseRow says which rungv gvx has released last, and installs it.
+// releaseRow says what the channel's newest gvx is, and installs it.
 func releaseRow(m *Model) ggui.Widget {
 	type state struct {
 		e Engine
 		u Update
 	}
 	both := ggui.Combine(m.Engine, m.Update, func(e Engine, u Update) state { return state{e, u} })
-	return ggui.View(both, func(s state) ggui.Widget {
+	row := ggui.View(both, func(s state) ggui.Widget {
 		e, u := s.e, s.u
 		var text string
 		var action ggui.Widget = widget.Box()
+		install := tr("Install rungv")
+		if u.Source {
+			install = tr("Build and install")
+		}
 		switch {
+		case u.Installing && u.Source:
+			text = tr("Building rungv from main")
+			action = installButton(m, u, install).Size(ui.ButtonSmall)
 		case u.Installing:
-			text = tr("Installing rungv %s", shortVersion(u.Tag))
-			action = installButton(m, u, tr("Install rungv")).Size(ui.ButtonSmall)
+			text = tr("Installing rungv %s", u.Name())
+			action = installButton(m, u, install).Size(ui.ButtonSmall)
 		case u.Checking:
-			text = tr("Asking GitHub for the newest release…")
-		case u.Tag == "" && u.Err != "":
-			text = tr("The newest release could not be read: %s", u.Err)
-		case u.Tag == "":
-			text = tr("The newest release has not been looked up.")
+			text = tr("Asking GitHub for the newest…")
+		case !u.Known() && u.Err != "":
+			text = tr("The newest could not be read: %s", u.Err)
+		case !u.Known():
+			text = tr("The newest has not been looked up.")
 		case e.Path == "":
-			text = tr("rungv %s can be installed into ~/.gvx/bin.", shortVersion(u.Tag))
-			action = installButton(m, u, tr("Install rungv")).Size(ui.ButtonSmall)
+			text = tr("rungv %s can be installed into ~/.gvx/bin.", u.Name())
+			action = installButton(m, u, install).Size(ui.ButtonSmall)
 		case u.Available(e):
-			text = tr("rungv %s is available; this computer has %s.", shortVersion(u.Tag), shortVersion(e.Version.Version))
-			action = installButton(m, u, tr("Update")).Size(ui.ButtonSmall)
+			text = tr("rungv %s is available; this computer has %s.", u.Name(), engineVersion(e))
+			if u.Source && u.Ahead > 0 {
+				text = tr("main is %d commits past this computer's %s.", u.Ahead, engineVersion(e))
+			}
+			action = installButton(m, u, updateVerb(u)).Size(ui.ButtonSmall)
+		case u.Source:
+			text = tr("rungv is up to date with main (%s).", u.Name())
+			action = ui.Button(tr("Build again"), m.InstallRungv).Outline().Size(ui.ButtonSmall)
 		default:
-			text = tr("rungv is up to date: %s is the newest release.", shortVersion(u.Tag))
+			text = tr("rungv is up to date: %s is the newest release.", u.Name())
 		}
 		return widget.Row(
 			action,
@@ -216,4 +239,29 @@ func releaseRow(m *Model) ggui.Widget {
 			widget.Expanded(ui.Caption(text)),
 		).Gap(10).Align(widget.AlignCenter)
 	})
+	// What a build printed stays while it runs, and after it failed.
+	log := ggui.If(ggui.Map(m.BuildLog, func(s string) bool { return s != "" }), func() ggui.Widget {
+		return ui.CodeBlockOf(m.BuildLog).Height(160).Small().CopyButton(true)
+	})
+	return widget.Column(row, log).Gap(10).Stretch()
+}
+
+// channelName words a channel.
+func channelName(c string) string {
+	if c == ChannelSource {
+		return tr("main, built here")
+	}
+	return tr("Releases")
+}
+
+// themeIcon pictures an appearance: a screen for the system's, the sun
+// and the moon for light and dark.
+func themeIcon(theme string) *icons.Widget {
+	switch theme {
+	case "light":
+		return glyph(lucide.Sun, 14)
+	case "dark":
+		return glyph(lucide.Moon, 14)
+	}
+	return glyph(lucide.Monitor, 14)
 }

@@ -15,16 +15,18 @@ import (
 
 // Settings are the app's preferences.
 type Settings struct {
-	RungvPath     string `json:"rungvPath,omitempty"` // empty: locate automatically
-	CacheDir      string `json:"cacheDir,omitempty"`  // empty: rungv's default
-	Theme         string `json:"theme,omitempty"`     // system (default), light, dark
-	Language      string `json:"language,omitempty"`  // system (default), en, ko
-	StopOnQuit    bool   `json:"stopOnQuit"`          // stop running sandboxes on quit without asking
-	HideOnClose   bool   `json:"hideOnClose"`         // closing the window keeps the app in the tray
-	StopTimeout   int    `json:"stopTimeout,omitempty"`
-	SidebarNarrow bool   `json:"sidebarNarrow,omitempty"`
-	NoTray        bool   `json:"noTray,omitempty"`        // keep out of the menu bar or notification area
-	NoUpdateCheck bool   `json:"noUpdateCheck,omitempty"` // do not ask GitHub for a newer rungv at launch
+	RungvPath      string `json:"rungvPath,omitempty"` // empty: locate automatically
+	CacheDir       string `json:"cacheDir,omitempty"`  // empty: rungv's default
+	Theme          string `json:"theme,omitempty"`     // system (default), light, dark
+	Language       string `json:"language,omitempty"`  // system (default), en, ko
+	StopOnQuit     bool   `json:"stopOnQuit"`          // stop running sandboxes on quit without asking
+	HideOnClose    bool   `json:"hideOnClose"`         // closing the window keeps the app in the tray
+	StopTimeout    int    `json:"stopTimeout,omitempty"`
+	SidebarNarrow  bool   `json:"sidebarNarrow,omitempty"`
+	NoTray         bool   `json:"noTray,omitempty"`         // keep out of the menu bar or notification area
+	SearchRegistry string `json:"searchRegistry,omitempty"` // the registry the pull dialog searches: hub (default), quay
+	UpdateChannel  string `json:"updateChannel,omitempty"`  // where rungv is updated from: release (default), source
+	NoUpdateCheck  bool   `json:"noUpdateCheck,omitempty"`  // do not ask GitHub for a newer rungv at launch
 }
 
 // DefaultSettings are the settings of a first launch.

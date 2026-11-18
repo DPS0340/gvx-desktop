@@ -29,7 +29,7 @@ to date (see [rungv](#rungv)). On other systems, [build it](#build-and-run).
 | --- | --- |
 | Dashboard | Engine status, running/image/volume/snapshot counts, recipe quick start |
 | Sandboxes | Create/edit (with a live `rungv run …` preview), start/stop/restart, live logs with filter, published ports (open/copy), duplicate, delete, start with the app |
-| Images | List, pull (streaming progress), inspect JSON, run in a new sandbox, remove, prune |
+| Images | List, search Docker Hub or Quay and choose a tag, pull (streaming progress), inspect JSON, run in a new sandbox, remove, prune |
 | Volumes | List with in-use state and users, create (ext4lite/hostfs), reveal, delete, prune |
 | Snapshots | Checkpoint a running sandbox (stop or keep running), list, restore, delete |
 | Docker Engine | One-click `docker:dind`, `docker context` setup, inner container list with start/stop/restart/remove |
@@ -48,6 +48,7 @@ SIGTERM) stops every sandbox it started.
 ```
 internal/rungv      rungv CLI wrapper: locate, info/images/volumes/df, pull/rm/prune, signing, releases
 internal/sandbox    Spec → rungv args, Supervisor (processes, logs, ports, ready, checkpoint/restore)
+internal/registry   Search of Docker Hub and Quay, and the tags of what it finds
 internal/dockerapi  Minimal Docker Engine API client over the dind Unix socket
 internal/recipes    Docker Engine and Kubernetes presets
 internal/store      sandboxes.json / settings.json in the user config dir
@@ -105,6 +106,16 @@ Check for updates asks on demand. An update replaces the `rungv` in use when
 it is a plain file the app may write, and otherwise goes to `~/.gvx/bin`, which
 Settings → rungv path is then pointed at. Sandboxes that are running keep the
 `rungv` they started with.
+
+Settings → Updates → Channel chooses where a newer `rungv` comes from.
+*Releases* are gvx's published builds. *main, built here* follows the newest
+commit of gvx's `main` branch instead: the app asks GitHub for its head and how
+many commits it is past the `rungv` in use, and builds it on this computer —
+it clones gvx into the app's data folder (`gvx-src`), runs gvx's own
+`scripts/repro-build.sh`, and installs and signs the result. That needs `git`
+and Go, which are looked for on `PATH`, in the usual places and through the
+login shell, since an app started from the Dock has a short `PATH`. The first
+build compiles gVisor and takes minutes.
 
 ## Releasing
 

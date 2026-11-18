@@ -14,6 +14,7 @@ import (
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/ui"
 
+	"github.com/ironpark/gvx-desktop/internal/autostart"
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/registry"
@@ -88,13 +89,14 @@ type Model struct {
 
 	Toasts *ui.ToasterWidget
 
-	Page     *ggui.StateValue[string]
-	Settings *ggui.StateValue[store.Settings]
-	Engine   *ggui.StateValue[Engine]
-	Update   *ggui.StateValue[Update]
-	BuildLog *ggui.StateValue[string] // the end of what a build from source printed
-	release  rungv.Release            // what Update tells of
-	Now      *ggui.StateValue[time.Time]
+	Page      *ggui.StateValue[string]
+	Settings  *ggui.StateValue[store.Settings]
+	Engine    *ggui.StateValue[Engine]
+	Update    *ggui.StateValue[Update]
+	Autostart *ggui.StateValue[bool]   // registered to start at login
+	BuildLog  *ggui.StateValue[string] // the end of what a build from source printed
+	release   rungv.Release            // what Update tells of
+	Now       *ggui.StateValue[time.Time]
 	// Lang is the language the app is worded in, from the settings or the
 	// system: LangEnglish or LangKorean.
 	Lang *ggui.DerivedValue[string]
@@ -175,12 +177,13 @@ func NewModel(st store.Store, dataDir string) *Model {
 		store:  st,
 		Toasts: ui.NewToaster().Limit(3),
 
-		Page:     ggui.State(PageDashboard),
-		Settings: ggui.State(settings),
-		Engine:   ggui.State(Engine{Loading: true}),
-		Update:   ggui.State(Update{Source: settings.UpdateChannel == ChannelSource}),
-		BuildLog: ggui.State(""),
-		Now:      ggui.State(time.Now()),
+		Page:      ggui.State(PageDashboard),
+		Settings:  ggui.State(settings),
+		Engine:    ggui.State(Engine{Loading: true}),
+		Update:    ggui.State(Update{Source: settings.UpdateChannel == ChannelSource}),
+		Autostart: ggui.State(autostart.Enabled()),
+		BuildLog:  ggui.State(""),
+		Now:       ggui.State(time.Now()),
 
 		Specs:    ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
 		States:   ggui.State(map[string]sandbox.State{}).WithEqual(nil),
@@ -414,6 +417,9 @@ func (m *Model) Start() {
 			}
 		}
 	})
+	// A registration to start at login names the program; one that has
+	// moved since is named again.
+	_ = autostart.Refresh()
 	if !ggui.Peek(m.Settings).NoUpdateCheck {
 		m.CheckUpdate(true)
 	}

@@ -561,5 +561,8 @@ var korean = map[string]string{
 	"Install the release":                                   "릴리스 설치",
 	"main is at %s; this computer has %s.":                  "main은 %s, 현재 버전은 %s입니다.",
 	"The newest release is rungv %s; this computer has %s.": "최신 릴리스는 rungv %s, 현재 버전은 %s입니다.",
-	"Backend": "백엔드",
+	"Backend":        "백엔드",
+	"Start at login": "로그인 시 시작",
+	"Starts the app when you log in, in the tray without its window when the tray icon is shown. Sandboxes set to start with the app start then.": "로그인하면 앱을 시작합니다. 트레이 아이콘이 켜져 있으면 창 없이 트레이에서 시작합니다. 앱과 함께 시작하도록 설정한 샌드박스도 이때 시작됩니다.",
+	"Could not change what starts at login": "로그인 시 시작 설정을 바꾸지 못했습니다",
 }

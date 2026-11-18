@@ -35,6 +35,7 @@ func main() {
 	dataDir := flag.String("data-dir", "", "directory for sandboxes, settings and snapshots (default: the user config dir)")
 	renderDir := flag.String("render-dir", "", "render the screens to PNG files in this directory, then exit")
 	renderLang := flag.String("render-lang", "en", "the language -render-dir and -render-tour render in: en or ko")
+	hidden := flag.Bool("hidden", false, "start in the tray without showing the window, as a start at login does")
 	tourDir := flag.String("render-tour", "", "render a walk through the app as PNG frames in this directory, then exit")
 	flag.Parse()
 
@@ -61,19 +62,23 @@ func main() {
 		}
 		return
 	}
-	if err := run(st, dir); err != nil {
+	if err := run(st, dir, *hidden); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(st store.Store, dir string) error {
+func run(st store.Store, dir string, hidden bool) error {
 	var (
 		app *ggui.App
 		m   *ui.Model
 	)
 	dispose := ggui.Root(func() {
 		m = ui.NewModel(st, dir)
+		// A start at login stays out of the way, in the tray, when there
+		// is one to open the window from.
+		hidden = hidden && trayAvailable() && !ggui.Peek(m.Settings).NoTray
 		cfg := ggui.Config{
+			Hidden:         hidden,
 			Title:          "gvx Desktop",
 			Width:          1280,
 			Height:         840,
@@ -89,6 +94,9 @@ func run(st store.Store, dir string) error {
 		app.Setup(func() {
 			bindTheme(m)
 			m.Start()
+			if hidden {
+				ggui.SetDockIcon(false)
+			}
 			installTray(app, m)
 			// The menu bar is worded as it is built, so a change of
 			// language builds it again.
@@ -104,7 +112,7 @@ func run(st store.Store, dir string) error {
 		app.OnCloseRequest(func() bool {
 			set := ggui.Peek(m.Settings)
 			if set.HideOnClose && !set.NoTray && trayAvailable() {
-				app.Hide()
+				hideWindow(app)
 				return false
 			}
 			return requestQuit(app, m)
@@ -112,10 +120,7 @@ func run(st store.Store, dir string) error {
 	})
 	defer dispose()
 
-	err := app.SingleInstance("io.github.ironpark.gvx-desktop", func(gguiruntime.Launch) {
-		app.Show()
-		app.Focus()
-	})
+	err := app.SingleInstance("io.github.ironpark.gvx-desktop", func(gguiruntime.Launch) { showWindow(app) })
 	if errors.Is(err, gguiruntime.ErrRunning) {
 		return nil
 	}
@@ -135,6 +140,22 @@ func run(st store.Store, dir string) error {
 	return runErr
 }
 
+// hideWindow leaves the app to its tray icon: the window goes, and on
+// macOS the app goes out of the Dock and the ⌘-Tab switcher with it, as an
+// app that is only an icon in the menu bar is.
+func hideWindow(app *ggui.App) {
+	app.Hide()
+	ggui.SetDockIcon(false)
+}
+
+// showWindow brings the window back, and the app back into the Dock
+// first: a window out of the Dock has no menu bar.
+func showWindow(app *ggui.App) {
+	ggui.SetDockIcon(true)
+	app.Show()
+	app.Focus()
+}
+
 // requestQuit closes the app now when nothing runs, stops the sandboxes
 // first when the settings say so, and asks otherwise.
 func requestQuit(app *ggui.App, m *ui.Model) bool {
@@ -145,8 +166,7 @@ func requestQuit(app *ggui.App, m *ui.Model) bool {
 		m.StopAllAndThen(app.Close)
 		return false
 	}
-	app.Show()
-	app.Focus()
+	showWindow(app)
 	return m.PrepareQuit()
 }
 
@@ -222,7 +242,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 		return
 	}
 	var tray *ggui.Tray
-	show := func() { app.Show(); app.Focus() }
+	show := func() { showWindow(app) }
 	rebuild := func() {
 		if tray == nil {
 			return

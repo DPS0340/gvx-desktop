@@ -128,9 +128,10 @@ func demoSpecs() []sandbox.Spec {
 }
 
 func demoState(m *ui.Model, now time.Time) {
+	m.Update.Set(ui.Update{Tag: "v0.17.10002026110900", Page: rungv.ReleasesURL})
 	m.Engine.Set(ui.Engine{
 		Path:    "/Users/me/.gvx/bin/rungv",
-		Version: rungv.Version{Version: "v0.16.1", Commit: "a9bfd06", Go: "go1.27.4 darwin/arm64"},
+		Version: rungv.Version{Version: "v0.16.10022026110900", Commit: "a9bfd06", Go: "go1.27.4 darwin/arm64"},
 		Info: rungv.Info{OS: "darwin", Architecture: "arm64", NumCPU: 10, DefaultBackend: "hvf",
 			AvailableBackends: []string{"hvf"}, HostLockdown: "seatbelt",
 			LayerCacheDir: "/Users/me/Library/Caches/gvx/layers", VolumeDir: "/Users/me/Library/Caches/gvx/volumes",

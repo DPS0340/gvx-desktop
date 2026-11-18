@@ -23,6 +23,8 @@ type Settings struct {
 	HideOnClose   bool   `json:"hideOnClose"`         // closing the window keeps the app in the tray
 	StopTimeout   int    `json:"stopTimeout,omitempty"`
 	SidebarNarrow bool   `json:"sidebarNarrow,omitempty"`
+	NoTray        bool   `json:"noTray,omitempty"`        // keep out of the menu bar or notification area
+	NoUpdateCheck bool   `json:"noUpdateCheck,omitempty"` // do not ask GitHub for a newer rungv at launch
 }
 
 // DefaultSettings are the settings of a first launch.

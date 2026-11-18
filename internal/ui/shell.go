@@ -1,12 +1,17 @@
 package ui
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
 	"image/color"
+	"image/png"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ironpark/ggfx"
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/icons/lucide"
 	"github.com/ironpark/ggui/ui"
@@ -35,7 +40,7 @@ func Build(m *Model) ggui.Widget {
 }
 
 func build(m *Model) ggui.Widget {
-	pages := ggui.View(m.Page, func(p string) ggui.Widget {
+	pages := entering(m.Page, func(p string) ggui.Widget {
 		switch p {
 		case PageSandboxes:
 			return sandboxesPage(m)
@@ -54,20 +59,23 @@ func build(m *Model) ggui.Widget {
 		}
 		return dashboardPage(m)
 	})
-	// The sidebar runs the height of the window, with the traffic lights
-	// over its header; the top bar belongs to the content beside it and
-	// holds the sidebar's trigger. With the sidebar away the bar reaches
-	// the window's edge, and makes room for the lights itself.
-	main := widget.Row(
-		sidebar(m),
-		widget.Expanded(widget.Column(
-			topBar(m),
-			ui.Divider(),
-			widget.Expanded(pages),
-			ui.Divider(),
-			statusBar(m),
-		).Stretch()),
-	).Align(widget.AlignStretch)
+	// The sidebar runs from the top of the window, with the traffic lights
+	// over its header, down to the status bar, which has the window's
+	// width; the top bar belongs to the content beside the sidebar and
+	// holds its trigger. With the sidebar away the bar reaches the window's
+	// edge, and makes room for the lights itself.
+	main := widget.Column(
+		widget.Expanded(widget.Row(
+			sidebar(m),
+			widget.Expanded(widget.Column(
+				topBar(m),
+				ui.Divider(),
+				widget.Expanded(pages),
+			).Stretch()),
+		).Align(widget.AlignStretch)),
+		ui.Divider(),
+		statusBar(m),
+	).Stretch()
 
 	return widget.Stack(
 		main,
@@ -111,7 +119,7 @@ func sidebar(m *Model) ggui.Widget {
 		brandTop = 40 // room for the traffic lights
 	}
 	brand := dragRegion(widget.Padding(widget.Row(
-		widget.Box(glyph(lucide.Boxes, 18).Color(rgb(0xffffff))).Pad(6).Radius(8).Fill(colorBlue),
+		widget.Image(brandMark()).Size(40, 40),
 		widget.Column(
 			widget.Text("gvx Desktop").Size(15).Weight(ggui.WeightSemibold).NoWrap(),
 			ui.CaptionOf(ggui.Map(m.Engine, engineShort)).Size(11).NoWrap(),
@@ -126,7 +134,7 @@ func sidebar(m *Model) ggui.Widget {
 		item(PageSnapshots, tr("Snapshots"), lucide.Camera),
 		ui.SidebarSection(tr("Recipes")),
 		item(PageDocker, "Docker Engine", lucide.Container),
-		item(PageKubernetes, "Kubernetes", lucide.Ship),
+		item(PageKubernetes, "Kubernetes", lucide.ShipWheel),
 	).Header(brand).
 		FooterItems(item(PageSettings, tr("Settings"), lucide.Settings)).
 		Width(232).
@@ -134,6 +142,32 @@ func sidebar(m *Model) ggui.Widget {
 		Shortcut("cmd+b").Name(tr("Navigation")).
 		Easing(sidebarEasing)
 }
+
+//go:embed mark.png
+var markPNG []byte
+
+// brandMark is the app's mark, the helmeted gopher of assets/, made into
+// a picture the first time the window is built.
+var brandMark = sync.OnceValue(func() *ggfx.Image {
+	img, err := png.Decode(bytes.NewReader(markPNG))
+	if err != nil {
+		panic("ui: mark.png: " + err.Error())
+	}
+	return ggfx.NewImageFromImage(img)
+})
+
+// MarkPNG is the app's mark as a PNG, for what draws it outside the window.
+func MarkPNG() []byte { return markPNG }
+
+// AppVersion is the version of the app, which main sets.
+var AppVersion = "dev"
+
+// EngineLine says in a few words which rungv the app runs sandboxes with,
+// or that it has none.
+func EngineLine(e Engine) string { return "rungv · " + engineShort(e) }
+
+// ShortVersion is a version of gvx without its build stamp.
+func ShortVersion(v string) string { return shortVersion(v) }
 
 // trafficLightsWidth is the room the window's close, minimise and zoom
 // buttons take at the start of the top bar, where the title bar is hidden.
@@ -145,6 +179,15 @@ const trafficLightsWidth = 68
 var sidebarEasing = ggui.EaseInOutCubic
 
 const sidebarDuration = 200 * time.Millisecond
+
+// pageDuration is how long a page takes to come in, leaveDuration how long
+// the one before it took to go, and hoverDuration how long a surface takes
+// to answer the pointer.
+const (
+	pageDuration  = 180 * time.Millisecond
+	leaveDuration = 70 * time.Millisecond
+	hoverDuration = 120 * time.Millisecond
+)
 
 func rgb(v uint32) color.RGBA {
 	return color.RGBA{uint8(v >> 16), uint8(v >> 8), uint8(v), 0xff}
@@ -161,7 +204,7 @@ func engineShort(e Engine) string {
 	case len(e.Info.AvailableBackends) == 0:
 		return tr("No backend")
 	}
-	v := e.Version.Version
+	v := shortVersion(e.Version.Version)
 	if v == "" {
 		v = "rungv"
 	}
@@ -246,7 +289,7 @@ func statusBar(m *Model) ggui.Widget {
 		if e.Err != "" || !e.Checked {
 			return engineShort(e)
 		}
-		return fmt.Sprintf(tr("rungv %s · %s · %s lockdown"), e.Version.Version, e.Info.DefaultBackend, e.Info.HostLockdown)
+		return fmt.Sprintf(tr("rungv %s · %s · %s lockdown"), shortVersion(e.Version.Version), e.Info.DefaultBackend, e.Info.HostLockdown)
 	})).Size(11).NoWrap()
 	running := ui.CaptionOf(ggui.Combine(m.Running, m.Specs, func(n int, specs []sandbox.Spec) string {
 		return fmt.Sprintf(tr("%d of %d sandboxes running"), n, len(specs))

@@ -2,11 +2,16 @@ package ui
 
 import (
 	"image/color"
+	"os"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/icons/lucide"
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/ui/icons"
+	uitheme "github.com/ironpark/ggui/ui/theme"
 	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
@@ -95,6 +100,44 @@ func pageHeader(title string, subtitle ggui.Widget, actions ...ggui.Widget) ggui
 	)
 }
 
+// entering builds a subtree for key's value. When the value changes, what
+// is there fades away fast, and only then does the next come up into
+// place: two screens are never drawn over one another.
+func entering[K comparable](key ggui.Readable[K], build func(K) ggui.Widget) ggui.Widget {
+	return ggui.Component(func() ggui.Widget {
+		shown := ggui.State(ggui.Peek(key))
+		opacity := ggui.Tween(1.0, leaveDuration).Easing(ggui.EaseStandardAccelerate)
+		leaving := false
+		ggui.Watch(key, func(k K) {
+			if k == ggui.Peek(shown) {
+				// Back to what is still there: stay.
+				leaving = false
+				opacity.Set(1)
+				return
+			}
+			leaving = true
+			opacity.Set(0)
+		})
+		ggui.Watch(opacity, func(v float64) {
+			if !leaving || v > 0 {
+				return
+			}
+			leaving = false
+			shown.Set(ggui.Peek(key))
+			opacity.Jump(1) // the next one's own entrance fades it in
+		})
+		return widget.Opacity(ggui.Key(shown, func(k K) ggui.Widget {
+			return widget.Transition(build(k)).Fade().Slide(0, 8).Duration(pageDuration).Easing(ggui.EaseStandardDecelerate)
+		}), 1).BindOpacity(opacity)
+	})
+}
+
+// headed puts what may or may not be there under a page's header, so that
+// nothing leaves no gap behind.
+func headed(header ggui.Widget, under ...ggui.Widget) ggui.Widget {
+	return widget.Column(append([]ggui.Widget{header}, under...)...).Stretch()
+}
+
 // page lays out a scrolling page with a gutter.
 func page(children ...ggui.Widget) ggui.Widget {
 	body := widget.Column(children...).Gap(20).Stretch()
@@ -130,11 +173,85 @@ func metric(label string, value ggui.Widget, icon *icons.Glyph, onTap func()) gg
 		widget.Row(ui.Caption(label), widget.Spacer(), glyph(icon, 16).Color(colorGray)).Align(widget.AlignCenter),
 		value,
 	).Gap(10).Stretch()
-	card := ui.Card(body)
 	if onTap == nil {
-		return card
+		return ui.Card(body)
 	}
-	return widget.Tap(card, onTap).Cursor(ggui.CursorShapePointer)
+	// A card that goes somewhere answers the pointer: its surface warms
+	// to the accent while the pointer is over it.
+	hover := ggui.State(false)
+	fill := ggui.Map(hover, func(over bool) color.Color {
+		if over {
+			return uitheme.Var("accent").Alpha(.6)
+		}
+		return color.RGBA{}
+	})
+	surface := widget.AnimatedBox(body).Pad(16).Radius(cardRadius - 1).BindFill(fill).Duration(hoverDuration)
+	return widget.Tap(ui.Card(surface).Pad(0), onTap).OnHover(hover.Set).Cursor(ggui.CursorShapePointer)
+}
+
+// tableRow is the height of a row that holds buttons, which the default
+// row of one line of text would squeeze.
+const tableRow = 44
+
+// cardRadius is the corner of a card under the stock theme.
+const cardRadius = 14
+
+// tableCard is a card around a table, which it clips to its corners: a
+// row's highlight is square, and the last row's would cover them.
+func tableCard(table ggui.Widget) ggui.Widget {
+	const r = cardRadius - 1
+	return ui.Card(widget.ClipPath(table, func(b ggui.Rect) *ggui.Path {
+		x0, y0, x1, y1 := b.Origin.X, b.Origin.Y, b.Origin.X+b.Size.W, b.Origin.Y+b.Size.H
+		p := &ggui.Path{}
+		p.MoveTo(x0+r, y0)
+		p.LineTo(x1-r, y0)
+		p.QuadTo(x1, y0, x1, y0+r)
+		p.LineTo(x1, y1-r)
+		p.QuadTo(x1, y1, x1-r, y1)
+		p.LineTo(x0+r, y1)
+		p.QuadTo(x0, y1, x0, y1-r)
+		p.LineTo(x0, y0+r)
+		p.QuadTo(x0, y0, x0+r, y0)
+		p.Close()
+		return p
+	})).Pad(1)
+}
+
+// buildStamp is the ten digits gvx ends a version with, the day and hour
+// it was cut from: v0.16.10022026110900 is v0.16.1002 of 2026-11-09.
+var buildStamp = regexp.MustCompile(`^(v?\d+\.\d+\.\d+?)\d{10}$`)
+
+// shortVersion is a version of gvx without its build stamp, for the places
+// that have no room for it.
+func shortVersion(v string) string {
+	if m := buildStamp.FindStringSubmatch(v); m != nil {
+		return m[1]
+	}
+	return v
+}
+
+// tildePath writes a path under the user's home directory from ~.
+func tildePath(p string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(p, home+string(os.PathSeparator)) {
+		return "~" + p[len(home):]
+	}
+	return p
+}
+
+// since says how long ago t was, in the largest unit that fits.
+func since(t, now time.Time) string {
+	days := int(now.Sub(t).Hours() / 24)
+	switch {
+	case days < 1:
+		return ago(t, now)
+	case days < 14:
+		return tr("%d days ago", days)
+	case days < 60:
+		return tr("%d weeks ago", days/7)
+	case days < 730:
+		return tr("%d months ago", days/30)
+	}
+	return tr("%d years ago", days/365)
 }
 
 // sectionTitle heads a group inside a card.

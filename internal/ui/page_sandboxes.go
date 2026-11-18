@@ -35,36 +35,46 @@ func sandboxesPage(m *Model) ggui.Widget {
 	}))
 	selected := ggui.Bind(m.Selected.Get, m.Select)
 
-	table := ui.Table(visible, func(r Row) string { return r.Spec.ID },
-		ui.Col(tr("Status"), func(r ggui.Readable[Row]) ggui.Widget {
-			return ggui.View(ggui.Map(r, func(r Row) sandbox.State { return r.State }), statusLabel)
-		}).W(150),
-		ui.Col(tr("Name"), func(r ggui.Readable[Row]) ggui.Widget {
-			return widget.Column(
-				widget.TextOf(ggui.Map(r, func(r Row) string { return r.Spec.Name })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
-				ui.CaptionOf(ggui.Map(r, func(r Row) string { return r.Spec.Image })).Size(11).NoWrap().Ellipsis(),
-			).Gap(1)
-		}).Grow(2),
-		ui.Col(tr("Ports"), func(r ggui.Readable[Row]) ggui.Widget {
-			return ui.CaptionOf(ggui.Map(r, portsSummary)).Size(12).NoWrap().Ellipsis()
-		}).Grow(2),
-		ui.Col(tr("Uptime"), func(r ggui.Readable[Row]) ggui.Widget {
-			return ui.CaptionOf(ggui.Combine(r, m.Now, func(r Row, now time.Time) string {
-				if r.State.Status.Active() {
-					return uptime(r.State.StartedAt, now)
-				}
-				if !r.State.ExitedAt.IsZero() {
-					return tr("stopped %s", ago(r.State.ExitedAt, now))
-				}
-				return "—"
-			})).Size(12).NoWrap()
-		}).W(160),
-		ui.Col("", func(r ggui.Readable[Row]) ggui.Widget {
-			return ggui.View(r, func(r Row) ggui.Widget {
-				return widget.Row(sandboxQuickActions(m, r), rowMenu(m, r)).Gap(2).Justify(widget.JustifyEnd)
-			})
-		}).W(84).Identified("actions"),
-	).BindSelected(selected).RowName(func(r Row) string { return r.Spec.Name }).RowHeight(48).Height(260)
+	// The table is as tall as its rows until there are more than fit, and
+	// scrolls from then on, so the details below stay in reach.
+	const rowHeight, mostRows = 48, 6
+	crowded := ggui.Map(visible, func(rows []Row) bool { return len(rows) > mostRows })
+	table := ggui.View(crowded, func(scrolls bool) ggui.Widget {
+		t := ui.Table(visible, func(r Row) string { return r.Spec.ID },
+			ui.Col(tr("Status"), func(r ggui.Readable[Row]) ggui.Widget {
+				return ggui.View(ggui.Map(r, func(r Row) sandbox.State { return r.State }), statusLabel)
+			}).W(150),
+			ui.Col(tr("Name"), func(r ggui.Readable[Row]) ggui.Widget {
+				return widget.Column(
+					widget.TextOf(ggui.Map(r, func(r Row) string { return r.Spec.Name })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
+					ui.CaptionOf(ggui.Map(r, func(r Row) string { return r.Spec.Image })).Size(11).NoWrap().Ellipsis(),
+				).Gap(1)
+			}).Grow(2),
+			ui.Col(tr("Ports"), func(r ggui.Readable[Row]) ggui.Widget {
+				return ui.CaptionOf(ggui.Map(r, portsSummary)).Size(12).NoWrap().Ellipsis()
+			}).Grow(2),
+			ui.Col(tr("Uptime"), func(r ggui.Readable[Row]) ggui.Widget {
+				return ui.CaptionOf(ggui.Combine(r, m.Now, func(r Row, now time.Time) string {
+					if r.State.Status.Active() {
+						return uptime(r.State.StartedAt, now)
+					}
+					if !r.State.ExitedAt.IsZero() {
+						return tr("stopped %s", ago(r.State.ExitedAt, now))
+					}
+					return "—"
+				})).Size(12).NoWrap()
+			}).W(160),
+			ui.Col("", func(r ggui.Readable[Row]) ggui.Widget {
+				return ggui.View(r, func(r Row) ggui.Widget {
+					return widget.Row(sandboxQuickActions(m, r), rowMenu(m, r)).Gap(2).Justify(widget.JustifyEnd)
+				})
+			}).W(84).Identified("actions"),
+		).BindSelected(selected).RowName(func(r Row) string { return r.Spec.Name }).RowHeight(rowHeight)
+		if scrolls {
+			t.Height((mostRows + 1) * rowHeight)
+		}
+		return tableCard(t)
+	})
 
 	empty := ui.Empty(tr("No sandboxes"), tr("A sandbox runs one OCI image in its own unprivileged process. Create one, or start the Docker Engine or Kubernetes recipe.")).
 		Media(glyph(lucide.Box, 32).Color(colorGray)).
@@ -76,7 +86,7 @@ func sandboxesPage(m *Model) ggui.Widget {
 	list := ggui.If(ggui.Map(m.Specs, func(s []sandbox.Spec) bool { return len(s) > 0 }), func() ggui.Widget {
 		return widget.Column(
 			widget.Box(ui.TextField(m.Query).Placeholder(tr("Filter by name or image")).Name(tr("Filter sandboxes"))).MaxWidth(320),
-			ui.Card(table).Pad(0),
+			table,
 			detailPanel(m),
 		).Gap(16).Stretch()
 	}).Else(func() ggui.Widget { return empty })
@@ -142,17 +152,19 @@ func detailPanel(m *Model) ggui.Widget {
 		return Row{}
 	})
 	hasSelection := ggui.Map(current, func(r Row) bool { return r.Spec.ID != "" })
-	return ggui.If(hasSelection, func() ggui.Widget {
-		header := ggui.View(current, func(r Row) ggui.Widget { return detailHeader(m, r) })
-		tabs := ui.Tabs(m.Detail,
-			ui.Tab(tr("Logs"), logsView(m, current)),
-			ui.Tab(tr("Connect"), ggui.View(current, func(r Row) ggui.Widget { return connectView(m, r) })),
-			ui.Tab(tr("Configuration"), ggui.View(ggui.Map(current, func(r Row) sandbox.Spec { return r.Spec }).WithEqual(sandbox.Spec.Equal), func(s sandbox.Spec) ggui.Widget { return configView(m, s) })),
-			ui.Tab(tr("Snapshots"), ggui.View(current, func(r Row) ggui.Widget { return sandboxSnapshots(m, r) })),
-		).Line().Name(tr("Sandbox details"))
-		return ui.Card(widget.Column(header, tabs).Gap(12).Stretch())
-	}).Else(func() ggui.Widget {
-		return ui.Empty(tr("Select a sandbox"), tr("Its logs, ports and settings show here.")).Outline()
+	return entering(m.Selected, func(string) ggui.Widget {
+		return ggui.If(hasSelection, func() ggui.Widget {
+			header := ggui.View(current, func(r Row) ggui.Widget { return detailHeader(m, r) })
+			tabs := ui.Tabs(m.Detail,
+				ui.Tab(tr("Logs"), logsView(m, current)),
+				ui.Tab(tr("Connect"), ggui.View(current, func(r Row) ggui.Widget { return connectView(m, r) })),
+				ui.Tab(tr("Configuration"), ggui.View(ggui.Map(current, func(r Row) sandbox.Spec { return r.Spec }).WithEqual(sandbox.Spec.Equal), func(s sandbox.Spec) ggui.Widget { return configView(m, s) })),
+				ui.Tab(tr("Snapshots"), ggui.View(current, func(r Row) ggui.Widget { return sandboxSnapshots(m, r) })),
+			).Line().Name(tr("Sandbox details"))
+			return ui.Card(widget.Column(header, tabs).Gap(12).Stretch())
+		}).Else(func() ggui.Widget {
+			return ui.Empty(tr("Select a sandbox"), tr("Its logs, ports and settings show here.")).Outline()
+		})
 	})
 }
 

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/ironpark/ggui"
@@ -178,7 +177,7 @@ func dockerPage(m *Model) ggui.Widget {
 		case 3:
 			return ui.Empty(tr("No containers"), tr("Run one with the docker CLI: docker run -d -p 9000:80 nginx:alpine")).Media(glyph(lucide.Container, 28).Color(colorGray)).Outline()
 		}
-		return ui.Card(table).Pad(0)
+		return tableCard(table)
 	})
 
 	version := ui.CaptionOf(ggui.Combine(running, m.DockerVersion, func(run bool, v dockerapi.Version) string {
@@ -283,7 +282,7 @@ func kubernetesPage(m *Model) ggui.Widget {
 		pageHeader("Kubernetes", ui.Caption(tr("An unmodified k3s node with its kubelet, containerd and flannel, running in one unprivileged sandbox."))),
 		recipeHero(m, recipes.Kubernetes, row, tr("k3s single-node cluster"),
 			tr("API server on 127.0.0.1:6443, NodePorts 30000–30019 on the host, cluster state in the k3s volume. Starting takes up to two minutes."),
-			lucide.Ship),
+			lucide.ShipWheel),
 		widget.Responsive(900,
 			widget.Row(widget.Flex(kubectlCard(m, kubeconfig), 1), widget.Flex(kubeNotesCard(), 1)).Gap(16).Align(widget.AlignStart),
 			widget.Column(kubectlCard(m, kubeconfig), kubeNotesCard()).Gap(16).Stretch(),
@@ -322,95 +321,3 @@ func kubeNotesCard() ggui.Widget {
 }
 
 // ---- Settings -----------------------------------------------------------
-
-func settingsPage(m *Model) ggui.Widget {
-	set := ggui.Peek(m.Settings)
-	path := ggui.State(set.RungvPath)
-	cache := ggui.State(set.CacheDir)
-	theme := m.Settings.Lens(func(s storeSettings) string { return s.Theme }, func(s storeSettings, v string) storeSettings { s.Theme = v; return s })
-	persist := func() { m.UpdateSettings(func(*storeSettings) {}) }
-	language := ggui.Bind(func() string {
-		if l := m.Settings.Get().Language; l == LangEnglish || l == LangKorean {
-			return l
-		}
-		return LangSystem
-	}, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.Language = v }) })
-	stopOnQuit := ggui.Bind(func() bool { return m.Settings.Get().StopOnQuit }, func(v bool) { m.UpdateSettings(func(s *storeSettings) { s.StopOnQuit = v }) })
-	hideOnClose := ggui.Bind(func() bool { return m.Settings.Get().HideOnClose }, func(v bool) { m.UpdateSettings(func(s *storeSettings) { s.HideOnClose = v }) })
-	timeout := ggui.Bind(func() float64 { return float64(m.Settings.Get().StopTimeout) }, func(v float64) {
-		m.UpdateSettings(func(s *storeSettings) { s.StopTimeout = max(1, int(v)) })
-	})
-
-	engine := ggui.View(m.Engine, func(e Engine) ggui.Widget {
-		var rows []ggui.Widget
-		if e.Checked && e.Path != "" {
-			rows = append(rows,
-				kvText(tr("Binary"), e.Path),
-				kvText(tr("Version"), strings.TrimSpace(e.Version.Version+" "+e.Version.Commit)),
-				kvText(tr("Built with"), e.Version.Go),
-				kvText(tr("Backends"), tr("%s (default %s)", strings.Join(e.Info.AvailableBackends, ", "), e.Info.DefaultBackend)),
-				kvText(tr("Host lockdown"), e.Info.HostLockdown),
-				kvText(tr("Layer cache"), e.Info.LayerCacheDir),
-				kvText(tr("Volumes"), e.Info.VolumeDir),
-			)
-		} else if e.Err != "" {
-			rows = append(rows, ui.Alert(tr("Engine unavailable"), e.Err).Destructive().Icon(icons.Alert))
-		}
-		return widget.Column(rows...).Gap(8).Stretch()
-	})
-	return page(
-		pageHeader(tr("Settings"), ui.Caption(tr("Where rungv lives and how the app treats running sandboxes."))),
-		engineAlert(m),
-		ui.Card(
-			ui.CardHeader(tr("Engine"), tr("gvx Desktop drives the rungv binary; it never loads gvx into its own process.")).
-				Action(iconButton(lucide.RefreshCw, tr("Check again"), func() { m.DetectEngine(nil) })),
-			ui.CardContent(widget.Column(
-				ui.Field(tr("rungv path"), widget.Row(
-					widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, ~/.gvx/bin, next to the app)")).Name(tr("rungv path")).
-						OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = strings.TrimSpace(v) }) })),
-					ui.Button(tr("Browse…"), func() {
-						browseFile(m, path, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = v }) })
-					}).Outline(),
-				).Gap(8)).Help(tr("Leave empty to search $GVX_RUNGV, PATH, ~/.gvx/bin and the app's own folder.")),
-				ui.Field(tr("Layer cache directory"), widget.Row(
-					widget.Expanded(ui.TextField(cache).Placeholder(tr("rungv's default")).Name(tr("Layer cache directory")).
-						OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = strings.TrimSpace(v) }) })),
-					ui.Button(tr("Browse…"), func() {
-						browseFolder(m, cache, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = v }) })
-					}).Outline(),
-				).Gap(8)).Help(tr("Passed as -cache-dir. Named volumes live in a volumes folder beside it.")),
-				engine,
-				ggui.View(m.Engine, func(e Engine) ggui.Widget {
-					if e.Info.OS != "darwin" || e.Path == "" {
-						return widget.Box()
-					}
-					return widget.Row(
-						ui.Button(tr("Sign rungv"), m.SignRungv).Outline().Size(ui.ButtonSmall),
-						ui.Caption(tr("Ad-hoc signs rungv with the com.apple.security.hypervisor entitlement for the hvf engine.")),
-					).Gap(10).Align(widget.AlignCenter)
-				}),
-			).Gap(16).Stretch()),
-		),
-		ui.Card(
-			ui.CardHeader(tr("Behavior"), tr("gvx has no daemon: sandboxes run as long as this app does.")),
-			ui.CardContent(widget.Column(
-				ui.Field(tr("Appearance"), ui.ToggleGroup[string](ggui.Bind(theme.Get, func(v string) { theme.Set(v); persist() })).
-					Options([]string{"system", "light", "dark"}).Format(themeName).Outline().Name(tr("Appearance"))),
-				ui.Field(tr("Language"), ui.ToggleGroup[string](language).
-					Options([]string{LangSystem, LangEnglish, LangKorean}).Format(languageName).Outline().Name(tr("Language"))),
-				ui.Switch(hideOnClose, tr("Keep running in the menu bar when the window closes")),
-				ui.Switch(stopOnQuit, tr("Stop running sandboxes on quit without asking")),
-				ui.Field(tr("Stop timeout (seconds)"), widget.Box(ui.NumberInput(timeout).Name(tr("Stop timeout"))).Width(160)).
-					Help(tr("How long a sandbox gets to exit after an interrupt before it is killed.")),
-			).Gap(16).Stretch()),
-		),
-		ui.Card(
-			ui.CardHeader(tr("About"), tr("gvx runs unmodified Linux containers on gVisor's user-space kernel, ported to macOS, Windows and Linux.")),
-			ui.CardContent(widget.Row(
-				ui.Button(tr("gvx on GitHub"), func() { m.Open("https://github.com/gfire-sigs/gvx") }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.ExternalLink, 14)),
-				ui.Button(tr("Releases"), func() { m.Open("https://github.com/gfire-sigs/gvx/releases") }).Outline().Size(ui.ButtonSmall),
-				ui.Button(tr("App data folder"), func() { m.Open(m.store.Dir) }).Ghost().Size(ui.ButtonSmall),
-			).Gap(8)),
-		),
-	)
-}

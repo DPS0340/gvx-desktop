@@ -90,6 +90,8 @@ type Model struct {
 	Page     *ggui.StateValue[string]
 	Settings *ggui.StateValue[store.Settings]
 	Engine   *ggui.StateValue[Engine]
+	Update   *ggui.StateValue[Update]
+	release  rungv.Release // what Update tells of
 	Now      *ggui.StateValue[time.Time]
 	// Lang is the language the app is worded in, from the settings or the
 	// system: LangEnglish or LangKorean.
@@ -161,6 +163,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Page:     ggui.State(PageDashboard),
 		Settings: ggui.State(settings),
 		Engine:   ggui.State(Engine{Loading: true}),
+		Update:   ggui.State(Update{}),
 		Now:      ggui.State(time.Now()),
 
 		Specs:    ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
@@ -388,6 +391,9 @@ func (m *Model) Start() {
 			}
 		}
 	})
+	if !ggui.Peek(m.Settings).NoUpdateCheck {
+		m.CheckUpdate(true)
+	}
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()

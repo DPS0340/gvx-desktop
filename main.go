@@ -4,13 +4,14 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
 	"image"
 	"image/color"
+	"image/png"
 	"log"
-	"math"
 	"os"
 	"os/signal"
 	"runtime"
@@ -26,7 +27,11 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/ui"
 )
 
+// version is the app's, which a release build sets with -X main.version.
+var version = "dev"
+
 func main() {
+	ui.AppVersion = version
 	dataDir := flag.String("data-dir", "", "directory for sandboxes, settings and snapshots (default: the user config dir)")
 	renderDir := flag.String("render-dir", "", "render the screens to PNG files in this directory, then exit")
 	renderLang := flag.String("render-lang", "en", "the language -render-dir renders in: en or ko")
@@ -91,7 +96,7 @@ func run(st store.Store, dir string) error {
 		ui.SetQuit(app.Close)
 		app.OnCloseRequest(func() bool {
 			set := ggui.Peek(m.Settings)
-			if set.HideOnClose && trayAvailable() {
+			if set.HideOnClose && !set.NoTray && trayAvailable() {
 				app.Hide()
 				return false
 			}
@@ -203,33 +208,44 @@ func installMenus(app *ggui.App, m *ui.Model) {
 }
 
 // installTray puts gvx in the menu bar (macOS) or notification area
-// (Windows): the app keeps sandboxes running with its window hidden.
+// (Windows), for as long as the settings ask for it: the app keeps
+// sandboxes running with its window hidden.
 func installTray(app *ggui.App, m *ui.Model) {
 	if !trayAvailable() {
 		return
 	}
-	tray := app.AddTray(ggui.TrayConfig{Icon: trayIcon(), Template: true, Tooltip: "gvx Desktop"})
+	var tray *ggui.Tray
 	show := func() { app.Show(); app.Focus() }
-	ggui.Watch(m.Rows, func(rows []ui.Row) {
-		ui.SetLanguage(m.Lang.Get()) // read here, so the menu follows the language too
-		items := []ggui.MenuItem{ggui.MenuAction(ui.T("Open gvx Desktop"), "", show), ggui.MenuSeparator()}
+	rebuild := func() {
+		if tray == nil {
+			return
+		}
+		ui.SetLanguage(ggui.Peek(m.Lang))
+		engine, update := ggui.Peek(m.Engine), ggui.Peek(m.Update)
+		items := []ggui.MenuItem{
+			ggui.MenuAction(ui.T("Open gvx Desktop"), "", show),
+			ggui.MenuAction(ui.EngineLine(engine), "", nil).BindEnabled(ggui.Const(false)),
+		}
+		if update.Available(engine) && !update.Installing {
+			items = append(items, ggui.MenuAction(fmt.Sprintf(ui.T("Update rungv to %s"), ui.ShortVersion(update.Tag)), "", m.InstallRungv))
+		}
+		items = append(items, ggui.MenuSeparator())
+		rows := ggui.Peek(m.Rows)
 		running := 0
 		for _, r := range rows {
 			id, name := r.Spec.ID, r.Spec.Name
-			st := r.State.Status
-			if st.Active() {
-				running++
-			}
 			label := "○ " + name
-			action := ggui.MenuAction(ui.T("Start"), "", func() { m.StartSandbox(id) })
-			if st.Active() {
+			actions := []ggui.MenuItem{ggui.MenuAction(ui.T("Start"), "", func() { m.StartSandbox(id) })}
+			if r.State.Status.Active() {
+				running++
 				label = "● " + name
-				action = ggui.MenuAction(ui.T("Stop"), "", func() { m.StopSandbox(id) })
+				actions = []ggui.MenuItem{
+					ggui.MenuAction(ui.T("Stop"), "", func() { m.StopSandbox(id) }),
+					ggui.MenuAction(ui.T("Restart"), "", func() { m.RestartSandbox(id) }),
+				}
 			}
-			items = append(items, ggui.Menu(label,
-				action,
-				ggui.MenuAction(ui.T("Show Logs"), "", func() { show(); m.ShowSandbox(id, 0) }),
-			))
+			actions = append(actions, ggui.MenuAction(ui.T("Show Logs"), "", func() { show(); m.ShowSandbox(id, 0) }))
+			items = append(items, ggui.Menu(label, actions...))
 		}
 		if len(rows) == 0 {
 			items = append(items, ggui.MenuAction(ui.T("No sandboxes"), "", nil).BindEnabled(ggui.Const(false)))
@@ -237,8 +253,10 @@ func installTray(app *ggui.App, m *ui.Model) {
 		items = append(items,
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("New Sandbox…"), "", func() { show(); m.NewSandbox("") }),
+			ggui.MenuAction(ui.T("Pull Image…"), "", func() { show(); m.OpenPull("") }),
 			ggui.MenuAction(ui.T("Stop All"), "", func() { m.StopAllAndThen(func() {}) }).BindEnabled(ggui.Const(running > 0)),
 			ggui.MenuSeparator(),
+			ggui.MenuAction(ui.T("Settings…"), "", func() { show(); m.Go(ui.PageSettings) }),
 			ggui.MenuAction(ui.T("Quit gvx Desktop"), "", func() { quit(app, m) }),
 		)
 		tray.SetMenu(items...)
@@ -249,44 +267,52 @@ func installTray(app *ggui.App, m *ui.Model) {
 			tray.SetTitle("")
 			tray.SetTooltip("gvx Desktop")
 		}
+	}
+	wanted := ggui.Map(m.Settings, func(s store.Settings) bool { return !s.NoTray })
+	ggui.Watch(wanted, func(on bool) {
+		switch {
+		case on && tray == nil:
+			tray = app.AddTray(ggui.TrayConfig{Icon: trayIcon(), Template: true, Tooltip: "gvx Desktop"})
+			rebuild()
+		case !on && tray != nil:
+			tray.Remove()
+			tray = nil
+		}
 	})
+	// The menu tells of all of these, so each builds it again.
+	ggui.Watch(m.Rows, func([]ui.Row) { rebuild() })
+	ggui.Watch(m.Engine, func(ui.Engine) { rebuild() })
+	ggui.Watch(m.Update, func(ui.Update) { rebuild() })
+	ggui.Watch(m.Lang, func(string) { rebuild() })
 }
 
-// trayIcon draws a monochrome isometric box, the gvx mark, for the tray.
+// trayIcon is the app's mark as the tray wants it, one color: the helmet's
+// shell, which is the light part of the mark, with the visor open in it.
 func trayIcon() image.Image {
-	const size = 36 // 18pt at 2x
-	img := image.NewNRGBA(image.Rect(0, 0, size, size))
-	c := float64(size) / 2
-	r := float64(size)*0.42 - 1
-	// The hexagon's six corners, pointy side up.
-	var pts [6][2]float64
-	for i := range pts {
-		a := math.Pi/3*float64(i) - math.Pi/2
-		pts[i] = [2]float64{c + r*math.Cos(a), c + r*math.Sin(a)}
+	const size, glyph = 36, 32 // 18pt at 2x, with a point of air around
+	src, err := png.Decode(bytes.NewReader(ui.MarkPNG()))
+	if err != nil {
+		return image.NewNRGBA(image.Rect(0, 0, size, size))
 	}
-	line := func(x0, y0, x1, y1, w float64) {
-		for y := 0; y < size; y++ {
-			for x := 0; x < size; x++ {
-				px, py := float64(x)+0.5, float64(y)+0.5
-				dx, dy := x1-x0, y1-y0
-				t := math.Max(0, math.Min(1, ((px-x0)*dx+(py-y0)*dy)/(dx*dx+dy*dy)))
-				d := math.Hypot(px-(x0+t*dx), py-(y0+t*dy))
-				a := math.Max(0, math.Min(1, w/2+0.5-d))
-				if a > 0 {
-					old := float64(img.NRGBAAt(x, y).A) / 255
-					img.SetNRGBA(x, y, color.NRGBA{0, 0, 0, uint8(255 * math.Max(old, a))})
+	b := src.Bounds()
+	n := b.Dx() / glyph
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	for y := 0; y < glyph; y++ {
+		for x := 0; x < glyph; x++ {
+			var light float64
+			for dy := 0; dy < n; dy++ {
+				for dx := 0; dx < n; dx++ {
+					r, g, bl, a := src.At(b.Min.X+x*n+dx, b.Min.Y+y*n+dy).RGBA()
+					if a == 0 {
+						continue
+					}
+					if (0.299*float64(r)+0.587*float64(g)+0.114*float64(bl))/float64(a) > 0.8 {
+						light += float64(a) / 0xffff
+					}
 				}
 			}
+			img.SetNRGBA(x+(size-glyph)/2, y+(size-glyph)/2, color.NRGBA{A: uint8(255 * light / float64(n*n))})
 		}
 	}
-	const w = 2.6
-	for i := range pts {
-		j := (i + 1) % 6
-		line(pts[i][0], pts[i][1], pts[j][0], pts[j][1], w)
-	}
-	// The three inner edges meeting at the centre.
-	line(c, c, pts[1][0], pts[1][1], w)
-	line(c, c, pts[3][0], pts[3][1], w)
-	line(c, c, pts[5][0], pts[5][1], w)
 	return img
 }

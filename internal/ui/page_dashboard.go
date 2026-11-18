@@ -17,12 +17,11 @@ import (
 
 func dashboardPage(m *Model) ggui.Widget {
 	return page(
-		pageHeader(tr("Dashboard"),
+		headed(pageHeader(tr("Dashboard"),
 			ui.Caption(tr("Linux containers in a single unprivileged process — no VM, no daemon, no root.")),
 			ui.Button(tr("Pull image"), func() { m.OpenPull("") }).Outline().Icon(glyph(lucide.Download, 16)),
 			ui.Button(tr("New sandbox"), func() { m.NewSandbox("") }).Icon(glyph(lucide.Plus, 16)),
-		),
-		engineAlert(m),
+		), engineAlert(m)),
 		metrics(m),
 		widget.Responsive(900,
 			widget.Row(widget.Flex(recentSandboxes(m), 3), widget.Flex(engineCard(m), 2)).Gap(16).Align(widget.AlignStart),
@@ -35,32 +34,64 @@ func dashboardPage(m *Model) ggui.Widget {
 	)
 }
 
-// engineAlert explains why the engine cannot run sandboxes, with the fix.
+// engineAlert explains why the engine cannot run sandboxes, with the fix,
+// and says when there is a newer rungv to have.
 func engineAlert(m *Model) ggui.Widget {
-	return ggui.View(m.Engine, func(e Engine) ggui.Widget {
+	type state struct {
+		e Engine
+		u Update
+	}
+	both := ggui.Combine(m.Engine, m.Update, func(e Engine, u Update) state { return state{e, u} })
+	return ggui.View(both, func(s state) ggui.Widget {
+		e, u := s.e, s.u
+		shown := func(a ggui.Widget) ggui.Widget { return widget.Padding(a, 16, 0, 0, 0) }
+		small := func(label string, fn func()) *ui.ButtonWidget {
+			return ui.Button(label, fn).Size(ui.ButtonExtraSmall)
+		}
 		switch {
 		case !e.Checked:
 			return widget.Box()
 		case e.Path == "":
-			return ui.Alert(tr("rungv was not found"),
-				tr("gvx Desktop drives the rungv command line. Download it from github.com/gfire-sigs/gvx/releases, put it on your PATH or in ~/.gvx/bin, or choose its location in Settings.")).
+			return shown(ui.Alert(tr("rungv was not found"),
+				tr("gvx Desktop drives the rungv command line. Install the newest release into ~/.gvx/bin here, or put your own on your PATH or choose its location in Settings.")).
 				Destructive().Icon(icons.Alert).
-				Action(ui.Button(tr("Open Settings"), func() { m.Go(PageSettings) }).Size(ui.ButtonExtraSmall).Outline())
+				Action(widget.Row(
+					installButton(m, u, tr("Install rungv")).Size(ui.ButtonExtraSmall),
+					small(tr("Open Settings"), func() { m.Go(PageSettings) }).Outline(),
+				).Gap(8)))
 		case e.Err != "":
-			return ui.Alert(tr("The engine did not start"), e.Err).Destructive().Icon(icons.Alert).
-				Action(ui.Button(tr("Retry"), func() { m.DetectEngine(nil) }).Size(ui.ButtonExtraSmall).Outline())
+			return shown(ui.Alert(tr("The engine did not start"), e.Err).Destructive().Icon(icons.Alert).
+				Action(small(tr("Retry"), func() { m.DetectEngine(nil) }).Outline()))
 		case rungv.NeedsSigning(e.Info):
-			return ui.Alert(tr("rungv needs the hypervisor entitlement"),
+			return shown(ui.Alert(tr("rungv needs the hypervisor entitlement"),
 				tr("On macOS, rungv runs guests through Hypervisor.framework and must be signed with com.apple.security.hypervisor. Sign it here, or run: ")+rungv.SignCommand(e.Path)).
 				Destructive().Icon(icons.Alert).
-				Action(ui.Button(tr("Sign rungv"), m.SignRungv).Size(ui.ButtonExtraSmall))
+				Action(small(tr("Sign rungv"), m.SignRungv)))
 		case len(e.Info.AvailableBackends) == 0:
-			return ui.Alert(tr("No execution backend"), strings.Join(e.Info.BackendWarnings, " ")).Destructive().Icon(icons.Alert)
+			return shown(ui.Alert(tr("No execution backend"), strings.Join(e.Info.BackendWarnings, " ")).Destructive().Icon(icons.Alert))
 		case len(e.Info.BackendWarnings) > 0:
-			return ui.Alert(tr("Engine warnings"), strings.Join(e.Info.BackendWarnings, " ")).Icon(icons.Info)
+			return shown(ui.Alert(tr("Engine warnings"), strings.Join(e.Info.BackendWarnings, " ")).Icon(icons.Info))
+		case u.Available(e):
+			return shown(ui.Alert(tr("rungv %s is available", shortVersion(u.Tag)),
+				tr("This computer has %s. Sandboxes that are running keep the rungv they started with.", shortVersion(e.Version.Version))).
+				Icon(icons.Info).
+				Action(widget.Row(
+					installButton(m, u, tr("Update")).Size(ui.ButtonExtraSmall),
+					small(tr("Release notes"), func() { m.Open(u.Page) }).Outline(),
+				).Gap(8)))
 		}
 		return widget.Box()
 	})
+}
+
+// installButton installs the newest rungv, and says how far the download
+// is while it does.
+func installButton(m *Model, u Update, label string) *ui.ButtonWidget {
+	if u.Installing {
+		return ui.ButtonOf(widget.Row(ui.Spinner().Size(12), widget.Text(tr("Downloading… %d%%", u.Percent))).Gap(6).Align(widget.AlignCenter), func() {}).
+			Name(label).Disabled(true)
+	}
+	return ui.Button(label, m.InstallRungv).Icon(glyph(lucide.Download, 14))
 }
 
 func metrics(m *Model) ggui.Widget {
@@ -136,12 +167,12 @@ func engineCard(m *Model) ggui.Widget {
 			backends = tr("none")
 		}
 		return widget.Column(
-			kvText(tr("Version"), e.Version.Version),
+			kvText(tr("Version"), shortVersion(e.Version.Version)),
 			kvText(tr("Host"), e.Info.OS+"/"+e.Info.Architecture+fmt.Sprintf(tr(" · %d CPUs"), e.Info.NumCPU)),
 			kvText(tr("Default backend"), e.Info.DefaultBackend),
 			kvText(tr("Available"), backends),
 			kvText(tr("Host lockdown"), e.Info.HostLockdown),
-			kvText(tr("Binary"), e.Path),
+			kvText(tr("Binary"), tildePath(e.Path)),
 		).Gap(8).Stretch()
 	})
 	return ui.Card(
@@ -158,7 +189,7 @@ func recipeCards(m *Model) ggui.Widget {
 		icon := lucide.Container
 		page := PageDocker
 		if r.Key == recipes.Kubernetes {
-			icon, page = lucide.Ship, PageKubernetes
+			icon, page = lucide.ShipWheel, PageKubernetes
 		}
 		var points []ggui.Widget
 		for _, h := range r.Highlights {

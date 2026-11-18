@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/icons/lucide"
@@ -56,7 +57,7 @@ func imagesPage(m *Model) ggui.Widget {
 		ui.Col(tr("Image ID"), func(r ggui.Readable[rungv.Image]) ggui.Widget {
 			return ui.MonoOf(ggui.Map(r, func(i rungv.Image) string { return i.ID })).Size(12)
 		}).W(130),
-		ui.TextCol(tr("Created"), func(i rungv.Image) string { return i.CreatedSince }).W(130),
+		ui.TextCol(tr("Created"), imageAge).W(130),
 		ui.TextCol(tr("Size"), func(i rungv.Image) string { return i.Size }).W(90).Right(),
 		ui.Col("", func(r ggui.Readable[rungv.Image]) ggui.Widget {
 			return ggui.View(r, func(img rungv.Image) ggui.Widget {
@@ -80,7 +81,7 @@ func imagesPage(m *Model) ggui.Widget {
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(84).Identified("actions"),
-	).BindSelected(m.SelectedImage).RowName(rungv.Image.Ref).OnSelect(func(img rungv.Image) { m.InspectImage(img.Ref()) })
+	).BindSelected(m.SelectedImage).RowName(rungv.Image.Ref).RowHeight(tableRow).OnSelect(func(img rungv.Image) { m.InspectImage(img.Ref()) })
 
 	body := ggui.View(ggui.Map(m.Images, func(l Listing[rungv.Image]) int {
 		switch {
@@ -105,7 +106,7 @@ func imagesPage(m *Model) ggui.Widget {
 		}
 		return widget.Column(
 			widget.Box(ui.TextField(m.ImageQuery).Placeholder(tr("Filter images")).Name(tr("Filter images"))).MaxWidth(320),
-			ui.Card(table).Pad(0),
+			tableCard(table),
 		).Gap(12).Stretch()
 	})
 	return page(
@@ -169,7 +170,7 @@ func volumesPage(m *Model) ggui.Widget {
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(84).Identified("actions"),
-	).BindSelected(m.SelectedVolume).RowName(func(v rungv.Volume) string { return v.Name })
+	).BindSelected(m.SelectedVolume).RowName(func(v rungv.Volume) string { return v.Name }).RowHeight(tableRow)
 
 	body := ggui.View(ggui.Map(m.Volumes, func(l Listing[rungv.Volume]) int {
 		switch {
@@ -193,7 +194,7 @@ func volumesPage(m *Model) ggui.Widget {
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Reading volumes…"))).Gap(8)
 		}
 		return widget.Column(
-			ui.Card(table).Pad(0),
+			tableCard(table),
 			ui.Caption(tr("A volume can be mounted by one sandbox at a time: its image file is locked while in use. Linux can mount it directly with mount -o loop.")),
 		).Gap(12).Stretch()
 	})
@@ -252,4 +253,14 @@ func snapshotsPage(m *Model) ggui.Widget {
 		hint,
 		snapshotList(m, m.Snapshots, true),
 	)
+}
+
+// imageAge says how long ago an image was made, in the app's language;
+// rungv's own words for it are English.
+func imageAge(i rungv.Image) string {
+	t, err := time.Parse("2006-01-02 15:04:05 -0700 MST", i.CreatedAt)
+	if err != nil {
+		return i.CreatedSince
+	}
+	return since(t, time.Now())
 }

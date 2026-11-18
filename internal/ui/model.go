@@ -91,6 +91,9 @@ type Model struct {
 	Settings *ggui.StateValue[store.Settings]
 	Engine   *ggui.StateValue[Engine]
 	Now      *ggui.StateValue[time.Time]
+	// Lang is the language the app is worded in, from the settings or the
+	// system: LangEnglish or LangKorean.
+	Lang *ggui.DerivedValue[string]
 
 	Specs    *ggui.StateValue[[]sandbox.Spec]
 	States   *ggui.StateValue[map[string]sandbox.State]
@@ -149,6 +152,7 @@ type Model struct {
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
 func NewModel(st store.Store, dataDir string) *Model {
 	settings, _ := st.Settings()
+	SetLanguage(ResolveLanguage(settings.Language))
 	specs, _ := st.Sandboxes()
 	m := &Model{
 		store:  st,
@@ -181,7 +185,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		ConfirmOpen:    ggui.State(false),
 		ConfirmTitle:   ggui.State(""),
 		ConfirmText:    ggui.State(""),
-		ConfirmLabel:   ggui.State("Confirm"),
+		ConfirmLabel:   ggui.State(tr("Confirm")),
 		PullOpen:       ggui.State(false),
 		PullRef:        ggui.State(""),
 		PullLog:        ggui.State(""),
@@ -206,6 +210,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		DataDir: dataDir,
 		Notify:  m.onEvent,
 	}
+	m.Lang = ggui.Map(m.Settings, func(s store.Settings) string { return ResolveLanguage(s.Language) })
 	m.Rows = ggui.Combine(m.Specs, m.States, func(specs []sandbox.Spec, states map[string]sandbox.State) []Row {
 		rows := make([]Row, len(specs))
 		for i, s := range specs {
@@ -405,7 +410,7 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 		path, err := rungv.Locate(set.RungvPath)
 		r.e = Engine{Path: path, Checked: true}
 		if err != nil {
-			r.e.Err = "rungv was not found. Install it, or set its path in Settings."
+			r.e.Err = tr("rungv was not found. Install it, or set its path in Settings.")
 			return nil
 		}
 		c := &rungv.Client{Path: path, CacheDir: rungv.ExpandHome(set.CacheDir)}
@@ -413,12 +418,12 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 		if v, err := c.Version(ctx); err == nil {
 			r.e.Version = v
 		} else {
-			r.e.Err = "rungv did not run: " + err.Error()
+			r.e.Err = tr("rungv did not run: ") + err.Error()
 			return nil
 		}
 		info, err := c.Info(ctx)
 		if err != nil {
-			r.e.Err = "rungv info failed: " + err.Error()
+			r.e.Err = tr("rungv info failed: ") + err.Error()
 			return nil
 		}
 		r.e.Info = info
@@ -453,10 +458,10 @@ func (m *Model) SignRungv() {
 		return rungv.Sign(ctx, path)
 	}, func(err error) {
 		if err != nil {
-			m.toastError("Signing failed", err)
+			m.toastError(tr("Signing failed"), err)
 			return
 		}
-		m.toastOK("rungv signed", "Hypervisor.framework access is granted.")
+		m.toastOK(tr("rungv signed"), tr("Hypervisor.framework access is granted."))
 		m.DetectEngine(nil)
 	})
 }
@@ -491,7 +496,7 @@ func (m *Model) announce(e sandbox.Event) {
 	st := m.sup.State(e.ID)
 	switch e.Kind {
 	case sandbox.EventReady:
-		m.toastOK(spec.Name+" is ready", readyText(spec))
+		m.toastOK(tr("%s is ready", spec.Name), readyText(spec))
 		if spec.Recipe == recipes.Docker {
 			m.LoadDocker()
 		}
@@ -505,10 +510,10 @@ func (m *Model) announce(e sandbox.Event) {
 			if st.Advice != "" {
 				desc = st.Advice + "\n" + st.Error
 			}
-			m.Toasts.Push(ui.Toast(fmt.Sprintf("%s failed (exit %d)", spec.Name, st.ExitCode), desc).Error().Duration(10*time.Second).
-				Action("Logs", func() { m.ShowSandbox(e.ID, 0) }))
+			m.Toasts.Push(ui.Toast(fmt.Sprintf(tr("%s failed (exit %d)"), spec.Name, st.ExitCode), desc).Error().Duration(10*time.Second).
+				Action(tr("Logs"), func() { m.ShowSandbox(e.ID, 0) }))
 		case sandbox.Exited:
-			m.Toasts.Push(ui.Toast(spec.Name+" exited", "The guest command finished with code 0.").Info())
+			m.Toasts.Push(ui.Toast(tr("%s exited", spec.Name), tr("The guest command finished with code 0.")).Info())
 		}
 		m.LoadVolumes()
 		m.LoadSnapshots()
@@ -518,11 +523,11 @@ func (m *Model) announce(e sandbox.Event) {
 func readyText(s sandbox.Spec) string {
 	switch s.Recipe {
 	case recipes.Docker:
-		return "The Docker Engine accepts connections on " + recipes.DockerHost() + "."
+		return tr("The Docker Engine accepts connections on %s.", recipes.DockerHost())
 	case recipes.Kubernetes:
-		return "kubectl can reach the cluster with KUBECONFIG=" + recipes.Kubeconfig() + "."
+		return tr("kubectl can reach the cluster with KUBECONFIG=%s.", recipes.Kubeconfig())
 	}
-	return "The sandbox is running."
+	return tr("The sandbox is running.")
 }
 
 // refreshStates copies the supervisor's states and the selected logs into
@@ -582,7 +587,7 @@ func (m *Model) spec(id string) (sandbox.Spec, bool) {
 func (m *Model) saveSpecs(specs []sandbox.Spec) {
 	m.Specs.Set(specs)
 	if err := m.store.SaveSandboxes(specs); err != nil {
-		m.toastError("Could not save sandboxes", err)
+		m.toastError(tr("Could not save sandboxes"), err)
 	}
 	m.refreshStates()
 }
@@ -594,11 +599,11 @@ func (m *Model) StartSandbox(id string) {
 		return
 	}
 	if !ggui.Peek(m.Engine).Ready() {
-		m.toastError("The engine is not ready", errors.New(engineProblem(ggui.Peek(m.Engine))))
+		m.toastError(tr("The engine is not ready"), errors.New(engineProblem(ggui.Peek(m.Engine))))
 		return
 	}
 	if err := m.sup.Start(spec); err != nil {
-		m.toastError("Could not start "+spec.Name, err)
+		m.toastError(tr("Could not start %s", spec.Name), err)
 		return
 	}
 	m.refreshStates()
@@ -610,9 +615,9 @@ func engineProblem(e Engine) string {
 	case e.Err != "":
 		return e.Err
 	case len(e.Info.AvailableBackends) == 0:
-		return "rungv found no execution backend on this host."
+		return tr("rungv found no execution backend on this host.")
 	}
-	return "rungv is still being checked."
+	return tr("rungv is still being checked.")
 }
 
 // StopSandbox stops a running sandbox.
@@ -635,11 +640,11 @@ func (m *Model) AskDelete(id string) {
 	if !ok {
 		return
 	}
-	text := "The sandbox definition and its logs are removed. Volumes and images stay."
+	text := tr("The sandbox definition and its logs are removed. Volumes and images stay.")
 	if m.sup.State(id).Status.Active() {
-		text = "The sandbox is running and will be stopped. " + text
+		text = tr("The sandbox is running and will be stopped. ") + text
 	}
-	m.Confirm("Delete "+spec.Name+"?", text, "Delete sandbox", func() {
+	m.Confirm(tr("Delete %s?", spec.Name), text, tr("Delete sandbox"), func() {
 		timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
 		m.async(func(context.Context) error { return m.sup.Stop(id, timeout) }, func(error) {
 			m.sup.Forget(id)
@@ -652,7 +657,7 @@ func (m *Model) AskDelete(id string) {
 				m.Select(next)
 			}
 			m.saveSpecs(specs)
-			m.Toasts.Push(ui.Toast("Deleted "+spec.Name, "Its volumes are still listed under Volumes.").Info())
+			m.Toasts.Push(ui.Toast(tr("Deleted %s", spec.Name), tr("Its volumes are still listed under Volumes.")).Info())
 		})
 	})
 }
@@ -715,13 +720,13 @@ func (m *Model) SaveDraft(start bool) bool {
 		err = spec.Validate()
 	}
 	if err != nil {
-		m.toastError("Check the sandbox settings", err)
+		m.toastError(tr("Check the sandbox settings"), err)
 		return false
 	}
 	specs := slices.Clone(ggui.Peek(m.Specs))
 	for _, s := range specs {
 		if s.Name == spec.Name && s.ID != spec.ID {
-			m.toastError("Name in use", fmt.Errorf("another sandbox is called %s", spec.Name))
+			m.toastError(tr("Name in use"), errors.New(tr("another sandbox is called %s", spec.Name)))
 			return false
 		}
 	}
@@ -735,7 +740,7 @@ func (m *Model) SaveDraft(start bool) bool {
 			specs = append(specs, spec)
 		} else {
 			if m.sup.State(spec.ID).Status.Active() && !specs[i].Equal(spec) {
-				m.Toasts.Push(ui.Toast("Saved "+spec.Name, "Restart the sandbox to apply the changes: ports and mounts are fixed while it runs.").Warning())
+				m.Toasts.Push(ui.Toast(tr("Saved %s", spec.Name), tr("Restart the sandbox to apply the changes: ports and mounts are fixed while it runs.")).Warning())
 			}
 			specs[i] = spec
 		}
@@ -799,7 +804,7 @@ func (m *Model) ClearLogs(id string) {
 // Checkpoint snapshots a running sandbox.
 func (m *Model) Checkpoint(id string, leaveRunning bool) {
 	spec, _ := m.spec(id)
-	toast := m.Toasts.Push(ui.Toast("Writing snapshot", "Saving memory, tasks and volumes of "+spec.Name+"…").Loading())
+	toast := m.Toasts.Push(ui.Toast(tr("Writing snapshot"), tr("Saving memory, tasks and volumes of %s…", spec.Name)).Loading())
 	var dir string
 	m.async(func(ctx context.Context) error {
 		var err error
@@ -807,14 +812,14 @@ func (m *Model) Checkpoint(id string, leaveRunning bool) {
 		return err
 	}, func(err error) {
 		if err != nil {
-			m.Toasts.Update(toast, ui.Toast("Snapshot failed", err.Error()).Error())
+			m.Toasts.Update(toast, ui.Toast(tr("Snapshot failed"), err.Error()).Error())
 			return
 		}
-		what := "The sandbox stopped after the snapshot."
+		what := tr("The sandbox stopped after the snapshot.")
 		if leaveRunning {
-			what = "The sandbox keeps running."
+			what = tr("The sandbox keeps running.")
 		}
-		m.Toasts.Update(toast, ui.Toast("Snapshot saved", what+" Restore it from the Snapshots page.").Success())
+		m.Toasts.Update(toast, ui.Toast(tr("Snapshot saved"), what+tr(" Restore it from the Snapshots page.")).Success())
 		_ = dir
 		m.LoadSnapshots()
 		m.refreshStates()
@@ -838,15 +843,15 @@ func (m *Model) LoadSnapshots() {
 func (m *Model) Restore(snap sandbox.Snapshot) {
 	spec, ok := m.spec(snap.SandboxID)
 	if !ok {
-		m.toastError("Cannot restore", errors.New("the sandbox of this snapshot was deleted"))
+		m.toastError(tr("Cannot restore"), errors.New(tr("the sandbox of this snapshot was deleted")))
 		return
 	}
 	if m.sup.State(spec.ID).Status.Active() {
-		m.toastError("Cannot restore", fmt.Errorf("stop %s first", spec.Name))
+		m.toastError(tr("Cannot restore"), errors.New(tr("stop %s first", spec.Name)))
 		return
 	}
 	if err := m.sup.Restore(spec, snap.Dir); err != nil {
-		m.toastError("Could not restore "+spec.Name, err)
+		m.toastError(tr("Could not restore %s", spec.Name), err)
 		return
 	}
 	m.ShowSandbox(spec.ID, 0)
@@ -855,10 +860,10 @@ func (m *Model) Restore(snap sandbox.Snapshot) {
 
 // DeleteSnapshot removes a bundle after confirmation.
 func (m *Model) DeleteSnapshot(snap sandbox.Snapshot) {
-	m.Confirm("Delete snapshot?", "The bundle "+snap.Name+" ("+humanBytes(snap.Size)+") is removed from disk.", "Delete snapshot", func() {
+	m.Confirm(tr("Delete snapshot?"), tr("The bundle %s (%s) is removed from disk.", snap.Name, humanBytes(snap.Size)), tr("Delete snapshot"), func() {
 		m.async(func(context.Context) error { return removeAll(snap.Dir) }, func(err error) {
 			if err != nil {
-				m.toastError("Could not delete the snapshot", err)
+				m.toastError(tr("Could not delete the snapshot"), err)
 			}
 			m.LoadSnapshots()
 		})

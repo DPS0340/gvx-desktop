@@ -18,6 +18,7 @@ type Settings struct {
 	RungvPath     string `json:"rungvPath,omitempty"` // empty: locate automatically
 	CacheDir      string `json:"cacheDir,omitempty"`  // empty: rungv's default
 	Theme         string `json:"theme,omitempty"`     // system (default), light, dark
+	Language      string `json:"language,omitempty"`  // system (default), en, ko
 	StopOnQuit    bool   `json:"stopOnQuit"`          // stop running sandboxes on quit without asking
 	HideOnClose   bool   `json:"hideOnClose"`         // closing the window keeps the app in the tray
 	StopTimeout   int    `json:"stopTimeout,omitempty"`

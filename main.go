@@ -29,6 +29,7 @@ import (
 func main() {
 	dataDir := flag.String("data-dir", "", "directory for sandboxes, settings and snapshots (default: the user config dir)")
 	renderDir := flag.String("render-dir", "", "render the screens to PNG files in this directory, then exit")
+	renderLang := flag.String("render-lang", "en", "the language -render-dir renders in: en or ko")
 	flag.Parse()
 
 	dir := *dataDir
@@ -43,7 +44,7 @@ func main() {
 	}
 	st := store.Store{Dir: dir}
 	if *renderDir != "" {
-		if err := renderScreens(st, dir, *renderDir); err != nil {
+		if err := renderScreens(*renderLang, *renderDir); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -77,6 +78,12 @@ func run(st store.Store, dir string) error {
 			bindTheme(m)
 			m.Start()
 			installTray(app, m)
+			// The menu bar is worded as it is built, so a change of
+			// language builds it again.
+			ggui.Watch(m.Lang, func(lang string) {
+				ui.SetLanguage(lang)
+				installMenus(app, m)
+			})
 		})
 		installShortcuts(app, m)
 		installMenus(app, m)
@@ -93,7 +100,7 @@ func run(st store.Store, dir string) error {
 	})
 	defer dispose()
 
-	err := app.SingleInstance("dev.gvx.desktop", func(gguiruntime.Launch) {
+	err := app.SingleInstance("io.github.ironpark.gvx-desktop", func(gguiruntime.Launch) {
 		app.Show()
 		app.Focus()
 	})
@@ -168,29 +175,29 @@ func installShortcuts(app *ggui.App, m *ui.Model) {
 
 func installMenus(app *ggui.App, m *ui.Model) {
 	app.SetMenu(
-		ggui.Menu("File",
-			ggui.MenuAction("New Sandbox…", "cmd+n", func() { m.NewSandbox("") }),
-			ggui.MenuAction("Pull Image…", "cmd+shift+p", func() { m.OpenPull("") }),
-			ggui.MenuAction("Create Volume…", "", func() { m.VolumeOpen.Set(true) }),
+		ggui.Menu(ui.T("File"),
+			ggui.MenuAction(ui.T("New Sandbox…"), "cmd+n", func() { m.NewSandbox("") }),
+			ggui.MenuAction(ui.T("Pull Image…"), "cmd+shift+p", func() { m.OpenPull("") }),
+			ggui.MenuAction(ui.T("Create Volume…"), "", func() { m.VolumeOpen.Set(true) }),
 			ggui.MenuSeparator(),
-			ggui.MenuAction("Settings…", "cmd+,", func() { m.Go(ui.PageSettings) }),
+			ggui.MenuAction(ui.T("Settings…"), "cmd+,", func() { m.Go(ui.PageSettings) }),
 		),
 		ggui.EditMenu(ggui.EditActions{}),
-		ggui.Menu("Sandbox",
-			ggui.MenuAction("Start Docker Engine", "", func() { m.CreateFromRecipe(recipes.Docker); m.Go(ui.PageDocker) }),
-			ggui.MenuAction("Start Kubernetes", "", func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(ui.PageKubernetes) }),
+		ggui.Menu(ui.T("Sandbox"),
+			ggui.MenuAction(ui.T("Start Docker Engine"), "", func() { m.CreateFromRecipe(recipes.Docker); m.Go(ui.PageDocker) }),
+			ggui.MenuAction(ui.T("Start Kubernetes"), "", func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(ui.PageKubernetes) }),
 			ggui.MenuSeparator(),
-			ggui.MenuAction("Stop All", "", func() { m.StopAllAndThen(func() {}) }),
+			ggui.MenuAction(ui.T("Stop All"), "", func() { m.StopAllAndThen(func() {}) }),
 		),
-		ggui.Menu("View",
-			ggui.MenuAction("Command Palette", "cmd+k", func() { m.PaletteQuery.Set(""); m.PaletteOpen.Set(true) }),
-			ggui.MenuAction("Refresh", "cmd+r", m.RefreshAll),
+		ggui.Menu(ui.T("View"),
+			ggui.MenuAction(ui.T("Command Palette"), "cmd+k", func() { m.PaletteQuery.Set(""); m.PaletteOpen.Set(true) }),
+			ggui.MenuAction(ui.T("Refresh"), "cmd+r", m.RefreshAll),
 			ggui.MenuSeparator(),
-			ggui.MenuAction("Dashboard", "", func() { m.Go(ui.PageDashboard) }),
-			ggui.MenuAction("Sandboxes", "", func() { m.Go(ui.PageSandboxes) }),
-			ggui.MenuAction("Images", "", func() { m.Go(ui.PageImages) }),
-			ggui.MenuAction("Volumes", "", func() { m.Go(ui.PageVolumes) }),
-			ggui.MenuAction("Snapshots", "", func() { m.Go(ui.PageSnapshots) }),
+			ggui.MenuAction(ui.T("Dashboard"), "", func() { m.Go(ui.PageDashboard) }),
+			ggui.MenuAction(ui.T("Sandboxes"), "", func() { m.Go(ui.PageSandboxes) }),
+			ggui.MenuAction(ui.T("Images"), "", func() { m.Go(ui.PageImages) }),
+			ggui.MenuAction(ui.T("Volumes"), "", func() { m.Go(ui.PageVolumes) }),
+			ggui.MenuAction(ui.T("Snapshots"), "", func() { m.Go(ui.PageSnapshots) }),
 		),
 	)
 }
@@ -204,7 +211,8 @@ func installTray(app *ggui.App, m *ui.Model) {
 	tray := app.AddTray(ggui.TrayConfig{Icon: trayIcon(), Template: true, Tooltip: "gvx Desktop"})
 	show := func() { app.Show(); app.Focus() }
 	ggui.Watch(m.Rows, func(rows []ui.Row) {
-		items := []ggui.MenuItem{ggui.MenuAction("Open gvx Desktop", "", show), ggui.MenuSeparator()}
+		ui.SetLanguage(m.Lang.Get()) // read here, so the menu follows the language too
+		items := []ggui.MenuItem{ggui.MenuAction(ui.T("Open gvx Desktop"), "", show), ggui.MenuSeparator()}
 		running := 0
 		for _, r := range rows {
 			id, name := r.Spec.ID, r.Spec.Name
@@ -213,30 +221,30 @@ func installTray(app *ggui.App, m *ui.Model) {
 				running++
 			}
 			label := "○ " + name
-			action := ggui.MenuAction("Start", "", func() { m.StartSandbox(id) })
+			action := ggui.MenuAction(ui.T("Start"), "", func() { m.StartSandbox(id) })
 			if st.Active() {
 				label = "● " + name
-				action = ggui.MenuAction("Stop", "", func() { m.StopSandbox(id) })
+				action = ggui.MenuAction(ui.T("Stop"), "", func() { m.StopSandbox(id) })
 			}
 			items = append(items, ggui.Menu(label,
 				action,
-				ggui.MenuAction("Show Logs", "", func() { show(); m.ShowSandbox(id, 0) }),
+				ggui.MenuAction(ui.T("Show Logs"), "", func() { show(); m.ShowSandbox(id, 0) }),
 			))
 		}
 		if len(rows) == 0 {
-			items = append(items, ggui.MenuAction("No sandboxes", "", nil).BindEnabled(ggui.Const(false)))
+			items = append(items, ggui.MenuAction(ui.T("No sandboxes"), "", nil).BindEnabled(ggui.Const(false)))
 		}
 		items = append(items,
 			ggui.MenuSeparator(),
-			ggui.MenuAction("New Sandbox…", "", func() { show(); m.NewSandbox("") }),
-			ggui.MenuAction("Stop All", "", func() { m.StopAllAndThen(func() {}) }).BindEnabled(ggui.Const(running > 0)),
+			ggui.MenuAction(ui.T("New Sandbox…"), "", func() { show(); m.NewSandbox("") }),
+			ggui.MenuAction(ui.T("Stop All"), "", func() { m.StopAllAndThen(func() {}) }).BindEnabled(ggui.Const(running > 0)),
 			ggui.MenuSeparator(),
-			ggui.MenuAction("Quit gvx Desktop", "", func() { quit(app, m) }),
+			ggui.MenuAction(ui.T("Quit gvx Desktop"), "", func() { quit(app, m) }),
 		)
 		tray.SetMenu(items...)
 		if running > 0 {
 			tray.SetTitle(fmt.Sprint(running))
-			tray.SetTooltip(fmt.Sprintf("gvx Desktop · %d running", running))
+			tray.SetTooltip(fmt.Sprintf(ui.T("gvx Desktop · %d running"), running))
 		} else {
 			tray.SetTitle("")
 			tray.SetTooltip("gvx Desktop")

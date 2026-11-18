@@ -22,7 +22,7 @@ import (
 
 // renderScreens draws every page with demo data into PNG files, so the
 // layout can be reviewed without a running engine or a screen capture.
-func renderScreens(_ store.Store, _ string, out string) error {
+func renderScreens(lang, out string) error {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
@@ -31,7 +31,7 @@ func renderScreens(_ store.Store, _ string, out string) error {
 		return err
 	}
 	defer os.RemoveAll(tmp)
-	return offscreen(func() (bool, error) { return true, renderAll(tmp, out) })
+	return offscreen(func() (bool, error) { return true, renderAll(tmp, out, lang) })
 }
 
 type shot struct {
@@ -39,7 +39,7 @@ type shot struct {
 	setup func(m *ui.Model)
 }
 
-func renderAll(tmp, out string) error {
+func renderAll(tmp, out, lang string) error {
 	now := time.Date(2026, 11, 16, 15, 30, 0, 0, time.Local)
 	restore := ggui.SetClock(func() time.Time { return now })
 	defer restore()
@@ -56,6 +56,7 @@ func renderAll(tmp, out string) error {
 		{"settings", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
 		{"editor", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.NewSandbox("postgres:17-alpine") }},
 		{"palette", func(m *ui.Model) { m.PaletteOpen.Set(true) }},
+		{"sidebar-hidden", func(m *ui.Model) { m.Page.Set(ui.PageImages); m.SidebarNarrow.Set(true) }},
 	}
 	const w, h = 1280, 840
 	for _, dark := range []bool{false, true} {
@@ -75,6 +76,7 @@ func renderAll(tmp, out string) error {
 			}
 			set := store.DefaultSettings()
 			set.Theme = theme
+			set.Language = lang
 			_ = st.SaveSettings(set)
 
 			var m *ui.Model

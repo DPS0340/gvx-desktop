@@ -8,6 +8,7 @@ import (
 	"github.com/ironpark/ggui/runtime"
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/ui/icons"
+	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
@@ -28,9 +29,9 @@ func editorSheet(m *Model) ggui.Widget {
 
 	title := ggui.Map(d, func(x Draft) string {
 		if x.ID == "" {
-			return "New sandbox"
+			return tr("New sandbox")
 		}
-		return "Edit " + x.Name
+		return tr("Edit %s", x.Name)
 	})
 
 	cached := ggui.Map(m.Images, func(l Listing[rungv.Image]) []string {
@@ -47,7 +48,7 @@ func editorSheet(m *Model) ggui.Widget {
 	}).WithEqual(func(a, b []string) bool { return equalStrings(a, b) })
 	imageChips := ggui.View(cached, func(refs []string) ggui.Widget {
 		if len(refs) == 0 {
-			return ggui.Box()
+			return widget.Box()
 		}
 		var chips []ggui.Widget
 		for _, ref := range refs {
@@ -62,151 +63,151 @@ func editorSheet(m *Model) ggui.Widget {
 				})
 			}))
 		}
-		return ggui.Column(ui.Caption("Cached images").Size(11), ggui.Wrap(chips...).Gap(6)).Gap(6)
+		return widget.Column(ui.Caption(tr("Cached images")).Size(11), widget.Wrap(chips...).Gap(6)).Gap(6)
 	})
 
-	general := ggui.Column(
-		ui.Field("Image", ui.TextField(str(func(x *Draft) *string { return &x.Image })).Placeholder("nginx:alpine").Name("Image")).
-			Help("Any OCI image for linux/"+goarch()+". A missing image is pulled at start."),
+	general := widget.Column(
+		ui.Field(tr("Image"), ui.TextField(str(func(x *Draft) *string { return &x.Image })).Placeholder("nginx:alpine").Name(tr("Image"))).
+			Help(tr("Any OCI image for linux/%s. A missing image is pulled at start.", goarch())),
 		imageChips,
-		ui.Field("Name", ui.TextField(str(func(x *Draft) *string { return &x.Name })).Placeholder("web").Name("Sandbox name")),
-		ui.Field("Command", ui.TextField(str(func(x *Draft) *string { return &x.Command })).Placeholder("Image default").Name("Command")).
-			Help("Replaces the image's CMD and keeps its ENTRYPOINT. Quote words as in a shell."),
+		ui.Field(tr("Name"), ui.TextField(str(func(x *Draft) *string { return &x.Name })).Placeholder("web").Name(tr("Sandbox name"))),
+		ui.Field(tr("Command"), ui.TextField(str(func(x *Draft) *string { return &x.Command })).Placeholder(tr("Image default")).Name(tr("Command"))).
+			Help(tr("Replaces the image's CMD and keeps its ENTRYPOINT. Quote words as in a shell.")),
 	).Gap(14).Stretch()
 
-	ports := ggui.Column(
-		ui.Field("Published ports", ui.TextField(str(func(x *Draft) *string { return &x.Ports })).Multiline().Lines(3).
-			Placeholder("8080:80\n127.0.0.1:9000-9019:9000-9019\nunix:~/.gvx/app.sock:3000").Name("Published ports")).
-			Help("One per line: [IP:][HOST:]GUEST[/udp]. Bound before the guest starts and fixed for the run: publish every port the guest will use, including ports of nested containers."),
+	ports := widget.Column(
+		ui.Field(tr("Published ports"), ui.TextField(str(func(x *Draft) *string { return &x.Ports })).Multiline().Lines(3).
+			Placeholder("8080:80\n127.0.0.1:9000-9019:9000-9019\nunix:~/.gvx/app.sock:3000").Name(tr("Published ports"))).
+			Help(tr("One per line: [IP:][HOST:]GUEST[/udp]. Bound before the guest starts and fixed for the run: publish every port the guest will use, including ports of nested containers.")),
 	).Gap(14).Stretch()
 
 	workspace := str(func(x *Draft) *string { return &x.Workspace })
-	storage := ggui.Column(
-		ui.Field("Volumes", ui.TextField(str(func(x *Draft) *string { return &x.Volumes })).Multiline().Lines(2).
-			Placeholder("pgdata:/var/lib/postgresql/data\n/disk/cache.ext4:/cache").Name("Volumes")).
-			Help("NAME:/guest/path[:ro]. Each named volume is one journaled ext4 image that persists; a source with a slash is an .ext4 file at that path."),
-		ui.Field("Bind mounts", ui.TextField(str(func(x *Draft) *string { return &x.Binds })).Multiline().Lines(2).
-			Placeholder("~/src:/src\n~/app.conf:/etc/app.conf:ro").Name("Bind mounts")).
-			Help("HOST:/guest/path[:ro]. A host directory or one file. The sandbox may only reach what is mounted."),
-		ui.Field("Workspace", ggui.Row(
-			ggui.Expanded(ui.TextField(workspace).Placeholder("Folder mounted at /workspace").Name("Workspace folder")),
-			ui.Button("Browse…", func() { browseFolder(m, workspace, nil) }).Outline(),
+	storage := widget.Column(
+		ui.Field(tr("Volumes"), ui.TextField(str(func(x *Draft) *string { return &x.Volumes })).Multiline().Lines(2).
+			Placeholder("pgdata:/var/lib/postgresql/data\n/disk/cache.ext4:/cache").Name(tr("Volumes"))).
+			Help(tr("NAME:/guest/path[:ro]. Each named volume is one journaled ext4 image that persists; a source with a slash is an .ext4 file at that path.")),
+		ui.Field(tr("Bind mounts"), ui.TextField(str(func(x *Draft) *string { return &x.Binds })).Multiline().Lines(2).
+			Placeholder("~/src:/src\n~/app.conf:/etc/app.conf:ro").Name(tr("Bind mounts"))).
+			Help(tr("HOST:/guest/path[:ro]. A host directory or one file. The sandbox may only reach what is mounted.")),
+		ui.Field(tr("Workspace"), widget.Row(
+			widget.Expanded(ui.TextField(workspace).Placeholder(tr("Folder mounted at /workspace")).Name(tr("Workspace folder"))),
+			ui.Button(tr("Browse…"), func() { browseFolder(m, workspace, nil) }).Outline(),
 		).Gap(8)),
-		ui.Switch(flag(func(x *Draft) *bool { return &x.WorkspaceRO }), "Mount the workspace read-only").Small(),
-		ui.Field("Persistent root file system", ui.TextField(str(func(x *Draft) *string { return &x.RootfsVolume })).Placeholder("Volume name, or empty for memory").Name("Root file system volume")).
-			Help("Writes outside mounts go to memory and vanish at exit unless a root volume keeps them."),
-		ui.Field("Memory mounts (tmpfs)", ui.TextField(str(func(x *Draft) *string { return &x.Tmpfs })).Multiline().Lines(1).
-			Placeholder("/tmp:size=256m").Name("tmpfs mounts")),
+		ui.Switch(flag(func(x *Draft) *bool { return &x.WorkspaceRO }), tr("Mount the workspace read-only")).Small(),
+		ui.Field(tr("Persistent root file system"), ui.TextField(str(func(x *Draft) *string { return &x.RootfsVolume })).Placeholder(tr("Volume name, or empty for memory")).Name(tr("Root file system volume"))).
+			Help(tr("Writes outside mounts go to memory and vanish at exit unless a root volume keeps them.")),
+		ui.Field(tr("Memory mounts (tmpfs)"), ui.TextField(str(func(x *Draft) *string { return &x.Tmpfs })).Multiline().Lines(1).
+			Placeholder("/tmp:size=256m").Name(tr("tmpfs mounts"))),
 	).Gap(14).Stretch()
 
-	resources := ggui.Row(
-		ggui.Expanded(ui.Field("Memory limit", ui.TextField(str(func(x *Draft) *string { return &x.Memory })).Placeholder("Host RAM").Name("Memory limit")).Help("512m, 2g. The guest is killed (exit 137) when it passes the limit.")),
-		ggui.Expanded(ui.Field("CPU limit", ui.TextField(str(func(x *Draft) *string { return &x.CPUs })).Placeholder("All CPUs").Name("CPU limit")).Help("1.5 CPUs. A hard cap on Windows only.")),
-	).Gap(12).Align(ggui.AlignStart)
+	resources := widget.Row(
+		widget.Expanded(ui.Field(tr("Memory limit"), ui.TextField(str(func(x *Draft) *string { return &x.Memory })).Placeholder(tr("Host RAM")).Name(tr("Memory limit"))).Help(tr("512m, 2g. The guest is killed (exit 137) when it passes the limit."))),
+		widget.Expanded(ui.Field(tr("CPU limit"), ui.TextField(str(func(x *Draft) *string { return &x.CPUs })).Placeholder(tr("All CPUs")).Name(tr("CPU limit"))).Help(tr("1.5 CPUs. A hard cap on Windows only."))),
+	).Gap(12).Align(widget.AlignStart)
 
-	env := ui.Field("Environment", ui.TextField(str(func(x *Draft) *string { return &x.Env })).Multiline().Lines(3).
-		Placeholder("KEY=value\nHTTP_PROXY").Name("Environment variables")).
-		Help("KEY=value per line. KEY alone copies the variable from this machine.")
+	env := ui.Field(tr("Environment"), ui.TextField(str(func(x *Draft) *string { return &x.Env })).Multiline().Lines(3).
+		Placeholder("KEY=value\nHTTP_PROXY").Name(tr("Environment variables"))).
+		Help(tr("KEY=value per line. KEY alone copies the variable from this machine."))
 
 	network := d.Field(func(x *Draft) *string { return &x.Network })
 	isWG := ggui.Map(network, func(n string) bool { return n == "wg" })
-	netSec := ggui.Column(
-		ui.Field("Network", ui.ToggleGroup(network).Options([]string{"nat", "none", "wg"}).Format(func(s string) string {
+	netSec := widget.Column(
+		ui.Field(tr("Network"), ui.ToggleGroup(network).Options([]string{"nat", "none", "wg"}).Format(func(s string) string {
 			switch s {
 			case "nat":
 				return "NAT"
 			case "none":
-				return "None"
+				return tr("None")
 			}
 			return "WireGuard"
-		}).Outline().Name("Network mode")).Help("NAT relays guest TCP/UDP through host sockets. WireGuard routes everything through a tunnel and needs a config."),
+		}).Outline().Name(tr("Network mode"))).Help(tr("NAT relays guest TCP/UDP through host sockets. WireGuard routes everything through a tunnel and needs a config.")),
 		ggui.If(isWG, func() ggui.Widget {
 			wg := str(func(x *Draft) *string { return &x.WGConf })
-			return ui.Field("WireGuard config", ggui.Row(
-				ggui.Expanded(ui.TextField(wg).Placeholder("~/sandbox-wg.conf").Name("WireGuard config")),
-				ui.Button("Browse…", func() { browseFile(m, wg, nil) }).Outline(),
+			return ui.Field(tr("WireGuard config"), widget.Row(
+				widget.Expanded(ui.TextField(wg).Placeholder("~/sandbox-wg.conf").Name(tr("WireGuard config"))),
+				ui.Button(tr("Browse…"), func() { browseFile(m, wg, nil) }).Outline(),
 			).Gap(8))
 		}),
-		ui.Switch(flag(func(x *Draft) *bool { return &x.IsolateLAN }), "Block access to the local network").Small(),
-		ui.Switch(flag(func(x *Draft) *bool { return &x.Privileged }), "Privileged inside the sandbox (raw sockets, iptables, setuid) — needed by dockerd").Small(),
-		ui.Switch(flag(func(x *Draft) *bool { return &x.HostCACerts }), "Trust this machine's root certificates (TLS-inspecting proxies)").Small(),
-		ui.Field("Execution backend", ui.Select(d.Field(func(x *Draft) *string { return &x.Backend })).
-			Options([]string{"auto", "hvf", "whpx", "systrap"}).Name("Execution backend")).
-			Help("auto picks hvf on macOS, whpx on Windows and systrap on Linux. Use whpx for untrusted code on Windows."),
+		ui.Switch(flag(func(x *Draft) *bool { return &x.IsolateLAN }), tr("Block access to the local network")).Small(),
+		ui.Switch(flag(func(x *Draft) *bool { return &x.Privileged }), tr("Privileged inside the sandbox (raw sockets, iptables, setuid) — needed by dockerd")).Small(),
+		ui.Switch(flag(func(x *Draft) *bool { return &x.HostCACerts }), tr("Trust this machine's root certificates (TLS-inspecting proxies)")).Small(),
+		ui.Field(tr("Execution backend"), ui.Select(d.Field(func(x *Draft) *string { return &x.Backend })).
+			Options([]string{"auto", "hvf", "whpx", "systrap"}).Name(tr("Execution backend"))).
+			Help(tr("auto picks hvf on macOS, whpx on Windows and systrap on Linux. Use whpx for untrusted code on Windows.")),
 	).Gap(14).Stretch()
 
 	advancedOpen := ggui.State(false)
-	advanced := ggui.Column(
-		ggui.Row(
-			ggui.Expanded(ui.Field("Hostname", ui.TextField(str(func(x *Draft) *string { return &x.Hostname })).Placeholder("gvx").Name("Hostname"))),
-			ggui.Expanded(ui.Field("User", ui.TextField(str(func(x *Draft) *string { return &x.User })).Placeholder("Image default").Name("User"))),
+	advanced := widget.Column(
+		widget.Row(
+			widget.Expanded(ui.Field(tr("Hostname"), ui.TextField(str(func(x *Draft) *string { return &x.Hostname })).Placeholder("gvx").Name(tr("Hostname")))),
+			widget.Expanded(ui.Field(tr("User"), ui.TextField(str(func(x *Draft) *string { return &x.User })).Placeholder(tr("Image default")).Name(tr("User")))),
 		).Gap(12),
-		ggui.Row(
-			ggui.Expanded(ui.Field("Working directory", ui.TextField(str(func(x *Draft) *string { return &x.Workdir })).Placeholder("Image default").Name("Working directory"))),
-			ggui.Expanded(ui.Field("Pull policy", ui.Select(d.Field(func(x *Draft) *string { return &x.Pull })).Options([]string{"missing", "always", "never"}).Name("Pull policy"))),
+		widget.Row(
+			widget.Expanded(ui.Field(tr("Working directory"), ui.TextField(str(func(x *Draft) *string { return &x.Workdir })).Placeholder(tr("Image default")).Name(tr("Working directory")))),
+			widget.Expanded(ui.Field(tr("Pull policy"), ui.Select(d.Field(func(x *Draft) *string { return &x.Pull })).Options([]string{"missing", "always", "never"}).Name(tr("Pull policy")))),
 		).Gap(12),
-		ui.Field("Entrypoint", ui.TextField(str(func(x *Draft) *string { return &x.Entrypoint })).Placeholder("Image default").Name("Entrypoint")),
-		ui.Switch(flag(func(x *Draft) *bool { return &x.SetEntrypoint }), "Override the entrypoint even when empty (clears it)").Small(),
-		ui.Field("Ready when the log shows", ui.TextField(str(func(x *Draft) *string { return &x.ReadyPattern })).Placeholder("Ready as soon as it starts").Name("Ready pattern")).
-			Help("The sandbox shows Starting until a line contains this text."),
-		ui.Field("Extra rungv flags", ui.TextField(str(func(x *Draft) *string { return &x.ExtraArgs })).Placeholder("--tune net.nat.mtu=9000").Name("Extra flags")),
+		ui.Field(tr("Entrypoint"), ui.TextField(str(func(x *Draft) *string { return &x.Entrypoint })).Placeholder(tr("Image default")).Name(tr("Entrypoint"))),
+		ui.Switch(flag(func(x *Draft) *bool { return &x.SetEntrypoint }), tr("Override the entrypoint even when empty (clears it)")).Small(),
+		ui.Field(tr("Ready when the log shows"), ui.TextField(str(func(x *Draft) *string { return &x.ReadyPattern })).Placeholder(tr("Ready as soon as it starts")).Name(tr("Ready pattern"))).
+			Help(tr("The sandbox shows Starting until a line contains this text.")),
+		ui.Field(tr("Extra rungv flags"), ui.TextField(str(func(x *Draft) *string { return &x.ExtraArgs })).Placeholder("--tune net.nat.mtu=9000").Name(tr("Extra flags"))),
 	).Gap(14).Stretch()
 
-	lifecycle := ggui.Column(
-		ui.Switch(flag(func(x *Draft) *bool { return &x.Checkpoint }), "Allow snapshots (checkpoint and restore)"),
-		ui.Switch(flag(func(x *Draft) *bool { return &x.AutoStart }), "Start when gvx Desktop starts"),
+	lifecycle := widget.Column(
+		ui.Switch(flag(func(x *Draft) *bool { return &x.Checkpoint }), tr("Allow snapshots (checkpoint and restore)")),
+		ui.Switch(flag(func(x *Draft) *bool { return &x.AutoStart }), tr("Start when gvx Desktop starts")),
 	).Gap(10).Stretch()
 
 	section := func(icon *icons.Glyph, title string, body ggui.Widget) ggui.Widget {
-		return ggui.Column(
-			ggui.Row(glyph(icon, 16).Color(colorBlue), ui.Heading(title).Size(14)).Gap(8),
+		return widget.Column(
+			widget.Row(glyph(icon, 16).Color(colorBlue), ui.Heading(title).Size(14)).Gap(8),
 			body,
 		).Gap(12).Stretch()
 	}
 
 	errorBanner := ggui.View(m.DraftError, func(msg string) ggui.Widget {
 		if msg == "" {
-			return ggui.Box()
+			return widget.Box()
 		}
-		return ui.Alert("Needs attention", msg).Destructive().Icon(icons.Alert)
+		return ui.Alert(tr("Needs attention"), msg).Destructive().Icon(icons.Alert)
 	})
 
-	form := ggui.Column(
-		section(lucide.Package, "Image & command", general),
+	form := widget.Column(
+		section(lucide.Package, tr("Image & command"), general),
 		ui.Divider(),
-		section(lucide.Plug, "Ports", ports),
+		section(lucide.Plug, tr("Ports"), ports),
 		ui.Divider(),
-		section(lucide.HardDrive, "Storage", storage),
+		section(lucide.HardDrive, tr("Storage"), storage),
 		ui.Divider(),
-		section(lucide.Cpu, "Resources", resources),
+		section(lucide.Cpu, tr("Resources"), resources),
 		ui.Divider(),
-		section(lucide.SlidersHorizontal, "Environment", env),
+		section(lucide.SlidersHorizontal, tr("Environment"), env),
 		ui.Divider(),
-		section(lucide.ShieldCheck, "Network & security", netSec),
+		section(lucide.ShieldCheck, tr("Network & security"), netSec),
 		ui.Divider(),
-		section(lucide.Camera, "Lifecycle", lifecycle),
-		ui.Collapsible(advancedOpen, "Advanced", ggui.Padding(advanced, 12, 0, 0, 0)),
+		section(lucide.Camera, tr("Lifecycle"), lifecycle),
+		ui.Collapsible(advancedOpen, tr("Advanced"), widget.Padding(advanced, 12, 0, 0, 0)),
 		ui.Divider(),
-		ui.CodeBlockOf(m.DraftLine).Header("This runs").Language("sh").Small().CopyButton(true),
+		ui.CodeBlockOf(m.DraftLine).Header(tr("This runs")).Language("sh").Small().CopyButton(true),
 		errorBanner,
 	).Gap(18).Stretch()
 
 	invalid := ggui.Map(m.DraftError, func(s string) bool { return s != "" })
 	// The sheet stacks its own footer under the content; the form scrolls
 	// in the room it has and the actions stay at the bottom edge.
-	actions := ggui.Row(
-		ui.Button("Cancel", func() { m.EditorOpen.Set(false) }).Ghost(),
-		ggui.Spacer(),
-		ui.Button("Save", func() { m.SaveDraft(false) }).Outline().BindDisabled(invalid),
-		ui.Button("Save and start", func() { m.SaveDraft(true) }).BindDisabled(invalid).Icon(glyph(lucide.Play, 14)),
-	).Gap(8).Align(ggui.AlignCenter)
-	return ui.Sheet(m.EditorOpen, ggui.Column(
+	actions := widget.Row(
+		ui.Button(tr("Cancel"), func() { m.EditorOpen.Set(false) }).Ghost(),
+		widget.Spacer(),
+		ui.Button(tr("Save"), func() { m.SaveDraft(false) }).Outline().BindDisabled(invalid),
+		ui.Button(tr("Save and start"), func() { m.SaveDraft(true) }).BindDisabled(invalid).Icon(glyph(lucide.Play, 14)),
+	).Gap(8).Align(widget.AlignCenter)
+	return ui.Sheet(m.EditorOpen, widget.Column(
 		ui.TitleOf(title).Size(20),
-		ui.Caption("Ports and mounts are opened before the guest starts and stay fixed while it runs."),
-		ggui.Expanded(ggui.Scroll(ggui.Padding(form, 16, 12, 24, 0)).FadeEdges(12)),
+		ui.Caption(tr("Ports and mounts are opened before the guest starts and stay fixed while it runs.")),
+		widget.Expanded(widget.Scroll(widget.Padding(form, 16, 12, 24, 0)).FadeEdges(12)),
 		ui.Divider(),
-		ggui.Padding(actions, 12, 0, 0, 0),
-	).Gap(6).Stretch()).Right().Size(600).Name("Sandbox editor")
+		widget.Padding(actions, 12, 0, 0, 0),
+	).Gap(6).Stretch()).Right().Size(600).Name(tr("Sandbox editor"))
 }
 
 func sandboxName(ref string) string {
@@ -257,7 +258,7 @@ func browseFolder(m *Model, target ggui.Binding[string], then func(string)) {
 	host := ggui.UseHost()
 	start := rungv.ExpandHome(ggui.Peek[string](target))
 	ggui.Async(func() (string, error) {
-		return host.Dialogs().PickFolder(runtime.FileDialog{Title: "Choose a folder", Directory: start})
+		return host.Dialogs().PickFolder(runtime.FileDialog{Title: tr("Choose a folder"), Directory: start})
 	}, func(path string, err error) {
 		if err != nil || path == "" {
 			return
@@ -273,7 +274,7 @@ func browseFolder(m *Model, target ggui.Binding[string], then func(string)) {
 func browseFile(m *Model, target ggui.Binding[string], then func(string)) {
 	host := ggui.UseHost()
 	ggui.Async(func() (string, error) {
-		return host.Dialogs().OpenFile(runtime.FileDialog{Title: "Choose a file"})
+		return host.Dialogs().OpenFile(runtime.FileDialog{Title: tr("Choose a file")})
 	}, func(path string, err error) {
 		if err != nil || path == "" {
 			return

@@ -9,6 +9,7 @@ import (
 	"github.com/ironpark/ggui/icons/lucide"
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/ui/icons"
+	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -30,59 +31,59 @@ func sandboxesPage(m *Model) ggui.Widget {
 		return out
 	})
 	summary := ui.CaptionOf(ggui.Combine(m.Running, m.Specs, func(n int, s []sandbox.Spec) string {
-		return fmt.Sprintf("%d running · %d total. Ports and mounts are fixed when a sandbox starts.", n, len(s))
+		return fmt.Sprintf(tr("%d running · %d total. Ports and mounts are fixed when a sandbox starts."), n, len(s))
 	}))
 	selected := ggui.Bind(m.Selected.Get, m.Select)
 
 	table := ui.Table(visible, func(r Row) string { return r.Spec.ID },
-		ui.Col("Status", func(r ggui.Readable[Row]) ggui.Widget {
+		ui.Col(tr("Status"), func(r ggui.Readable[Row]) ggui.Widget {
 			return ggui.View(ggui.Map(r, func(r Row) sandbox.State { return r.State }), statusLabel)
 		}).W(150),
-		ui.Col("Name", func(r ggui.Readable[Row]) ggui.Widget {
-			return ggui.Column(
-				ggui.TextOf(ggui.Map(r, func(r Row) string { return r.Spec.Name })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
+		ui.Col(tr("Name"), func(r ggui.Readable[Row]) ggui.Widget {
+			return widget.Column(
+				widget.TextOf(ggui.Map(r, func(r Row) string { return r.Spec.Name })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
 				ui.CaptionOf(ggui.Map(r, func(r Row) string { return r.Spec.Image })).Size(11).NoWrap().Ellipsis(),
 			).Gap(1)
 		}).Grow(2),
-		ui.Col("Ports", func(r ggui.Readable[Row]) ggui.Widget {
+		ui.Col(tr("Ports"), func(r ggui.Readable[Row]) ggui.Widget {
 			return ui.CaptionOf(ggui.Map(r, portsSummary)).Size(12).NoWrap().Ellipsis()
 		}).Grow(2),
-		ui.Col("Uptime", func(r ggui.Readable[Row]) ggui.Widget {
+		ui.Col(tr("Uptime"), func(r ggui.Readable[Row]) ggui.Widget {
 			return ui.CaptionOf(ggui.Combine(r, m.Now, func(r Row, now time.Time) string {
 				if r.State.Status.Active() {
 					return uptime(r.State.StartedAt, now)
 				}
 				if !r.State.ExitedAt.IsZero() {
-					return "stopped " + ago(r.State.ExitedAt, now)
+					return tr("stopped %s", ago(r.State.ExitedAt, now))
 				}
 				return "—"
 			})).Size(12).NoWrap()
-		}).W(120),
+		}).W(160),
 		ui.Col("", func(r ggui.Readable[Row]) ggui.Widget {
 			return ggui.View(r, func(r Row) ggui.Widget {
-				return ggui.Row(sandboxQuickActions(m, r), rowMenu(m, r)).Gap(2).Justify(ggui.JustifyEnd)
+				return widget.Row(sandboxQuickActions(m, r), rowMenu(m, r)).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(84).Identified("actions"),
 	).BindSelected(selected).RowName(func(r Row) string { return r.Spec.Name }).RowHeight(48).Height(260)
 
-	empty := ui.Empty("No sandboxes", "A sandbox runs one OCI image in its own unprivileged process. Create one, or start the Docker Engine or Kubernetes recipe.").
+	empty := ui.Empty(tr("No sandboxes"), tr("A sandbox runs one OCI image in its own unprivileged process. Create one, or start the Docker Engine or Kubernetes recipe.")).
 		Media(glyph(lucide.Box, 32).Color(colorGray)).
-		Action(ggui.Row(
-			ui.Button("New sandbox", func() { m.NewSandbox("") }).Icon(glyph(lucide.Plus, 16)),
+		Action(widget.Row(
+			ui.Button(tr("New sandbox"), func() { m.NewSandbox("") }).Icon(glyph(lucide.Plus, 16)),
 			ui.Button("Docker Engine", func() { m.CreateFromRecipe(recipes.Docker) }).Outline(),
 		).Gap(8)).Outline()
 
 	list := ggui.If(ggui.Map(m.Specs, func(s []sandbox.Spec) bool { return len(s) > 0 }), func() ggui.Widget {
-		return ggui.Column(
-			ggui.Box(ui.TextField(m.Query).Placeholder("Filter by name or image").Name("Filter sandboxes")).MaxWidth(320),
+		return widget.Column(
+			widget.Box(ui.TextField(m.Query).Placeholder(tr("Filter by name or image")).Name(tr("Filter sandboxes"))).MaxWidth(320),
 			ui.Card(table).Pad(0),
 			detailPanel(m),
 		).Gap(16).Stretch()
 	}).Else(func() ggui.Widget { return empty })
 
 	return page(
-		pageHeader("Sandboxes", summary,
-			ui.Button("New sandbox", func() { m.NewSandbox("") }).Icon(glyph(lucide.Plus, 16)).Shortcut("cmd+n"),
+		pageHeader(tr("Sandboxes"), summary,
+			ui.Button(tr("New sandbox"), func() { m.NewSandbox("") }).Icon(glyph(lucide.Plus, 16)).Shortcut("cmd+n"),
 		),
 		list,
 	)
@@ -117,16 +118,16 @@ func rowMenu(m *Model, r Row) ggui.Widget {
 	id := r.Spec.ID
 	active := r.State.Status.Active()
 	entries := []ggui.Widget{
-		ui.MenuItem("Logs", func() { m.ShowSandbox(id, 0) }),
-		ui.MenuItem("Edit…", func() { m.EditSandbox(id) }),
-		ui.MenuItem("Duplicate…", func() { m.Duplicate(id) }),
-		ui.MenuItem("Copy command line", func() { m.Copy(r.Spec.CommandLine(sandbox.Paths{}), "rungv command line") }),
+		ui.MenuItem(tr("Logs"), func() { m.ShowSandbox(id, 0) }),
+		ui.MenuItem(tr("Edit…"), func() { m.EditSandbox(id) }),
+		ui.MenuItem(tr("Duplicate…"), func() { m.Duplicate(id) }),
+		ui.MenuItem(tr("Copy command line"), func() { m.Copy(r.Spec.CommandLine(sandbox.Paths{}), tr("rungv command line")) }),
 	}
 	if active {
-		entries = append(entries, ui.MenuItem("Restart", func() { m.RestartSandbox(id) }))
+		entries = append(entries, ui.MenuItem(tr("Restart"), func() { m.RestartSandbox(id) }))
 	}
-	entries = append(entries, ui.MenuDivider(), ui.MenuItem("Delete", func() { m.AskDelete(id) }).Destructive())
-	return ui.MenuOf(glyph(lucide.Ellipsis, 16), entries...).Name("More actions for " + r.Spec.Name)
+	entries = append(entries, ui.MenuDivider(), ui.MenuItem(tr("Delete"), func() { m.AskDelete(id) }).Destructive())
+	return ui.MenuOf(glyph(lucide.Ellipsis, 16), entries...).Name(tr("More actions for %s", r.Spec.Name))
 }
 
 // ---- Detail -------------------------------------------------------------
@@ -144,14 +145,14 @@ func detailPanel(m *Model) ggui.Widget {
 	return ggui.If(hasSelection, func() ggui.Widget {
 		header := ggui.View(current, func(r Row) ggui.Widget { return detailHeader(m, r) })
 		tabs := ui.Tabs(m.Detail,
-			ui.Tab("Logs", logsView(m, current)),
-			ui.Tab("Connect", ggui.View(current, func(r Row) ggui.Widget { return connectView(m, r) })),
-			ui.Tab("Configuration", ggui.View(ggui.Map(current, func(r Row) sandbox.Spec { return r.Spec }).WithEqual(sandbox.Spec.Equal), func(s sandbox.Spec) ggui.Widget { return configView(m, s) })),
-			ui.Tab("Snapshots", ggui.View(current, func(r Row) ggui.Widget { return sandboxSnapshots(m, r) })),
-		).Line().Name("Sandbox details")
-		return ui.Card(ggui.Column(header, tabs).Gap(12).Stretch())
+			ui.Tab(tr("Logs"), logsView(m, current)),
+			ui.Tab(tr("Connect"), ggui.View(current, func(r Row) ggui.Widget { return connectView(m, r) })),
+			ui.Tab(tr("Configuration"), ggui.View(ggui.Map(current, func(r Row) sandbox.Spec { return r.Spec }).WithEqual(sandbox.Spec.Equal), func(s sandbox.Spec) ggui.Widget { return configView(m, s) })),
+			ui.Tab(tr("Snapshots"), ggui.View(current, func(r Row) ggui.Widget { return sandboxSnapshots(m, r) })),
+		).Line().Name(tr("Sandbox details"))
+		return ui.Card(widget.Column(header, tabs).Gap(12).Stretch())
 	}).Else(func() ggui.Widget {
-		return ui.Empty("Select a sandbox", "Its logs, ports and settings show here.").Outline()
+		return ui.Empty(tr("Select a sandbox"), tr("Its logs, ports and settings show here.")).Outline()
 	})
 }
 
@@ -161,17 +162,17 @@ func detailHeader(m *Model, r Row) ggui.Widget {
 	var actions []ggui.Widget
 	switch {
 	case st.Status == sandbox.Stopping:
-		actions = append(actions, ui.Button("Stopping…", nil).Outline().Disabled(true))
+		actions = append(actions, ui.Button(tr("Stopping…"), nil).Outline().Disabled(true))
 	case st.Status.Active():
 		actions = append(actions,
-			ui.Button("Stop", func() { m.StopSandbox(id) }).Outline().Icon(glyph(lucide.Square, 14)),
-			ui.Button("Restart", func() { m.RestartSandbox(id) }).Outline().Icon(glyph(lucide.RotateCcw, 14)),
+			ui.Button(tr("Stop"), func() { m.StopSandbox(id) }).Outline().Icon(glyph(lucide.Square, 14)),
+			ui.Button(tr("Restart"), func() { m.RestartSandbox(id) }).Outline().Icon(glyph(lucide.RotateCcw, 14)),
 		)
 	default:
-		actions = append(actions, ui.Button("Start", func() { m.StartSandbox(id) }).Icon(glyph(lucide.Play, 14)))
+		actions = append(actions, ui.Button(tr("Start"), func() { m.StartSandbox(id) }).Icon(glyph(lucide.Play, 14)))
 	}
 	actions = append(actions,
-		ui.Button("Edit", func() { m.EditSandbox(id) }).Outline().Icon(glyph(lucide.Pencil, 14)),
+		ui.Button(tr("Edit"), func() { m.EditSandbox(id) }).Outline().Icon(glyph(lucide.Pencil, 14)),
 		rowMenu(m, r),
 	)
 	meta := []string{r.Spec.Image}
@@ -182,24 +183,24 @@ func detailHeader(m *Model, r Row) ggui.Widget {
 		meta = append(meta, fmt.Sprintf("pid %d", st.PID))
 	}
 	if st.Restored != "" {
-		meta = append(meta, "restored from "+shortPath(st.Restored))
+		meta = append(meta, tr("restored from %s", shortPath(st.Restored)))
 	}
-	head := ggui.Column(
-		ggui.Row(ui.Title(r.Spec.Name).Size(20), statusLabel(st)).Gap(12).Align(ggui.AlignCenter),
+	head := widget.Column(
+		widget.Row(ui.Title(r.Spec.Name).Size(20), statusLabel(st)).Gap(12).Align(widget.AlignCenter),
 		ui.Caption(strings.Join(meta, " · ")).Size(12),
 	).Gap(4)
-	var problem ggui.Widget = ggui.Box()
+	var problem ggui.Widget = widget.Box()
 	if st.Status == sandbox.Failed {
 		desc := st.Error
 		if st.Advice != "" {
 			desc = st.Advice + "\n" + st.Error
 		}
-		problem = ui.Alert(fmt.Sprintf("Exited with code %d", st.ExitCode), desc).Destructive().Icon(icons.Alert)
+		problem = ui.Alert(fmt.Sprintf(tr("Exited with code %d"), st.ExitCode), desc).Destructive().Icon(icons.Alert)
 	}
-	return ggui.Column(
-		ggui.Responsive(680,
-			ggui.Row(ggui.Expanded(head), ggui.Row(actions...).Gap(8)).Gap(16).Align(ggui.AlignCenter),
-			ggui.Column(head, ggui.Wrap(actions...).Gap(8)).Gap(12).Stretch(),
+	return widget.Column(
+		widget.Responsive(680,
+			widget.Row(widget.Expanded(head), widget.Row(actions...).Gap(8)).Gap(16).Align(widget.AlignCenter),
+			widget.Column(head, widget.Wrap(actions...).Gap(8)).Gap(12).Stretch(),
 		),
 		problem,
 	).Gap(12).Stretch()
@@ -228,7 +229,7 @@ func logsView(m *Model, current ggui.Readable[Row]) ggui.Widget {
 		}
 		return out
 	}).WithEqual(nil)
-	rows := ggui.EachKeyed(shown, func(l sandbox.LogLine) int64 { return l.Seq }, func(row ggui.EachItem[sandbox.LogLine]) ggui.Widget {
+	rows := widget.EachKeyed(shown, func(l sandbox.LogLine) int64 { return l.Seq }, func(row widget.EachItem[sandbox.LogLine]) ggui.Widget {
 		l := row.Item
 		t := ui.Mono(l.Text).Size(12).NoWrap().Ellipsis().Selectable()
 		switch l.Stream {
@@ -239,31 +240,31 @@ func logsView(m *Model, current ggui.Readable[Row]) ggui.Widget {
 				t = t.Color(colorGray)
 			}
 		}
-		return ggui.Row(
+		return widget.Row(
 			ui.Mono(l.Time.Format("15:04:05")).Size(11).Color(colorGray).NoWrap(),
-			ggui.Expanded(t),
+			widget.Expanded(t),
 		).Gap(10)
 	}).ItemExtent(19).Else(func() ggui.Widget {
-		return ggui.Padding(ui.Caption("No output yet. Start the sandbox to see what it writes."), 12)
+		return widget.Padding(ui.Caption(tr("No output yet. Start the sandbox to see what it writes.")), 12)
 	})
-	scroll := ggui.Scroll(ggui.Padding(rows, 8, 12)).FollowEnd()
-	toolbar := ggui.Row(
-		ggui.Box(ui.TextField(filter).Placeholder("Filter lines").Name("Filter logs")).Width(260),
-		ggui.Spacer(),
-		ui.CaptionOf(ggui.Map(shown, func(l []sandbox.LogLine) string { return fmt.Sprintf("%d lines", len(l)) })).Size(12),
-		tip(iconButton(lucide.Copy, "Copy logs", func() {
+	scroll := widget.Scroll(widget.Padding(rows, 8, 12)).FollowEnd()
+	toolbar := widget.Row(
+		widget.Box(ui.TextField(filter).Placeholder(tr("Filter lines")).Name(tr("Filter logs"))).Width(260),
+		widget.Spacer(),
+		ui.CaptionOf(ggui.Map(shown, func(l []sandbox.LogLine) string { return fmt.Sprintf(tr("%d lines"), len(l)) })).Size(12),
+		tip(iconButton(lucide.Copy, tr("Copy logs"), func() {
 			var b strings.Builder
 			for _, l := range ggui.Peek(shown) {
 				b.WriteString(l.Text)
 				b.WriteByte('\n')
 			}
-			m.Copy(b.String(), "The visible log lines are on the clipboard.")
-		}), "Copy"),
-		tip(iconButton(lucide.Eraser, "Clear logs", func() { m.ClearLogs(ggui.Peek(m.Selected)) }), "Clear"),
-	).Gap(6).Align(ggui.AlignCenter)
-	return ggui.Column(
+			m.Copy(b.String(), tr("The visible log lines are on the clipboard."))
+		}), tr("Copy")),
+		tip(iconButton(lucide.Eraser, tr("Clear logs"), func() { m.ClearLogs(ggui.Peek(m.Selected)) }), tr("Clear")),
+	).Gap(6).Align(widget.AlignCenter)
+	return widget.Column(
 		toolbar,
-		ggui.Box(scroll).Height(380).Radius(8).Border(1, colorGrayA).Fill(rgbA(0x000000, 0x08)),
+		widget.Box(scroll).Height(380).Radius(8).Border(1, colorGrayA).Fill(rgbA(0x000000, 0x08)),
 	).Gap(10).Stretch()
 }
 
@@ -276,54 +277,54 @@ func connectView(m *Model, r Row) ggui.Widget {
 	case recipes.Kubernetes:
 		parts = append(parts, kubeConnect(m, r))
 	}
-	parts = append(parts, sectionTitle("Published ports", "Bound on the host before the guest starts. A guest port outside these is reachable only inside the sandbox."))
+	parts = append(parts, sectionTitle(tr("Published ports"), tr("Bound on the host before the guest starts. A guest port outside these is reachable only inside the sandbox.")))
 	if r.State.Status.Active() && len(r.State.Ports) > 0 {
 		for _, p := range r.State.Ports {
 			p := p
 			label := fmt.Sprintf("%s → %d/%s", p.Host, p.Guest, p.Proto)
-			var act ggui.Widget = ggui.Box()
+			var act ggui.Widget = widget.Box()
 			if url := p.URL(); url != "" {
-				act = ggui.Row(
-					ui.Button("Open", func() { m.Open(url) }).Outline().Size(ui.ButtonExtraSmall).Icon(glyph(lucide.ExternalLink, 12)),
-					iconButton(lucide.Copy, "Copy address", func() { m.Copy(url, url) }),
+				act = widget.Row(
+					ui.Button(tr("Open"), func() { m.Open(url) }).Outline().Size(ui.ButtonExtraSmall).Icon(glyph(lucide.ExternalLink, 12)),
+					iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(url, url) }),
 				).Gap(4)
 			} else {
-				act = iconButton(lucide.Copy, "Copy address", func() { m.Copy(p.Host, p.Host) })
+				act = iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(p.Host, p.Host) })
 			}
-			parts = append(parts, ggui.Row(glyph(lucide.Plug, 14).Color(colorGreen), ggui.Expanded(ui.Mono(label).Size(12)), act).Gap(10).Align(ggui.AlignCenter))
+			parts = append(parts, widget.Row(glyph(lucide.Plug, 14).Color(colorGreen), widget.Expanded(ui.Mono(label).Size(12)), act).Gap(10).Align(widget.AlignCenter))
 		}
 	} else if len(r.Spec.Ports) > 0 {
 		for _, p := range r.Spec.Ports {
-			parts = append(parts, ggui.Row(glyph(lucide.Plug, 14).Color(colorGray), ui.Mono(p).Size(12)).Gap(10))
+			parts = append(parts, widget.Row(glyph(lucide.Plug, 14).Color(colorGray), ui.Mono(p).Size(12)).Gap(10))
 		}
-		parts = append(parts, ui.Caption("Start the sandbox to bind these ports; a port written without a host port gets a free one."))
+		parts = append(parts, ui.Caption(tr("Start the sandbox to bind these ports; a port written without a host port gets a free one.")))
 	} else {
-		parts = append(parts, ui.Caption("No ports are published. Edit the sandbox to add some, such as 8080:80."))
+		parts = append(parts, ui.Caption(tr("No ports are published. Edit the sandbox to add some, such as 8080:80.")))
 	}
 	if r.Spec.Workspace != "" {
-		parts = append(parts, sectionTitle("Workspace", "Mounted at /workspace in the guest."),
-			ggui.Row(ggui.Expanded(ui.Mono(rungv.ExpandHome(r.Spec.Workspace)).Size(12)),
-				ui.Button("Reveal", func() { m.Open(rungv.ExpandHome(r.Spec.Workspace)) }).Outline().Size(ui.ButtonExtraSmall)).Gap(8).Align(ggui.AlignCenter))
+		parts = append(parts, sectionTitle(tr("Workspace"), tr("Mounted at /workspace in the guest.")),
+			widget.Row(widget.Expanded(ui.Mono(rungv.ExpandHome(r.Spec.Workspace)).Size(12)),
+				ui.Button(tr("Reveal"), func() { m.Open(rungv.ExpandHome(r.Spec.Workspace)) }).Outline().Size(ui.ButtonExtraSmall)).Gap(8).Align(widget.AlignCenter))
 	}
-	return ggui.Padding(ggui.Column(parts...).Gap(10).Stretch(), 8, 0)
+	return widget.Padding(widget.Column(parts...).Gap(10).Stretch(), 8, 0)
 }
 
 func dockerConnect(m *Model, r Row) ggui.Widget {
 	host := recipes.DockerHost()
 	ready := r.State.Status == sandbox.Running
 	_, hasCLI := DockerCLI()
-	status := "Start the sandbox, then point the docker CLI at it."
+	status := tr("Start the sandbox, then point the docker CLI at it.")
 	if ready {
-		status = "dockerd is listening. The docker CLI on this machine can use it."
+		status = tr("dockerd is listening. The docker CLI on this machine can use it.")
 	}
-	return ggui.Column(
+	return widget.Column(
 		sectionTitle("Docker CLI", status),
 		copyable(m, "docker context create gvx --docker host="+host, "docker context create"),
 		copyable(m, "docker context use gvx", "docker context use"),
 		copyable(m, "export DOCKER_HOST="+host, "DOCKER_HOST"),
-		ggui.Row(
-			ui.Button("Create & use context", m.CreateDockerContext).Size(ui.ButtonSmall).Disabled(!hasCLI),
-			ui.Button("Open Docker page", func() { m.Go(PageDocker) }).Outline().Size(ui.ButtonSmall),
+		widget.Row(
+			ui.Button(tr("Create & use context"), m.CreateDockerContext).Size(ui.ButtonSmall).Disabled(!hasCLI),
+			ui.Button(tr("Open Docker page"), func() { m.Go(PageDocker) }).Outline().Size(ui.ButtonSmall),
 		).Gap(8),
 		ui.Divider(),
 	).Gap(8).Stretch()
@@ -331,12 +332,12 @@ func dockerConnect(m *Model, r Row) ggui.Widget {
 
 func kubeConnect(m *Model, r Row) ggui.Widget {
 	cfg := recipes.Kubeconfig()
-	return ggui.Column(
-		sectionTitle("kubectl", "The server writes its kubeconfig to the host when it starts."),
+	return widget.Column(
+		sectionTitle("kubectl", tr("The server writes its kubeconfig to the host when it starts.")),
 		copyable(m, "export KUBECONFIG="+cfg, "KUBECONFIG"),
 		copyable(m, "kubectl get nodes", "kubectl get nodes"),
-		ggui.Row(
-			ui.Button("Reveal kubeconfig", func() { m.Open(cfg) }).Outline().Size(ui.ButtonSmall),
+		widget.Row(
+			ui.Button(tr("Reveal kubeconfig"), func() { m.Open(cfg) }).Outline().Size(ui.ButtonSmall),
 		).Gap(8),
 		ui.Divider(),
 	).Gap(8).Stretch()
@@ -359,51 +360,51 @@ func configView(m *Model, s sandbox.Spec) ggui.Widget {
 		default:
 			ro := ""
 			if mt.ReadOnly {
-				ro = " (read-only)"
+				ro = tr(" (read-only)")
 			}
 			mounts = append(mounts, fmt.Sprintf("%s %s → %s%s", mt.Type, mt.Source, mt.Target, ro))
 		}
 	}
 	if s.Workspace != "" {
-		mounts = append(mounts, "workspace "+s.Workspace+" → /workspace")
+		mounts = append(mounts, tr("workspace %s → /workspace", s.Workspace))
 	}
 	if s.RootfsVolume != "" {
-		mounts = append(mounts, "root file system → volume "+s.RootfsVolume)
+		mounts = append(mounts, tr("root file system → volume %s", s.RootfsVolume))
 	}
 	net := s.Network
 	if net == "" {
 		net = "nat"
 	}
 	if s.IsolateLAN {
-		net += ", LAN isolated"
+		net += tr(", LAN isolated")
 	}
 	limits := []string{}
 	if s.Memory != "" {
-		limits = append(limits, "memory "+s.Memory)
+		limits = append(limits, tr("memory ")+s.Memory)
 	}
 	if s.CPUs != "" {
-		limits = append(limits, s.CPUs+" CPUs")
+		limits = append(limits, s.CPUs+tr(" CPUs"))
 	}
-	sec := "privileged inside the sandbox"
+	sec := tr("privileged inside the sandbox")
 	if s.Unprivileged {
-		sec = "unprivileged"
+		sec = tr("unprivileged")
 	}
 	if s.HostCACerts {
-		sec += ", trusts host root certificates"
+		sec += tr(", trusts host root certificates")
 	}
-	return ggui.Padding(ggui.Column(
-		ui.CodeBlock(line).Header("Command line").Language("sh").CopyButton(true).Small(),
-		ggui.Column(
-			kvText("Image", s.Image),
-			kvText("Command", s.Command),
-			kvText("Environment", join(s.Env)),
-			kvText("Mounts", join(mounts)),
-			kvText("Network", net),
-			kvText("Limits", strings.Join(limits, ", ")),
-			kvText("Security", sec),
-			kvText("Snapshots", map[bool]string{true: "enabled (control socket + bundle directory)", false: "off"}[s.Checkpoint]),
-			kvText("Start with app", map[bool]string{true: "yes", false: "no"}[s.AutoStart]),
-			kvText("Ready when log has", s.ReadyPattern),
+	return widget.Padding(widget.Column(
+		ui.CodeBlock(line).Header(tr("Command line")).Language("sh").CopyButton(true).Small(),
+		widget.Column(
+			kvText(tr("Image"), s.Image),
+			kvText(tr("Command"), s.Command),
+			kvText(tr("Environment"), join(s.Env)),
+			kvText(tr("Mounts"), join(mounts)),
+			kvText(tr("Network"), net),
+			kvText(tr("Limits"), strings.Join(limits, ", ")),
+			kvText(tr("Security"), sec),
+			kvText(tr("Snapshots"), map[bool]string{true: tr("enabled (control socket + bundle directory)"), false: tr("off")}[s.Checkpoint]),
+			kvText(tr("Start with app"), map[bool]string{true: tr("yes"), false: tr("no")}[s.AutoStart]),
+			kvText(tr("Ready when log has"), s.ReadyPattern),
 		).Gap(8).Stretch(),
 	).Gap(14).Stretch(), 8, 0)
 }
@@ -411,10 +412,10 @@ func configView(m *Model, s sandbox.Spec) ggui.Widget {
 func sandboxSnapshots(m *Model, r Row) ggui.Widget {
 	id := r.Spec.ID
 	if !r.Spec.Checkpoint {
-		return ggui.Padding(ui.Alert("Snapshots are off for this sandbox",
-			"A snapshot needs a control socket and a bundle directory opened before the guest starts. Turn snapshots on, then restart the sandbox.").
+		return widget.Padding(ui.Alert(tr("Snapshots are off for this sandbox"),
+			tr("A snapshot needs a control socket and a bundle directory opened before the guest starts. Turn snapshots on, then restart the sandbox.")).
 			Icon(icons.Info).
-			Action(ui.Button("Turn on", func() {
+			Action(ui.Button(tr("Turn on"), func() {
 				spec := r.Spec.Clone()
 				spec.Checkpoint = true
 				m.OpenEditor(spec)
@@ -430,36 +431,36 @@ func sandboxSnapshots(m *Model, r Row) ggui.Widget {
 		}
 		return out
 	})
-	return ggui.Padding(ggui.Column(
-		ggui.Row(
-			ui.Button("Snapshot and stop", func() { m.Checkpoint(id, false) }).Disabled(!running).Icon(glyph(lucide.Camera, 14)),
-			ui.Button("Snapshot, keep running", func() { m.Checkpoint(id, true) }).Outline().Disabled(!running),
+	return widget.Padding(widget.Column(
+		widget.Row(
+			ui.Button(tr("Snapshot and stop"), func() { m.Checkpoint(id, false) }).Disabled(!running).Icon(glyph(lucide.Camera, 14)),
+			ui.Button(tr("Snapshot, keep running"), func() { m.Checkpoint(id, true) }).Outline().Disabled(!running),
 		).Gap(8),
-		ui.Caption("A snapshot holds the task graph, memory pages, volumes and network namespaces. Restoring needs the same mounts, which this sandbox's settings provide."),
+		ui.Caption(tr("A snapshot holds the task graph, memory pages, volumes and network namespaces. Restoring needs the same mounts, which this sandbox's settings provide.")),
 		snapshotList(m, snaps, false),
 	).Gap(12).Stretch(), 8, 0)
 }
 
 func snapshotList(m *Model, snaps ggui.Readable[[]sandbox.Snapshot], showSandbox bool) ggui.Widget {
-	return ggui.EachKeyed(snaps, func(s sandbox.Snapshot) string { return s.Dir }, func(row ggui.EachItem[sandbox.Snapshot]) ggui.Widget {
+	return widget.EachKeyed(snaps, func(s sandbox.Snapshot) string { return s.Dir }, func(row widget.EachItem[sandbox.Snapshot]) ggui.Widget {
 		s := row.Item
-		title := s.Time.Format("Jan 2, 15:04:05")
+		title := s.Time.Format(tr("Jan 2, 15:04:05"))
 		desc := humanBytes(s.Size)
 		if showSandbox {
 			if spec, ok := m.spec(s.SandboxID); ok {
 				title = spec.Name + " · " + title
 			} else {
-				title = "(deleted sandbox) · " + title
+				title = tr("(deleted sandbox) · ") + title
 			}
 		}
 		return ui.Item(title, desc+" · "+s.Dir).
 			Media(glyph(lucide.Camera, 18).Color(colorBlue)).
-			Action(ggui.Row(
-				ui.Button("Restore", func() { m.Restore(s) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.RotateCcw, 14)),
-				iconButton(lucide.FolderOpen, "Reveal", func() { m.Open(s.Dir) }),
-				iconButton(lucide.Trash, "Delete snapshot", func() { m.DeleteSnapshot(s) }),
-			).Gap(4).Align(ggui.AlignCenter)).Outline().Small()
+			Action(widget.Row(
+				ui.Button(tr("Restore"), func() { m.Restore(s) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.RotateCcw, 14)),
+				iconButton(lucide.FolderOpen, tr("Reveal"), func() { m.Open(s.Dir) }),
+				iconButton(lucide.Trash, tr("Delete snapshot"), func() { m.DeleteSnapshot(s) }),
+			).Gap(4).Align(widget.AlignCenter)).Outline().Small()
 	}).Gap(8).Else(func() ggui.Widget {
-		return ui.Caption("No snapshots yet.")
+		return ui.Caption(tr("No snapshots yet."))
 	})
 }

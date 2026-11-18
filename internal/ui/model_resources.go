@@ -94,11 +94,11 @@ func (m *Model) Pull() {
 		m.Pulling.Set(false)
 		if err != nil {
 			m.PullLog.Update(func(s string) string { return s + "error: " + err.Error() + "\n" })
-			m.toastError("Pull failed", err)
+			m.toastError(tr("Pull failed"), err)
 			return
 		}
 		m.PullOpen.Set(false)
-		m.toastOK("Pulled "+ref, "The image layers are compiled to EROFS and cached.")
+		m.toastOK(tr("Pulled %s", ref), tr("The image layers are compiled to EROFS and cached."))
 		m.LoadImages()
 		m.LoadDisk()
 	})
@@ -109,7 +109,7 @@ func (m *Model) InspectImage(ref string) {
 	c := m.Client()
 	var body string
 	m.InspectTitle.Set(ref)
-	m.InspectBody.Set("Loading…")
+	m.InspectBody.Set(tr("Loading…"))
 	m.InspectOpen.Set(true)
 	m.async(func(ctx context.Context) error {
 		var err error
@@ -126,13 +126,13 @@ func (m *Model) InspectImage(ref string) {
 // AskRemoveImage confirms and removes an image.
 func (m *Model) AskRemoveImage(img rungv.Image) {
 	ref := img.Ref()
-	m.Confirm("Remove "+ref+"?", "The image record is removed and layers no other image uses are deleted ("+img.Size+").", "Remove image", func() {
+	m.Confirm(tr("Remove %s?", ref), tr("The image record is removed and layers no other image uses are deleted (%s).", img.Size), tr("Remove image"), func() {
 		c := m.Client()
 		m.async(func(ctx context.Context) error { return c.RemoveImage(ctx, ref, true) }, func(err error) {
 			if err != nil {
-				m.toastError("Could not remove "+ref, err)
+				m.toastError(tr("Could not remove %s", ref), err)
 			} else {
-				m.toastOK("Removed "+ref, "")
+				m.toastOK(tr("Removed %s", ref), "")
 			}
 			m.LoadImages()
 			m.LoadDisk()
@@ -142,7 +142,7 @@ func (m *Model) AskRemoveImage(img rungv.Image) {
 
 // AskPruneImages removes dangling images.
 func (m *Model) AskPruneImages() {
-	m.Confirm("Remove unused images?", "Dangling images and orphaned layer files are deleted.", "Prune images", func() {
+	m.Confirm(tr("Remove unused images?"), tr("Dangling images and orphaned layer files are deleted."), tr("Prune images"), func() {
 		c := m.Client()
 		var out string
 		m.async(func(ctx context.Context) error {
@@ -151,9 +151,9 @@ func (m *Model) AskPruneImages() {
 			return err
 		}, func(err error) {
 			if err != nil {
-				m.toastError("Prune failed", err)
+				m.toastError(tr("Prune failed"), err)
 			} else {
-				m.toastOK("Images pruned", lastLine(out))
+				m.toastOK(tr("Images pruned"), lastLine(out))
 			}
 			m.LoadImages()
 			m.LoadDisk()
@@ -202,12 +202,12 @@ func (m *Model) CreateVolume() {
 	c := m.Client()
 	m.async(func(ctx context.Context) error { return c.CreateVolume(ctx, name, driver) }, func(err error) {
 		if err != nil {
-			m.toastError("Could not create the volume", err)
+			m.toastError(tr("Could not create the volume"), err)
 			return
 		}
 		m.VolumeOpen.Set(false)
 		m.VolumeName.Set("")
-		m.toastOK("Volume created", "Mount it in a sandbox as "+name+":/path.")
+		m.toastOK(tr("Volume created"), tr("Mount it in a sandbox as %s:/path.", name))
 		m.LoadVolumes()
 	})
 }
@@ -215,17 +215,17 @@ func (m *Model) CreateVolume() {
 // AskRemoveVolume confirms and deletes a volume.
 func (m *Model) AskRemoveVolume(v rungv.Volume) {
 	users := VolumeUsers(ggui.Peek(m.Rows), v.Name)
-	text := "All data in " + v.Name + " (" + v.Size + ") is deleted. This cannot be undone."
+	text := tr("All data in %s (%s) is deleted. This cannot be undone.", v.Name, v.Size)
 	if len(users) > 0 {
-		text += " Used by: " + strings.Join(users, ", ") + "."
+		text += tr(" Used by: %s.", strings.Join(users, ", "))
 	}
-	m.Confirm("Delete volume "+v.Name+"?", text, "Delete volume", func() {
+	m.Confirm(tr("Delete volume %s?", v.Name), text, tr("Delete volume"), func() {
 		c := m.Client()
 		m.async(func(ctx context.Context) error { return c.RemoveVolume(ctx, v.Name) }, func(err error) {
 			if err != nil {
-				m.toastError("Could not delete "+v.Name, err)
+				m.toastError(tr("Could not delete %s", v.Name), err)
 			} else {
-				m.toastOK("Deleted "+v.Name, "")
+				m.toastOK(tr("Deleted %s", v.Name), "")
 			}
 			m.LoadVolumes()
 			m.LoadDisk()
@@ -235,7 +235,7 @@ func (m *Model) AskRemoveVolume(v rungv.Volume) {
 
 // AskPruneVolumes deletes every unlocked volume.
 func (m *Model) AskPruneVolumes() {
-	m.Confirm("Delete all unused volumes?", "Every volume no running sandbox holds is deleted, with its data. Saved sandboxes that mount them start empty.", "Prune volumes", func() {
+	m.Confirm(tr("Delete all unused volumes?"), tr("Every volume no running sandbox holds is deleted, with its data. Saved sandboxes that mount them start empty."), tr("Prune volumes"), func() {
 		c := m.Client()
 		var out string
 		m.async(func(ctx context.Context) error {
@@ -244,9 +244,9 @@ func (m *Model) AskPruneVolumes() {
 			return err
 		}, func(err error) {
 			if err != nil {
-				m.toastError("Prune failed", err)
+				m.toastError(tr("Prune failed"), err)
 			} else {
-				m.toastOK("Volumes pruned", lastLine(out))
+				m.toastOK(tr("Volumes pruned"), lastLine(out))
 			}
 			m.LoadVolumes()
 			m.LoadDisk()
@@ -335,7 +335,7 @@ func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
 		return fmt.Errorf("unknown action %s", action)
 	}, func(err error) {
 		if err != nil {
-			m.toastError(fmt.Sprintf("Could not %s %s", action, ctr.Name()), err)
+			m.toastError(fmt.Sprintf(tr("Could not %s %s"), action, ctr.Name()), err)
 		}
 		m.LoadDocker()
 	})
@@ -351,7 +351,7 @@ func DockerCLI() (string, bool) {
 func (m *Model) CreateDockerContext() {
 	path, ok := DockerCLI()
 	if !ok {
-		m.toastError("docker was not found", errors.New("install the Docker CLI (no engine is needed), then try again"))
+		m.toastError(tr("docker was not found"), errors.New(tr("install the Docker CLI (no engine is needed), then try again")))
 		return
 	}
 	host := m.dockerHost()
@@ -369,10 +369,10 @@ func (m *Model) CreateDockerContext() {
 		return nil
 	}, func(err error) {
 		if err != nil {
-			m.toastError("Could not set up the docker context", err)
+			m.toastError(tr("Could not set up the docker context"), err)
 			return
 		}
-		m.toastOK("docker now uses gvx", "The context \"gvx\" is selected. Run `docker context use default` to switch back.")
+		m.toastOK(tr("docker now uses gvx"), tr("The context \"gvx\" is selected. Run `docker context use default` to switch back."))
 	})
 }
 
@@ -391,7 +391,7 @@ func (m *Model) UpdateSettings(fn func(*store.Settings)) {
 	fn(&s)
 	m.Settings.Set(s)
 	if err := m.store.SaveSettings(s); err != nil {
-		m.toastError("Could not save settings", err)
+		m.toastError(tr("Could not save settings"), err)
 	}
 	if s.RungvPath != before.RungvPath || s.CacheDir != before.CacheDir {
 		m.DetectEngine(nil)
@@ -404,7 +404,7 @@ func (m *Model) Copy(text, what string) {
 		return
 	}
 	m.host.Clipboard().Write(text)
-	m.Toasts.Push(ui.Toast("Copied", what).Duration(2 * time.Second))
+	m.Toasts.Push(ui.Toast(tr("Copied"), what).Duration(2 * time.Second))
 }
 
 // Open opens a URL or reveals a path.
@@ -416,7 +416,7 @@ func (m *Model) Open(target string) {
 		err = runtime.Reveal(target)
 	}
 	if err != nil {
-		m.toastError("Could not open "+target, err)
+		m.toastError(tr("Could not open %s", target), err)
 	}
 }
 
@@ -434,7 +434,7 @@ func (m *Model) PrepareQuit() bool {
 func (m *Model) StopAllAndThen(then func()) {
 	m.quitting = true
 	timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
-	id := m.Toasts.Push(ui.Toast("Stopping sandboxes", "Waiting for the guests to exit…").Loading())
+	id := m.Toasts.Push(ui.Toast(tr("Stopping sandboxes"), tr("Waiting for the guests to exit…")).Loading())
 	m.async(func(context.Context) error {
 		m.sup.StopAll(timeout)
 		return nil
@@ -634,15 +634,15 @@ func ago(t, now time.Time) string {
 	d := now.Sub(t)
 	switch {
 	case d < 5*time.Second:
-		return "just now"
+		return tr("just now")
 	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+		return fmt.Sprintf(tr("%ds ago"), int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+		return fmt.Sprintf(tr("%dm ago"), int(d.Minutes()))
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
+		return fmt.Sprintf(tr("%dh ago"), int(d.Hours()))
 	}
-	return t.Format("Jan 2 15:04")
+	return t.Format(tr("Jan 2 15:04"))
 }
 
 func uptime(t, now time.Time) string {
@@ -652,11 +652,11 @@ func uptime(t, now time.Time) string {
 	d := now.Sub(t).Round(time.Second)
 	switch {
 	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
+		return fmt.Sprintf(tr("%ds"), int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+		return fmt.Sprintf(tr("%dm %ds"), int(d.Minutes()), int(d.Seconds())%60)
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+		return fmt.Sprintf(tr("%dh %dm"), int(d.Hours()), int(d.Minutes())%60)
 	}
-	return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
+	return fmt.Sprintf(tr("%dd %dh"), int(d.Hours())/24, int(d.Hours())%24)
 }

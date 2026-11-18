@@ -55,7 +55,13 @@ Render every screen with demo data, without an engine:
 
 ```sh
 ./bin/gvx-desktop -render-dir ./shots
+./bin/gvx-desktop -render-dir ./shots-ko -render-lang ko
 ```
+
+The app is worded in English and Korean. It follows the system language, and
+Settings → Language chooses one. The Korean text lives in
+`internal/ui/i18n_ko.go`, keyed by the English in the code; a test fails when
+a text has no Korean.
 
 ## Tests
 

@@ -11,7 +11,7 @@
 name = "GVX Desktop"
 # Reverse-DNS bundle identifier. macOS keys preferences, permissions and
 # the Dock to it, so pick it once and keep it.
-id = "com.example.ttttt"
+id = "io.github.ironpark.gvx-desktop"
 # User-visible version, one to three numbers: Info.plist's
 # CFBundleShortVersionString and CFBundleVersion, and the Windows
 # program's file and product version, where each number is at most 65535.
@@ -19,7 +19,7 @@ version = "0.1.0"
 # A square PNG, ideally 1024x1024, turned into the macOS app icon and the
 # Windows program's icon.
 # Default: none, and the app has the generic icon.
-# icon = "icon.png"
+icon = "assets/icon.png"
 # The directory of the main package.
 # package = "."
 
@@ -55,7 +55,7 @@ version = "0.1.0"
 # built by Go 1.27 need macOS 13 whatever this says.
 # minimum_system_version = "13.0"
 # The App Store category, such as "public.app-category.productivity".
-# category = ""
+category = "public.app-category.developer-tools"
 # The keychain identity to sign with, such as "Developer ID Application"
 # (the first one of that kind) or "Developer ID Application: Name
 # (TEAMID)"; security find-identity -v -p codesigning lists them. "-"
@@ -85,8 +85,11 @@ version = "0.1.0"
 # universal = false
 
 # Extra Info.plist keys, written over the generated ones.
-# [macos.plist]
-# NSCameraUsageDescription = "Scans documents."
+[macos.plist]
+# The languages the app is worded in. Without them macOS takes the app for
+# English only: the panels it shows for the app, such as the one that picks
+# a file, are English, and System Settings offers the app no language.
+CFBundleLocalizations = ["en", "ko"]
 
 # How to reach the notary service: a notarytool keychain profile (made
 # once with xcrun notarytool store-credentials NAME), an App Store

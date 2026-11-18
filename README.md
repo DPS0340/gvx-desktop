@@ -75,7 +75,7 @@ ignores) rather than in `go.mod`:
 go work init . ../ggui ../ggui/icons/lucide
 ```
 
-Bundle it as the release does, into `build/gvx Desktop.app` and a disk image,
+Bundle it as the release does, into `build/GVX Desktop.app` and a disk image,
 with the [ggui command](https://github.com/ironpark/ggui/blob/main/docs/cli.md):
 
 ```sh

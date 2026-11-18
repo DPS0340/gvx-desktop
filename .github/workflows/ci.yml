@@ -1,0 +1,44 @@
+name: CI
+
+# What a release would stumble on, found at the push: formatting, vet, the
+# tests, and the bundle ggui build makes. A change to the documentation or
+# the pictures alone runs nothing.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'assets/**']
+  pull_request:
+    paths-ignore: ['**.md', 'assets/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # The app is released for Apple silicon, which is what macos-latest is.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Format
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would change: $unformatted"
+            exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -short ./...
+      - name: Bundle
+        run: |
+          go install github.com/ironpark/ggui/cmd/ggui@latest
+          ggui build
+          release/check-bundle.sh

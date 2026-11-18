@@ -75,7 +75,7 @@ go build -o bin/gvx-desktop .
 go work init . ../ggui ../ggui/icons/lucide
 ```
 
-릴리스와 같은 방식으로 `build/gvx Desktop.app`과 디스크 이미지를 만들려면
+릴리스와 같은 방식으로 `build/GVX Desktop.app`과 디스크 이미지를 만들려면
 [ggui 명령](https://github.com/ironpark/ggui/blob/main/docs/cli.md)을 씁니다.
 
 ```sh

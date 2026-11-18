@@ -27,6 +27,11 @@ on:
 permissions:
   contents: write
 
+# One release at a time, and never one cut off half way.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: macos-latest
@@ -45,6 +50,7 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$(sed -n 's/^name = "\(.*\)"$/\1/p' ggui.toml)" >> "$GITHUB_OUTPUT"
       - name: Test
         run: go test -short ./...
       - name: Install the ggui command
@@ -56,6 +62,7 @@ jobs:
           GGUI_P12_PASSWORD: ${{ secrets.GGUI_P12_PASSWORD }}
           NOTARY_API_KEY_JSON: ${{ secrets.NOTARY_API_KEY_JSON }}
           VERSION: ${{ steps.version.outputs.version }}
+          NAME: ${{ steps.version.outputs.name }}
         run: |
           signing=adhoc
           set -- --dmg --ldflags "-X main.version=$VERSION"
@@ -68,8 +75,10 @@ jobs:
             fi
           fi
           ggui build "$@"
+          release/check-bundle.sh
           dmg="gvx-desktop-$VERSION-macos-arm64.dmg"
-          mv "build/gvx Desktop.dmg" "$dmg"
+          mv "build/$NAME.dmg" "$dmg"
+          shasum -a 256 "$dmg" > "$dmg.sha256"
           echo "signing=$signing" >> "$GITHUB_OUTPUT"
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
           echo "sha256=$(shasum -a 256 "$dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
@@ -79,8 +88,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           DMG: ${{ steps.build.outputs.dmg }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "$DMG" \
-            --title "gvx Desktop $VERSION" \
+          gh release create "$GITHUB_REF_NAME" "$DMG" "$DMG.sha256" \
+            --title "${{ steps.version.outputs.name }} $VERSION" \
             --generate-notes \
             --notes "Install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. Apple silicon, macOS 13 or later."
       - name: Update the Homebrew tap

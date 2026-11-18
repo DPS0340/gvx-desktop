@@ -15,7 +15,6 @@ import (
 	"github.com/ironpark/ggui/runtime"
 	"github.com/ironpark/ggui/ui"
 
-	"github.com/ironpark/gvx-desktop/internal/autostart"
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -750,14 +749,4 @@ func uptime(t, now time.Time) string {
 		return fmt.Sprintf(tr("%dh %dm"), int(d.Hours()), int(d.Minutes())%60)
 	}
 	return fmt.Sprintf(tr("%dd %dh"), int(d.Hours())/24, int(d.Hours())%24)
-}
-
-// SetAutostart registers the app to start when the user logs in, or takes
-// the registration away. The system's record is what is true, so the
-// switch follows it rather than the settings.
-func (m *Model) SetAutostart(on bool) {
-	if err := autostart.Set(on); err != nil {
-		m.toastError(tr("Could not change what starts at login"), err)
-	}
-	m.Autostart.Set(autostart.Enabled())
 }

@@ -40,7 +40,7 @@ func main() {
 	dataDir := flag.String("data-dir", "", "directory for sandboxes, settings and snapshots (default: the user config dir)")
 	renderDir := flag.String("render-dir", "", "render the screens to PNG files in this directory, then exit")
 	renderLang := flag.String("render-lang", "en", "the language -render-dir renders in: en or ko")
-	hidden := flag.Bool("hidden", false, "start in the tray without showing the window, as a start at login does")
+	hidden := flag.Bool(ui.HiddenFlag, false, "start in the tray without showing the window, as a start at login does")
 	flag.Parse()
 
 	dir := *dataDir

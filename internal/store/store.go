@@ -30,6 +30,7 @@ type Settings struct {
 	DockerPort     int    `json:"dockerPort,omitempty"`     // the host port of a tcp endpoint; 0: 2375
 	UpdateChannel  string `json:"updateChannel,omitempty"`  // where rungv is updated from: release (default), source
 	NoUpdateCheck  bool   `json:"noUpdateCheck,omitempty"`  // do not ask GitHub for a newer rungv at launch
+	LoginCommand   string `json:"loginCommand,omitempty"`   // what the start at login was registered to run, to register it again when the app moves
 }
 
 // DefaultSettings are the settings of a first launch.

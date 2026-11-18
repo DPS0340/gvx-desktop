@@ -165,7 +165,7 @@ func metric(label string, value ggui.Widget, icon *icons.Glyph, onTap func()) gg
 	card := ui.Card(body)
 	if onTap != nil {
 		// A card that goes somewhere answers the pointer.
-		card.OnTap(onTap).Pad(16).SetName(label)
+		card.OnTap(onTap).Pad(16).Name(label)
 	}
 	return card
 }

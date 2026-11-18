@@ -14,7 +14,6 @@ import (
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/ui"
 
-	"github.com/ironpark/gvx-desktop/internal/autostart"
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/registry"
@@ -181,7 +180,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Settings:  ggui.State(settings),
 		Engine:    ggui.State(Engine{Loading: true}),
 		Update:    ggui.State(Update{Source: settings.UpdateChannel == ChannelSource}),
-		Autostart: ggui.State(autostart.Enabled()),
+		Autostart: ggui.State(false), // read by Start
 		BuildLog:  ggui.State(""),
 		Now:       ggui.State(time.Now()),
 
@@ -419,7 +418,7 @@ func (m *Model) Start() {
 	})
 	// A registration to start at login names the program; one that has
 	// moved since is named again.
-	_ = autostart.Refresh()
+	m.refreshAutostart()
 	if !ggui.Peek(m.Settings).NoUpdateCheck {
 		m.CheckUpdate(true)
 	}

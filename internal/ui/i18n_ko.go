@@ -556,4 +556,10 @@ var korean = map[string]string{
 	"%d new commits on main: %s":          "main에 새 커밋 %d개: %s",
 	"Fetching the source…":                "소스를 받는 중…",
 	"Building from source needs git and Go on this computer: ": "소스에서 빌드하려면 이 컴퓨터에 git과 Go가 있어야 합니다: ",
+	"main is at %s: %s":                                     "main은 지금 %s입니다: %s",
+	"The newest release is rungv %s":                        "최신 릴리스는 rungv %s입니다",
+	"Install the release":                                   "릴리스 설치",
+	"main is at %s; this computer has %s.":                  "main은 %s, 현재 버전은 %s입니다.",
+	"The newest release is rungv %s; this computer has %s.": "최신 릴리스는 rungv %s, 현재 버전은 %s입니다.",
+	"Backend": "백엔드",
 }

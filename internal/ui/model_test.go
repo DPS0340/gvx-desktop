@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ironpark/gvx-desktop/internal/recipes"
+	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
@@ -66,5 +67,37 @@ func TestUniqueName(t *testing.T) {
 	}
 	if n := uniqueName(specs, "db"); n != "db" {
 		t.Fatal(n)
+	}
+}
+
+// The channel's newest is what the rungv in use is measured against, so
+// that a build of main is offered the last release, and a release main.
+func TestUpdateIsMeasuredAgainstItsChannel(t *testing.T) {
+	const tag, head = "v0.17.10002026110900", "e410633f24cf34fddfde473e48dde172593dc5af"
+	engine := func(version, commit string) Engine {
+		return Engine{Path: "/bin/rungv", Checked: true, Version: rungv.Version{Version: version, Commit: commit}}
+	}
+	release := Update{Tag: tag}
+	source := Update{Source: true, Commit: head, Ahead: 2}
+	for _, c := range []struct {
+		name             string
+		u                Update
+		e                Engine
+		available, newer bool
+	}{
+		{"an older release", release, engine("v0.16.10022026110900", "aaaa"), true, true},
+		{"the newest release", release, engine(tag, head), false, false},
+		{"a build of main past the release", release, engine("v0.17.10002026110901-0.20261118000000-0123456789ab", "bbbb"), true, false},
+		{"main ahead", source, engine(tag, "aaaa"), true, true},
+		{"at main's head", Update{Source: true, Commit: head}, engine(tag, head), false, false},
+		{"no rungv", release, Engine{Checked: true}, false, true},
+		{"nothing known", Update{}, engine(tag, head), false, false},
+	} {
+		if got := c.u.Available(c.e); got != c.available {
+			t.Errorf("%s: Available = %v", c.name, got)
+		}
+		if got := c.u.Newer(c.e); c.e.Path != "" && c.u.Known() && got != c.newer {
+			t.Errorf("%s: Newer = %v", c.name, got)
+		}
 	}
 }

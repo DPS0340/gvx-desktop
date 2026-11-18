@@ -16,7 +16,6 @@ import (
 	"github.com/ironpark/ggui/icons/lucide"
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/ui/icons"
-	uitheme "github.com/ironpark/ggui/ui/theme"
 	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/recipes"
@@ -467,15 +466,7 @@ func searchResult(m *Model, r registry.Result) ggui.Widget {
 		widget.Expanded(widget.Column(text...).Gap(2)),
 		widget.Row(stats...).Gap(5).Align(widget.AlignCenter),
 	).Gap(12).Align(widget.AlignCenter)
-	hover := ggui.State(false)
-	fill := ggui.Map(hover, func(over bool) color.Color {
-		if over {
-			return uitheme.Var("accent")
-		}
-		return color.RGBA{}
-	})
-	return widget.Tap(widget.AnimatedBox(row).Pad(8, 10).Radius(8).BindFill(fill).Duration(hoverDuration), func() { m.PickResult(r) }).
-		OnHover(hover.Set).Cursor(ggui.CursorShapePointer)
+	return hoverRow(row, func() { m.PickResult(r) })
 }
 
 // compact writes a count in a few characters: 950, 21k, 1.4M, 13B.

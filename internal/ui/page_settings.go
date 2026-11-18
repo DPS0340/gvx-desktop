@@ -221,11 +221,17 @@ func releaseRow(m *Model) ggui.Widget {
 			text = tr("rungv %s can be installed into ~/.gvx/bin.", u.Name())
 			action = installButton(m, u, install).Size(ui.ButtonSmall)
 		case u.Available(e):
-			text = tr("rungv %s is available; this computer has %s.", u.Name(), engineVersion(e))
-			if u.Source && u.Ahead > 0 {
+			switch {
+			case u.Source && u.Ahead > 0:
 				text = tr("main is %d commits past this computer's %s.", u.Ahead, engineVersion(e))
+			case u.Source:
+				text = tr("main is at %s; this computer has %s.", u.Name(), engineVersion(e))
+			case u.Newer(e):
+				text = tr("rungv %s is available; this computer has %s.", u.Name(), engineVersion(e))
+			default:
+				text = tr("The newest release is rungv %s; this computer has %s.", u.Name(), engineVersion(e))
 			}
-			action = installButton(m, u, updateVerb(u)).Size(ui.ButtonSmall)
+			action = installButton(m, u, updateVerb(u, e)).Size(ui.ButtonSmall)
 		case u.Source:
 			text = tr("rungv is up to date with main (%s).", u.Name())
 			action = ui.Button(tr("Build again"), m.InstallRungv).Outline().Size(ui.ButtonSmall)

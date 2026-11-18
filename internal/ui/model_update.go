@@ -67,13 +67,25 @@ func commitName(sha string) string {
 	return rungv.SourceBranch + "@" + sha
 }
 
-// Available reports a gvx newer than the rungv of e.
+// Available reports that the rungv of e is not the channel's newest: the
+// channel is what the rungv in use is measured against, so that changing
+// it offers the other channel's newest, be that an older one, as the last
+// release is to a build of main.
 func (u Update) Available(e Engine) bool {
 	if !e.Checked || e.Path == "" || !u.Known() {
 		return false
 	}
 	if u.Source {
-		return e.Version.Commit != u.Commit && u.Ahead != 0
+		return e.Version.Commit != u.Commit
+	}
+	return e.Version.Version != u.Tag
+}
+
+// Newer reports that the channel's newest is past the rungv of e, rather
+// than only other than it.
+func (u Update) Newer(e Engine) bool {
+	if u.Source {
+		return u.Ahead != 0
 	}
 	return rungv.Newer(u.Tag, e.Version.Version)
 }
@@ -143,7 +155,7 @@ func (m *Model) CheckUpdate(quiet bool) {
 		case e.Path == "":
 			m.toastOK(tr("rungv %s can be installed", u.Name()), "")
 		case u.Available(e):
-			m.toastOK(tr("rungv %s is available", u.Name()), tr("This computer has %s.", engineVersion(e)))
+			m.toastOK(updateTitle(u, e), tr("This computer has %s.", engineVersion(e)))
 		default:
 			m.toastOK(tr("rungv is up to date"), engineVersion(e))
 		}

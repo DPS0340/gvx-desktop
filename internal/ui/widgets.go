@@ -3,6 +3,7 @@ package ui
 import (
 	"image/color"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -44,17 +45,26 @@ func dot(c color.Color, size float64) *widget.BoxWidget {
 	return widget.Box().Size(size, size).Radius(size / 2).Fill(c)
 }
 
-// statusLabel is a colored dot and the status in words.
-func statusLabel(st sandbox.State) ggui.Widget {
-	label := tr(st.Status.String())
+// statusText is a sandbox's status in words.
+func statusText(st sandbox.State) string {
 	if st.Status == sandbox.Failed {
-		label = tr("Failed · exit %d", st.ExitCode)
+		return tr("Failed · exit %d", st.ExitCode)
 	}
-	var lead ggui.Widget = dot(statusColor(st.Status), 8)
+	return tr(st.Status.String())
+}
+
+// statusMark is a sandbox's status as a colored dot, which turns while the
+// status is changing.
+func statusMark(st sandbox.State) ggui.Widget {
 	if st.Status == sandbox.Starting || st.Status == sandbox.Stopping {
-		lead = ui.Spinner().Size(12).Color(statusColor(st.Status))
+		return ui.Spinner().Size(12).Color(statusColor(st.Status))
 	}
-	return widget.Row(lead, widget.Text(label).Size(13).NoWrap()).Gap(8)
+	return widget.Box(dot(statusColor(st.Status), 8)).Pad(2)
+}
+
+// statusLabel is the mark and the words together.
+func statusLabel(st sandbox.State) ggui.Widget {
+	return widget.Row(statusMark(st), widget.Text(statusText(st)).Size(13).NoWrap()).Gap(8).Align(widget.AlignCenter)
 }
 
 func itoa(n int) string {
@@ -288,4 +298,72 @@ func sectionTitle(title, help string) ggui.Widget {
 		return ui.Heading(title).Size(15)
 	}
 	return widget.Column(ui.Heading(title).Size(15), ui.Caption(help)).Gap(2)
+}
+
+// abreast lays two widgets side by side, sharing the width as their
+// weights say, and makes both as tall as the taller. A Row stretches its
+// children only to a height it is given, and a page that scrolls gives
+// none.
+func abreast(left, right ggui.Widget, leftWeight, rightWeight, gap float64) ggui.Widget {
+	return &abreastWidget{left: left, right: right, lw: leftWeight, rw: rightWeight, gap: gap}
+}
+
+type abreastWidget struct {
+	left, right ggui.Widget
+	lw, rw, gap float64
+	split       float64 // the left one's width, as laid out
+}
+
+func (a *abreastWidget) Layout(c ggui.Constraints, env ggui.Env) ggui.Size {
+	room := max(0, c.MaxW-a.gap)
+	a.split = room * a.lw / (a.lw + a.rw)
+	widths := [2]float64{a.split, room - a.split}
+	kids := [2]ggui.Widget{a.left, a.right}
+	var tall float64
+	for i, k := range kids {
+		tall = max(tall, k.Layout(ggui.Constraints{MinW: widths[i], MaxW: widths[i], MaxH: c.MaxH}, env).H)
+	}
+	for i, k := range kids {
+		k.Layout(ggui.Constraints{MinW: widths[i], MaxW: widths[i], MinH: tall, MaxH: tall}, env)
+	}
+	return ggui.Sz(c.MaxW, tall)
+}
+
+func (a *abreastWidget) Paint(dst *ggui.Canvas, r ggui.Rect) {
+	dst.Paint(a.left, ggui.Rct(r.Origin, ggui.Sz(a.split, r.Size.H)))
+	x := a.split + a.gap
+	dst.Paint(a.right, ggui.Rct(ggui.Pt(r.Origin.X+x, r.Origin.Y), ggui.Sz(r.Size.W-x, r.Size.H)))
+}
+
+// tailPath shortens a long path to its end, which names the file: the
+// directories it drops from the front are told by an ellipsis.
+func tailPath(p string, most int) string {
+	p = tildePath(p)
+	if len([]rune(p)) <= most {
+		return p
+	}
+	parts := strings.Split(filepath.ToSlash(p), "/")
+	out := parts[len(parts)-1]
+	for i := len(parts) - 2; i >= 0; i-- {
+		if next := parts[i] + "/" + out; len([]rune(next))+2 <= most {
+			out = next
+		} else {
+			break
+		}
+	}
+	return "…/" + out
+}
+
+// hoverRow is a row of a list that goes somewhere when tapped: its
+// surface warms to the accent while the pointer is over it.
+func hoverRow(content ggui.Widget, onTap func()) ggui.Widget {
+	hover := ggui.State(false)
+	fill := ggui.Map(hover, func(over bool) color.Color {
+		if over {
+			return uitheme.Var("accent")
+		}
+		return color.RGBA{}
+	})
+	return widget.Tap(widget.AnimatedBox(content).Pad(6, 10).Radius(8).BindFill(fill).Duration(hoverDuration), onTap).
+		OnHover(hover.Set).Cursor(ggui.CursorShapePointer)
 }

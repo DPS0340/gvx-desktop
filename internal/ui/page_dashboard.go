@@ -24,7 +24,7 @@ func dashboardPage(m *Model) ggui.Widget {
 		), engineAlert(m)),
 		metrics(m),
 		widget.Responsive(900,
-			widget.Row(widget.Flex(recentSandboxes(m), 3), widget.Flex(engineCard(m), 2)).Gap(16).Align(widget.AlignStart),
+			abreast(recentSandboxes(m), engineCard(m), 3, 2, 16),
 			widget.Column(recentSandboxes(m), engineCard(m)).Gap(16).Stretch(),
 		),
 		widget.Column(
@@ -72,11 +72,11 @@ func engineAlert(m *Model) ggui.Widget {
 		case len(e.Info.BackendWarnings) > 0:
 			return shown(ui.Alert(tr("Engine warnings"), strings.Join(e.Info.BackendWarnings, " ")).Icon(icons.Info))
 		case u.Available(e):
-			return shown(ui.Alert(updateTitle(u),
+			return shown(ui.Alert(updateTitle(u, e),
 				tr("This computer has %s. Sandboxes that are running keep the rungv they started with.", engineVersion(e))).
 				Icon(icons.Info).
 				Action(widget.Row(
-					installButton(m, u, updateVerb(u)).Size(ui.ButtonExtraSmall),
+					installButton(m, u, updateVerb(u, e)).Size(ui.ButtonExtraSmall),
 					small(updateNotes(u), func() { m.Open(u.Page) }).Outline(),
 				).Gap(8)))
 		}
@@ -130,12 +130,17 @@ func recentSandboxes(m *Model) ggui.Widget {
 	list := widget.EachKeyed(m.Rows, func(r Row) string { return r.Spec.ID }, func(row widget.EachItem[Row]) ggui.Widget {
 		id := row.Item.Spec.ID
 		return ggui.View(row.Value, func(r Row) ggui.Widget {
-			return ui.Item(r.Spec.Name, r.Spec.Image).
-				Media(widget.Box(statusLabel(r.State)).Width(116)).
-				Action(sandboxQuickActions(m, r)).
-				OnTap(func() { m.ShowSandbox(id, 0) }).Small()
+			// One line: the name leads with its image after it, and the
+			// status stands by the button that changes it.
+			return hoverRow(widget.Row(
+				statusMark(r.State),
+				widget.Text(r.Spec.Name).Size(14).Weight(ggui.WeightMedium).NoWrap(),
+				widget.Expanded(ui.Caption(r.Spec.Image).Size(13).NoWrap().Ellipsis()),
+				ui.Caption(statusText(r.State)).Size(12).NoWrap(),
+				sandboxQuickActions(m, r),
+			).Gap(10).Align(widget.AlignCenter), func() { m.ShowSandbox(id, 0) })
 		})
-	}).Gap(4).Else(func() ggui.Widget {
+	}).Gap(2).Else(func() ggui.Widget {
 		return ui.Empty(tr("No sandboxes yet"), tr("Create one from an image, or start a recipe below.")).
 			Media(glyph(lucide.Box, 28).Color(colorGray)).
 			Action(ui.Button(tr("New sandbox"), func() { m.NewSandbox("") }).Outline())
@@ -166,17 +171,22 @@ func engineCard(m *Model) ggui.Widget {
 		if e.Path == "" {
 			return ui.Caption(tr("rungv not found."))
 		}
-		backends := strings.Join(e.Info.AvailableBackends, ", ")
+		// The default backend first, then the others the host offers.
+		backends := e.Info.DefaultBackend
+		for _, b := range e.Info.AvailableBackends {
+			if b != e.Info.DefaultBackend {
+				backends += ", " + b
+			}
+		}
 		if backends == "" {
 			backends = tr("none")
 		}
 		return widget.Column(
 			kvText(tr("Version"), engineVersion(e)),
 			kvText(tr("Host"), e.Info.OS+"/"+e.Info.Architecture+fmt.Sprintf(tr(" · %d CPUs"), e.Info.NumCPU)),
-			kvText(tr("Default backend"), e.Info.DefaultBackend),
-			kvText(tr("Available"), backends),
+			kvText(tr("Backend"), backends),
 			kvText(tr("Host lockdown"), e.Info.HostLockdown),
-			kvText(tr("Binary"), tildePath(e.Path)),
+			kv(tr("Binary"), tip(widget.Text(tailPath(e.Path, 34)).Size(13).NoWrap().Ellipsis(), tildePath(e.Path))),
 		).Gap(8).Stretch()
 	})
 	return ui.Card(
@@ -229,23 +239,29 @@ func recipeCards(m *Model) ggui.Widget {
 	return widget.Responsive(760, widget.Grid(2, cards...).Gap(12), widget.Column(cards...).Gap(12).Stretch())
 }
 
-// updateTitle heads the notice of a newer rungv.
-func updateTitle(u Update) string {
+// updateTitle heads the notice that the rungv of e is not its channel's
+// newest.
+func updateTitle(u Update, e Engine) string {
 	switch {
-	case !u.Source:
-		return tr("rungv %s is available", u.Name())
-	case u.Ahead > 0:
+	case u.Source && u.Ahead > 0:
 		return tr("%d new commits on main: %s", u.Ahead, u.Subject)
+	case u.Source:
+		return tr("main is at %s: %s", u.Name(), u.Subject)
+	case u.Newer(e):
+		return tr("rungv %s is available", u.Name())
 	}
-	return tr("main has moved: %s", u.Subject)
+	return tr("The newest release is rungv %s", u.Name())
 }
 
 // updateVerb is what the button that installs it says.
-func updateVerb(u Update) string {
-	if u.Source {
+func updateVerb(u Update, e Engine) string {
+	switch {
+	case u.Source:
 		return tr("Build and install")
+	case u.Newer(e):
+		return tr("Update")
 	}
-	return tr("Update")
+	return tr("Install the release")
 }
 
 // updateNotes is what the button that tells more of it says.

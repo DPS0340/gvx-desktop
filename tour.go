@@ -69,7 +69,7 @@ func init() {
 		Build: func() ggui.Widget { return ui.Build(m) },
 		Script: func(r *record.Recorder) {
 			defer os.RemoveAll(dir)
-			const look, glance = 1300 * time.Millisecond, 700 * time.Millisecond
+			const look, glance = 1000 * time.Millisecond, 500 * time.Millisecond
 			// press glides the cursor to a point of the window and clicks
 			// there: the tour goes through the app as a person would, by
 			// its sidebar and its buttons.
@@ -89,7 +89,7 @@ func init() {
 			press(side, sandboxes, glance)
 			press(520, 314, glance)                 // the docker-engine row
 			press(364, 554, look)                   // its Connect tab
-			press(1195, 107, 1700*time.Millisecond) // New sandbox
+			press(1195, 107, 1300*time.Millisecond) // New sandbox
 			r.Key("escape")
 			r.Hold(glance / 2)
 
@@ -101,7 +101,7 @@ func init() {
 
 			press(side, images, glance)
 			r.MoveTo(ggui.Pt(1183, 107), 550*time.Millisecond) // Pull image
-			r.Then(1900*time.Millisecond, func() {
+			r.Then(1500*time.Millisecond, func() {
 				m.OpenPull("nginx")
 				m.SearchFor.Set("nginx")
 				m.SearchResults.Set(demoSearch())

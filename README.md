@@ -167,7 +167,7 @@ Render screens to PNG with demo data and no running engine.
 The README GIF is a walkthrough scripted in [tour.go](tour.go). To regenerate it, run [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md) from the repository root. It needs ggui CLI v0.6.0 or newer.
 
 ```sh
-ggui record -o assets/tour.gif --width 1040 --frame mac --lossy 40 --fps 15 --colors 128
+ggui record -o assets/tour.gif --width 1040 --frame mac --lossy 30 --fps 15
 ```
 
 Each language has a catalog in [internal/ui](internal/ui) (`i18n_ko.go`, `i18n_ja.go`, `i18n_zh_hans.go`, `i18n_zh_hant.go`, `i18n_de.go`, `i18n_hi.go`) that uses the English text as keys. The localization test and `ggui i18n check` look for missing translations. Languages other than Korean were machine-translated and have not been reviewed by native speakers; corrections are welcome.

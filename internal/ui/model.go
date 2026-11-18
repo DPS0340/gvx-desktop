@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -133,7 +134,10 @@ type Model struct {
 	Container         *ggui.DerivedValue[dockerapi.Container]
 	ContainerDetail   *ggui.StateValue[int]
 	ContainerLogs     *ggui.StateValue[ContainerLogs]
-	KubeconfigReady   *ggui.StateValue[bool]
+	// ComposeFolded are the Compose projects whose containers the table
+	// folds under their row.
+	ComposeFolded   *ggui.StateValue[map[string]bool]
+	KubeconfigReady *ggui.StateValue[bool]
 	// Pods are the k3s cluster's, and PodsWaiting says its sandbox runs
 	// and its API server has yet to answer: k3s is still coming up.
 	Pods        *ggui.StateValue[Listing[kubeapi.Pod]]
@@ -156,6 +160,35 @@ type Model struct {
 	PodContainer    *ggui.StateValue[string]
 	PodLogContainer *ggui.DerivedValue[string]
 	PodLogs         *ggui.StateValue[ContainerLogs]
+	// KubeView is the view of the cluster the Pods page shows (KubePods,
+	// KubeWorkloads or KubeServices), and PodOwner the workload whose pods
+	// alone the Pods view shows, if one is set.
+	KubeView *ggui.StateValue[int]
+	PodOwner *ggui.StateValue[WorkloadRef]
+	// Workloads and Services are the cluster's, read with its pods while a
+	// page shows them; the queries filter their tables.
+	Workloads     *ggui.StateValue[Listing[kubeapi.Workload]]
+	Services      *ggui.StateValue[Listing[kubeapi.Service]]
+	WorkloadQuery *ggui.StateValue[string]
+	ServiceQuery  *ggui.StateValue[string]
+	// What the running sandboxes (by ID), containers (by ID) and pods (by
+	// namespace/name) use, read while a page shows them; see model_usage.go.
+	SandboxUsage   *ggui.StateValue[map[string]Usage]
+	ContainerUsage *ggui.StateValue[map[string]Usage]
+	PodUsage       *ggui.StateValue[map[string]PodUse]
+	// Forwards are the port forwards that run, oldest first.
+	Forwards *ggui.StateValue[[]PortForward]
+	// The dialog that starts a port forward: what to, the ports typed, and
+	// why it could not start.
+	ForwardOpen   *ggui.StateValue[bool]
+	ForwardDraft  *ggui.StateValue[ForwardDraft]
+	ForwardRemote *ggui.StateValue[string]
+	ForwardLocal  *ggui.StateValue[string]
+	ForwardErr    *ggui.StateValue[string]
+	// The dialog that scales a workload.
+	ScaleOpen     *ggui.StateValue[bool]
+	ScaleTarget   *ggui.StateValue[kubeapi.Workload]
+	ScaleReplicas *ggui.StateValue[float64]
 	// DockerEndpoint is the DOCKER_HOST value that reaches the Docker
 	// Engine, as DockerHost says it.
 	DockerEndpoint *ggui.DerivedValue[string]
@@ -215,13 +248,19 @@ type Model struct {
 	logSeq    int64
 	quitting  bool
 
-	runCLI                       cliRunner // runs docker and kubectl; tests replace it
-	dockerLoading, dockerAgain   bool      // LoadDocker runs; it is wanted again after
-	logsLoading, logsAgain       bool      // LoadContainerLogs runs; it is wanted again after
-	podsLoading, podsAgain       bool      // LoadPods runs; it is wanted again after
-	podLogsLoading, podLogsAgain bool      // LoadPodLogs runs; it is wanted again after
-	podsAnswered                 bool      // the cluster's API server answered since it started
+	runCLI                       cliRunner                  // runs docker and kubectl; tests replace it
+	dockerLoading, dockerAgain   bool                       // LoadDocker runs; it is wanted again after
+	logsLoading, logsAgain       bool                       // LoadContainerLogs runs; it is wanted again after
+	podsLoading, podsAgain       bool                       // LoadPods runs; it is wanted again after
+	podLogsLoading, podLogsAgain bool                       // LoadPodLogs runs; it is wanted again after
+	podsAnswered                 bool                       // the cluster's API server answered since it started
+	sandboxUsageLoading          bool                       // LoadSandboxUsage runs
+	containerUsageLoading        bool                       // LoadContainerUsage runs
+	sandboxSamples               map[string]sandboxSample   // the last of each sandbox's, by ID
+	containerStats               map[string]dockerapi.Stats // the last of each container's, by ID
 	terms                        liveTerminals
+	forwards                     liveForwards
+	forwarder                    forwarder // carries port forwards; tests replace it
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -259,6 +298,10 @@ func NewModel(st store.Store, dataDir string) *Model {
 		SelectedContainer: ggui.State(""),
 		ContainerDetail:   ggui.State(0),
 		ContainerLogs:     ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
+		ComposeFolded:     ggui.State(map[string]bool{}).WithEqual(maps.Equal[map[string]bool]),
+		SandboxUsage:      ggui.State(map[string]Usage(nil)).WithEqual(usageEqual),
+		ContainerUsage:    ggui.State(map[string]Usage(nil)).WithEqual(usageEqual),
+		PodUsage:          ggui.State(map[string]PodUse(nil)).WithEqual(podUsageEqual),
 		KubeconfigReady:   ggui.State(false),
 		Pods:              ggui.State(Listing[kubeapi.Pod]{}).WithEqual(podsEqual),
 		PodsWaiting:       ggui.State(false),
@@ -268,6 +311,21 @@ func NewModel(st store.Store, dataDir string) *Model {
 		PodDetail:         ggui.State(0),
 		PodContainer:      ggui.State(""),
 		PodLogs:           ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
+		KubeView:          ggui.State(KubePods),
+		PodOwner:          ggui.State(WorkloadRef{}),
+		Workloads:         ggui.State(Listing[kubeapi.Workload]{}).WithEqual(workloadsEqual),
+		Services:          ggui.State(Listing[kubeapi.Service]{}).WithEqual(servicesEqual),
+		WorkloadQuery:     ggui.State(""),
+		ServiceQuery:      ggui.State(""),
+		Forwards:          ggui.State([]PortForward(nil)).WithEqual(slices.Equal[[]PortForward]),
+		ForwardOpen:       ggui.State(false),
+		ForwardDraft:      ggui.State(ForwardDraft{}).WithEqual(ForwardDraft.Equal),
+		ForwardRemote:     ggui.State(""),
+		ForwardLocal:      ggui.State(""),
+		ForwardErr:        ggui.State(""),
+		ScaleOpen:         ggui.State(false),
+		ScaleTarget:       ggui.State(kubeapi.Workload{}).WithEqual(kubeapi.Workload.Equal),
+		ScaleReplicas:     ggui.State(1.0),
 		LinkCommandsOpen:  ggui.State(false),
 
 		EditorOpen: ggui.State(false),
@@ -302,6 +360,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		SelectedImage:  ggui.State(""),
 		SelectedVolume: ggui.State(""),
 		runCLI:         runCLI,
+		forwarder:      forwardThroughCluster,
 	}
 	ggui.OnCleanup(m.Toasts.Close)
 	m.sup = &sandbox.Supervisor{
@@ -342,11 +401,13 @@ func NewModel(st store.Store, dataDir string) *Model {
 		return running
 	})
 	m.Pod = ggui.Derived(func() kubeapi.Pod {
-		return chosenPod(userPods(m.Pods.Get().Items, m.SystemPods.Get()), m.SelectedPod.Get())
+		return chosenPod(ownedPods(userPods(m.Pods.Get().Items, m.SystemPods.Get()), m.PodOwner.Get()), m.SelectedPod.Get())
 	}).WithEqual(kubeapi.Pod.Equal)
 	m.PodLogContainer = ggui.Combine(m.Pod, m.PodContainer, podLogContainer)
 	m.Menus = ggui.Derived(func() MenuState {
-		return menuState(m.Rows.Get(), m.DockerContainers.Get(), m.Pods.Get(), m.PodsWaiting.Get(), m.DockerLink.View.Get(), m.KubeLink.View.Get())
+		s := menuState(m.Rows.Get(), m.DockerContainers.Get(), m.Pods.Get(), m.PodsWaiting.Get(), m.DockerLink.View.Get(), m.KubeLink.View.Get())
+		s.Forwards = menuForwards(m.Forwards.Get())
+		return s
 	}).WithEqual(MenuState.Equal)
 	m.Running = m.States.Map(func(states map[string]sandbox.State) int {
 		n := 0
@@ -527,6 +588,10 @@ func (m *Model) Start() {
 	})
 	m.followDocker()
 	m.followPods()
+	m.followForwards()
+	m.followSandboxUsage()
+	m.followContainerUsage()
+	m.followPodUsage()
 	m.followLinks()
 	// A registration to start at login names the program; one that has
 	// moved since is named again.

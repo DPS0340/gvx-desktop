@@ -493,7 +493,7 @@ func (s *Session) refreshClustersLocked(y0, y1, cols int) {
 	var buf [32]rune
 	for y := y0; y < y1; y++ {
 		base := y * cols
-		for x := 0; x < cols; x++ {
+		for x := range cols {
 			i := base + x
 			cell := s.cells[i]
 			s.clusters[i] = ""

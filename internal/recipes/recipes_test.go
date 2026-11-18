@@ -123,3 +123,32 @@ func TestDockerAPI(t *testing.T) {
 		t.Error("an API was read from a sandbox that publishes none")
 	}
 }
+
+func TestNodePorts(t *testing.T) {
+	k3s := KubernetesNode()
+	for port, want := range map[int]string{30000: "127.0.0.1:30000", 30019: "127.0.0.1:30019", 30020: "", 30080: "", 29999: "", 6443: "127.0.0.1:6443"} {
+		got, ok := NodePortAddress(k3s, port)
+		if got != want || ok != (want != "") {
+			t.Errorf("%d: %q %v, want %q", port, got, ok, want)
+		}
+	}
+	if got := strings.Join(NodePortRanges(k3s), ","); got != "30000–30019" {
+		t.Errorf("ranges %s", got)
+	}
+
+	// Widened, moved and published in other forms: what the spec says counts.
+	k3s.Ports = []string{"127.0.0.1:6443:6443", "31000-31004:30080-30084", "0.0.0.0:32000:32000/tcp", "30500/udp",
+		"[::1]:30600:30600", "30700", "unix:~/.gvx/x.sock:30800", "nonsense"}
+	for port, want := range map[int]string{
+		30080: "127.0.0.1:31000", 30084: "127.0.0.1:31004", 30085: "", 32000: "127.0.0.1:32000",
+		30500: "", 30600: "[::1]:30600", 30700: "127.0.0.1:30700", 30800: "", 30000: "",
+	} {
+		got, ok := NodePortAddress(k3s, port)
+		if got != want || ok != (want != "") {
+			t.Errorf("%d: %q %v, want %q", port, got, ok, want)
+		}
+	}
+	if got := strings.Join(NodePortRanges(k3s), ","); got != "30080–30084,32000,30600,30700" {
+		t.Errorf("ranges %s", got)
+	}
+}

@@ -282,3 +282,36 @@ func hoverRow(content ggui.Widget, onTap func()) ggui.Widget {
 	return widget.Tap(widget.AnimatedBox(content).Pad(6, 10).Radius(8).BindFill(fill).Duration(hoverDuration), onTap).
 		OnHover(hover.Set).Cursor(ggui.CursorShapePointer)
 }
+
+// usageCell is what a row of a table uses: its CPU by a thin bar that a
+// CPU's worth fills, and its memory under them; a dash while neither is
+// known.
+func usageCell(v ggui.Readable[usageView]) ggui.Widget {
+	known := ggui.Map(v, func(u usageView) bool { return u.Known })
+	return ggui.View(known, func(known bool) ggui.Widget {
+		if !known {
+			return ui.Caption("—").Size(12)
+		}
+		return widget.Column(
+			widget.Row(
+				widget.Box(widget.TextOf(ggui.Map(v, func(u usageView) string { return u.CPU })).Size(12).NoWrap()).Width(42),
+				widget.Box(ui.Progress(ggui.Map(v, func(u usageView) float64 { return u.Share })).Height(3)).Width(30),
+			).Gap(6).Align(widget.AlignCenter),
+			ui.CaptionOf(ggui.Map(v, func(u usageView) string { return u.Mem })).Size(11).NoWrap(),
+		).Gap(1)
+	})
+}
+
+// usageLine is what the chosen row uses, in a line by its state at the
+// head of its details; nothing while it is not known.
+func usageLine(v ggui.Readable[usageView]) ggui.Widget {
+	return ggui.View(ggui.Map(v, func(u usageView) string { return u.Line }), func(line string) ggui.Widget {
+		if line == "" {
+			return widget.Box()
+		}
+		return ui.Caption(line).Size(12).NoWrap()
+	})
+}
+
+// usageWidth is the width of the column usageCell fills.
+const usageWidth = 108

@@ -181,17 +181,19 @@ func podLogLines(lines []kubeapi.LogLine) []sandbox.LogLine {
 	return timedLines(len(lines), func(i int) (time.Time, string, bool) { return lines[i].Time, lines[i].Text, false })
 }
 
-// LoadPods lists the pods of the k3s cluster. Asked for while a listing
-// runs, it lists them again after it. Until the cluster's API server has
-// answered once, in its first minutes, a failure is the cluster still
-// starting: the page waits rather than tells of an error.
+// LoadPods lists the pods of the k3s cluster, and with them its workloads
+// and services while a page shows them (see wantsDetails), in one go.
+// Asked for while a listing runs, it lists them again after it. Until the
+// cluster's API server has answered once, in its first minutes, a failure
+// is the cluster still starting: the page waits rather than tells of an
+// error.
 func (m *Model) LoadPods() {
 	if m.Offline {
 		return // the pods shown are made up
 	}
 	row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Kubernetes)
 	if !ok || row.State.Status != sandbox.Running {
-		m.Pods.Set(Listing[kubeapi.Pod]{})
+		m.clearCluster()
 		m.PodsWaiting.Set(false)
 		m.podsAnswered = false
 		return
@@ -203,7 +205,9 @@ func (m *Model) LoadPods() {
 	m.podsLoading = true
 	started := row.State.StartedAt
 	file := recipes.Kubeconfig()
-	var items []kubeapi.Pod
+	workloads, services := m.wantsDetails()
+	metrics := ggui.Untrack(m.wantsPodUsage)
+	var got clusterList
 	noConfig := false
 	m.async(func(ctx context.Context) error {
 		if _, err := os.Stat(file); err != nil {
@@ -217,8 +221,8 @@ func (m *Model) LoadPods() {
 		defer c.Close()
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		items, err = c.Pods(ctx)
-		return err
+		got = listCluster(ctx, c, workloads, services, metrics)
+		return got.podsErr
 	}, func(err error) {
 		m.podsLoading = false
 		if m.podsAgain {
@@ -233,17 +237,21 @@ func (m *Model) LoadPods() {
 		warming := !m.podsAnswered && (started.IsZero() || time.Since(started) < podsWarmUp)
 		if noConfig || err != nil && warming {
 			m.PodsWaiting.Set(true)
-			m.Pods.Set(Listing[kubeapi.Pod]{})
+			m.clearCluster()
 			return
 		}
 		m.PodsWaiting.Set(false)
-		l := Listing[kubeapi.Pod]{Items: sortPods(items), Loaded: true}
+		l := Listing[kubeapi.Pod]{Items: sortPods(got.pods), Loaded: true}
 		if err != nil {
 			l.Err = err.Error()
 		} else {
 			m.podsAnswered = true
+			m.setDetails(got, workloads, services, metrics)
 		}
 		m.Pods.Set(l)
+		if err == nil {
+			m.checkForwards(got.pods, got.services, services && got.svErr == nil)
+		}
 	})
 }
 

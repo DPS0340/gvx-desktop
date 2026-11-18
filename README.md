@@ -76,15 +76,15 @@ For other platforms, see [Build and run](#build-and-run).
 
 | Area | What you can do |
 | --- | --- |
-| Dashboard | Check engine status, see resource counts, and launch recipes. |
-| Sandboxes | Create and edit with a live `rungv run` preview. Start, stop, restart, duplicate, or delete sandboxes. Filter live logs, open or copy published ports, and start selected sandboxes with the app. |
+| Dashboard | Check engine status, see resource counts and what each running sandbox uses, and launch recipes. |
+| Sandboxes | Create and edit with a live `rungv run` preview. Start, stop, restart, duplicate, or delete sandboxes. See each running sandbox's CPU and memory, filter live logs, open or copy published ports, and start selected sandboxes with the app. |
 | Images | Search Docker Hub or Quay, choose tags, and track pull progress. Inspect image metadata as JSON, run images in new sandboxes, or remove and prune images. |
 | Volumes | Create `ext4lite` or `hostfs` volumes, see which sandboxes use them, open their location, and delete or prune them. |
 | Snapshots | Enable checkpoint support for a sandbox to capture its running state. Choose whether to stop it or keep it running after capture. List, restore, and delete snapshots. |
-| Containers | While the Docker Engine runs, list its containers with their state, image and ports. Filter them, start, stop, restart, or remove them, read their logs, open a shell in a running one in the app's terminal, open their published ports, and copy `docker logs` and `docker exec` commands. |
-| Pods | While the k3s cluster runs, list its pods with the status, readiness and restarts `kubectl get pods` shows. Filter them, show or hide the system's pods, read each container's logs, open a shell in a running container in the app's terminal (with `kubectl`), see a pod's containers, node and owner, delete pods, and copy `kubectl logs`, `kubectl exec` and `kubectl describe` commands. |
+| Containers | While the Docker Engine runs, list its containers with their state, image, ports, CPU and memory, grouped by Compose project. Filter them, start, stop, restart, or remove them one at a time or a whole project at once, read their logs, open a shell in a running one in the app's terminal, open their published ports, and copy `docker logs` and `docker exec` commands. |
+| Pods | While the k3s cluster runs, list its pods with the status, readiness and restarts `kubectl get pods` shows, and the CPU and memory of `kubectl top pods` when metrics-server answers. Filter them, show or hide the system's pods, read each container's logs, open a shell in a running container in the app's terminal (with `kubectl`), see a pod's containers, node and owner, delete pods, and copy `kubectl logs`, `kubectl exec` and `kubectl describe` commands. Switch to Workloads to scale, restart or delete Deployments, StatefulSets, DaemonSets and Jobs and see their pods, or to Services to open the NodePorts the cluster publishes. Forward a port of a pod or a service to this computer without `kubectl`; forwards stop with their target, the cluster or the app. |
 | Docker Engine | Start `docker:dind`, see whether `docker` uses its `gvx` context and set it up or switch to it, and manage its containers from the Docker menu and the tray as well. |
-| Kubernetes | Start a single-node k3s cluster, detect its kubeconfig, see whether `kubectl` uses the cluster, and add it to `~/.kube/config` as the `gvx-k3s` context. Manage its pods from the Kubernetes menu and the tray as well. A Docker Engine or cluster left running starts again with the app. |
+| Kubernetes | Start a single-node k3s cluster, detect its kubeconfig, see whether `kubectl` uses the cluster, and add it to `~/.kube/config` as the `gvx-k3s` context. Manage its pods and port forwards from the Kubernetes menu and the tray as well. A Docker Engine or cluster left running starts again with the app. |
 | Desktop | Use native menus, start at login, and choose a light, dark, or system theme. On macOS and Windows, the app can keep running in the tray when you close its window. The app runs as a single instance. |
 
 On macOS, use **⌘K** to open the command palette and **⌘1** through **⌘9** to switch pages in sidebar order. When the app hides in the menu bar, it also leaves the Dock.
@@ -167,7 +167,7 @@ Render screens to PNG with demo data and no running engine.
 The README GIF is a walkthrough scripted in [tour.go](tour.go). To regenerate it, run [`ggui record`](https://github.com/ironpark/ggui/blob/main/docs/recording.md) from the repository root. It needs ggui CLI v0.6.0 or newer.
 
 ```sh
-ggui record -o assets/tour.gif --width 1040 --fps 10 --lossy 30
+ggui record -o assets/tour.gif --width 1040 --frame mac --lossy 40 --fps 15 --colors 128
 ```
 
 Each language has a catalog in [internal/ui](internal/ui) (`i18n_ko.go`, `i18n_ja.go`, `i18n_zh_hans.go`, `i18n_zh_hant.go`, `i18n_de.go`, `i18n_hi.go`) that uses the English text as keys. The localization test and `ggui i18n check` look for missing translations. Languages other than Korean were machine-translated and have not been reviewed by native speakers; corrections are welcome.

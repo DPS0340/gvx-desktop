@@ -11,6 +11,7 @@ import (
 
 	"github.com/ironpark/ggfx"
 	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/fonts/gofont"
 	uitheme "github.com/ironpark/ggui/ui/theme"
 	"github.com/ironpark/ggwd"
 
@@ -61,6 +62,15 @@ func renderAll(tmp, out, lang string) error {
 		{"containers-connect", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(1) }},
 		// A terminal's shell is a made-up one: the model starts no process.
 		{"containers-terminal", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(2) }},
+		// A Compose project folded away, and one filtered to one of its
+		// containers.
+		{"containers-folded", func(m *ui.Model) { m.Go(ui.PageContainers); m.ToggleProject("shop") }},
+		{"containers-filtered", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerQuery.Set("redis") }},
+		{"containers-remove-project", func(m *ui.Model) {
+			m.Go(ui.PageContainers)
+			ctrs := demoContainers()
+			m.AskRemoveProject("shop", ctrs[:2])
+		}},
 		// The engine stopped while its containers were on screen: the page
 		// says so, and the sidebar's item is greyed out.
 		{"containers-stopped", func(m *ui.Model) {
@@ -88,10 +98,32 @@ func renderAll(tmp, out, lang string) error {
 			m.Go(ui.PagePods)
 			stopCluster(m)
 		}},
+		// The pods of one workload, asked for from its row.
+		{"pods-of-workload", func(m *ui.Model) { m.ShowWorkloadPods(demoWorkloads(ggui.Peek(m.Now))[1]) }},
+		{"pods-forward", func(m *ui.Model) {
+			m.GoKube(ui.KubePods)
+			m.AskForwardPod(ggui.Peek(m.Pod))
+		}},
+		{"workloads", func(m *ui.Model) { m.GoKube(ui.KubeWorkloads) }},
+		{"workloads-system", func(m *ui.Model) { m.GoKube(ui.KubeWorkloads); m.SystemPods.Set(true) }},
+		{"workloads-scale", func(m *ui.Model) {
+			m.GoKube(ui.KubeWorkloads)
+			m.AskScale(demoWorkloads(ggui.Peek(m.Now))[1])
+		}},
+		{"services", func(m *ui.Model) {
+			m.GoKube(ui.KubeServices)
+			m.Forwards.Set(demoForwards())
+		}},
+		{"services-system", func(m *ui.Model) { m.GoKube(ui.KubeServices); m.SystemPods.Set(true) }},
+		{"services-forward", func(m *ui.Model) {
+			m.GoKube(ui.KubeServices)
+			m.Forwards.Set(demoForwards())
+			m.AskForwardService(demoServices(ggui.Peek(m.Now))[3])
+		}},
 		{"images", func(m *ui.Model) { m.Page.Set(ui.PageImages) }},
 		{"volumes", func(m *ui.Model) { m.Page.Set(ui.PageVolumes) }},
 		{"docker", func(m *ui.Model) { m.Page.Set(ui.PageDocker) }},
-		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes) }},
+		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes); m.Forwards.Set(demoForwards()) }},
 		{"settings", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
 		{"editor", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.NewSandbox("postgres:17-alpine") }},
 		{"pull-search", func(m *ui.Model) {
@@ -131,6 +163,9 @@ func renderAll(tmp, out, lang string) error {
 				return ggui.Provide(ggui.ReducedMotionKey, true, ui.Build(m))
 			}, ggui.Sz(w, h))
 			p.Setup(func() {
+				// A probe has no system fonts: without a mono font of its
+				// own the terminal would space Go Regular out over a grid.
+				ggui.SetDefaultMonoFont(gofont.Mono())
 				m = ui.NewModel(st, dir)
 				m.Offline = true
 				m.Attach(p)
@@ -253,8 +288,46 @@ func demoState(m *ui.Model, now time.Time) {
 	m.ContainerLogs.Set(demoContainerLogs(now))
 	m.KubeconfigReady.Set(true)
 	m.Pods.Set(ui.Listing[kubeapi.Pod]{Loaded: true, Items: demoPods(now)})
+	m.Workloads.Set(ui.Listing[kubeapi.Workload]{Loaded: true, Items: demoWorkloads(now)})
+	m.Services.Set(ui.Listing[kubeapi.Service]{Loaded: true, Items: demoServices(now)})
 	m.SelectPod("default/web-7d4b9c8f6d-2m9qz")
 	m.PodLogs.Set(demoPodLogs(now))
+	demoUsage(m)
+}
+
+// demoUsage is what the demo's running sandboxes, containers and pods use,
+// as the pages sample it while they show them. api's pod crashes, so
+// metrics-server has no sample of it.
+func demoUsage(m *ui.Model) {
+	const mib = 1 << 20
+	m.SandboxUsage.Set(map[string]ui.Usage{
+		demoIDs[0]: {CPU: 0.8, HasCPU: true, Memory: 46 * mib},
+		demoIDs[1]: {CPU: 12.4, HasCPU: true, Memory: 612 * mib},
+		demoIDs[2]: {CPU: 38.6, HasCPU: true, Memory: 1516 * mib},
+	})
+	ctrs := demoContainers()
+	m.ContainerUsage.Set(map[string]ui.Usage{
+		ctrs[0].ID: {CPU: 0.3, HasCPU: true, Memory: 8 * mib, Limit: 7845 * mib},
+		ctrs[1].ID: {CPU: 1.2, HasCPU: true, Memory: 9 * mib, Limit: 7845 * mib},
+	})
+	use := func(milli float64, mem int64) kubeapi.Usage { return kubeapi.Usage{MilliCPU: milli, Memory: mem * mib} }
+	pod := func(ctrs ...any) ui.PodUse {
+		u := ui.PodUse{Containers: map[string]kubeapi.Usage{}}
+		for i := 0; i < len(ctrs); i += 2 {
+			c := ctrs[i+1].(kubeapi.Usage)
+			u.Containers[ctrs[i].(string)] = c
+			u.Total = u.Total.Add(c)
+		}
+		return u
+	}
+	m.PodUsage.Set(map[string]ui.PodUse{
+		"default/web-7d4b9c8f6d-2m9qz":                        pod("web", use(2, 6), "exporter", use(1, 10)),
+		"default/web-7d4b9c8f6d-hv5tc":                        pod("web", use(1, 5), "exporter", use(1, 9)),
+		"shop/redis-0":                                        pod("redis", use(3, 8)),
+		"kube-system/coredns-ccb96694c-7xk2m":                 pod("coredns", use(4, 18)),
+		"kube-system/local-path-provisioner-5cf85fd84d-x7k2p": pod("local-path-provisioner", use(1, 10)),
+		"kube-system/metrics-server-5985cbc9d7-q4n8w":         pod("metrics-server", use(6, 25)),
+	})
 }
 
 // stopCluster stops the demo's k3s cluster, as its sandbox and the model
@@ -264,6 +337,8 @@ func stopCluster(m *ui.Model) {
 	states[demoIDs[2]] = sandbox.State{Status: sandbox.Stopped, ExitedAt: ggui.Peek(m.Now).Add(-time.Minute)}
 	m.States.Set(states)
 	m.Pods.Set(ui.Listing[kubeapi.Pod]{})
+	m.Workloads.Set(ui.Listing[kubeapi.Workload]{})
+	m.Services.Set(ui.Listing[kubeapi.Service]{})
 	m.PodLogs.Set(ui.ContainerLogs{})
 }
 
@@ -274,7 +349,12 @@ func demoPods(now time.Time) []kubeapi.Pod {
 	up := now.Add(-2 * time.Hour)
 	running := kubeapi.ContainerState{Running: &kubeapi.Running{Started: up}}
 	ready := []kubeapi.Condition{{Type: "Initialized", Status: "True"}, {Type: "Ready", Status: "True"}, {Type: "PodScheduled", Status: "True"}}
-	ctr := func(name, image string) kubeapi.Container { return kubeapi.Container{Name: name, Image: image} }
+	ctr := func(name, image string, ports ...kubeapi.ContainerPort) kubeapi.Container {
+		return kubeapi.Container{Name: name, Image: image, Ports: ports}
+	}
+	port := func(n int, name string) kubeapi.ContainerPort {
+		return kubeapi.ContainerPort{Name: name, Port: n, Protocol: "TCP"}
+	}
 	pod := func(ns, name, kind, owner, hash string, created time.Time, ip string, spec []kubeapi.Container, st kubeapi.PodStatus) kubeapi.Pod {
 		labels := map[string]string{}
 		if hash != "" {
@@ -300,16 +380,18 @@ func demoPods(now time.Time) []kubeapi.Pod {
 	}
 	cluster := up.Add(-3 * 24 * time.Hour)
 	sys := func(name, owner, hash, image, ip string) kubeapi.Pod {
-		return pod("kube-system", name, "ReplicaSet", owner+"-"+hash, hash, cluster, ip, []kubeapi.Container{ctr(owner, image)}, ok(owner))
+		p := pod("kube-system", name, "ReplicaSet", owner+"-"+hash, hash, cluster, ip, []kubeapi.Container{ctr(owner, image)}, ok(owner))
+		p.Metadata.Labels["k8s-app"] = strings.Replace(owner, "coredns", "kube-dns", 1)
+		return p
 	}
 	web := func(name, ip string) kubeapi.Pod {
 		p := pod("default", name, "ReplicaSet", "web-7d4b9c8f6d", "7d4b9c8f6d", up.Add(-20*time.Minute), ip,
-			[]kubeapi.Container{ctr("web", "nginx:alpine"), ctr("exporter", "nginx/nginx-prometheus-exporter:1.4")}, ok("web", "exporter"))
+			[]kubeapi.Container{ctr("web", "nginx:alpine", port(80, "http")), ctr("exporter", "nginx/nginx-prometheus-exporter:1.4", port(9113, "metrics"))}, ok("web", "exporter"))
 		p.Metadata.Labels["app"] = "web"
 		return p
 	}
 	api := pod("default", "api-6f8d5b7c9-r2xwl", "ReplicaSet", "api-6f8d5b7c9", "6f8d5b7c9", now.Add(-25*time.Minute), "10.42.0.17",
-		[]kubeapi.Container{ctr("api", "ghcr.io/acme/api:dev")}, kubeapi.PodStatus{Phase: "Running",
+		[]kubeapi.Container{ctr("api", "ghcr.io/acme/api:dev", port(8080, "http"))}, kubeapi.PodStatus{Phase: "Running",
 			Conditions: []kubeapi.Condition{{Type: "Ready", Status: "False", Reason: "ContainersNotReady"}},
 			Containers: []kubeapi.ContainerStatus{{Name: "api", Restarts: 6,
 				State: kubeapi.ContainerState{Waiting: &kubeapi.Waiting{Reason: "CrashLoopBackOff",
@@ -321,12 +403,79 @@ func demoPods(now time.Time) []kubeapi.Pod {
 			Containers: []kubeapi.ContainerStatus{{Name: "migrate",
 				State: kubeapi.ContainerState{Terminated: &kubeapi.Terminated{Reason: "Completed", Finished: up.Add(-14 * time.Minute)}}}}})
 	redis := pod("shop", "redis-0", "StatefulSet", "redis", "", up.Add(-30*time.Minute), "10.42.0.9",
-		[]kubeapi.Container{ctr("redis", "redis:7-alpine")}, ok("redis"))
+		[]kubeapi.Container{ctr("redis", "redis:7-alpine", port(6379, "redis"))}, ok("redis"))
+	redis.Metadata.Labels["app"] = "redis"
 	return []kubeapi.Pod{
 		api, migrate, web("web-7d4b9c8f6d-2m9qz", "10.42.0.14"), web("web-7d4b9c8f6d-hv5tc", "10.42.0.15"), redis,
 		sys("coredns-ccb96694c-7xk2m", "coredns", "ccb96694c", "rancher/mirrored-coredns-coredns:1.12.0", "10.42.0.2"),
 		sys("local-path-provisioner-5cf85fd84d-x7k2p", "local-path-provisioner", "5cf85fd84d", "rancher/local-path-provisioner:v0.0.30", "10.42.0.3"),
 		sys("metrics-server-5985cbc9d7-q4n8w", "metrics-server", "5985cbc9d7", "rancher/mirrored-metrics-server:v0.7.2", "10.42.0.4"),
+	}
+}
+
+// demoWorkloads are what keeps the demo's pods: web's Deployment of two,
+// api's of one that crashes, redis's StatefulSet, the Job migrate-db ran
+// to completion, and k3s's own Deployments in kube-system.
+func demoWorkloads(now time.Time) []kubeapi.Workload {
+	up := now.Add(-2 * time.Hour)
+	cluster := up.Add(-3 * 24 * time.Hour)
+	w := func(kind, ns, name string, created time.Time, desired, ready int, images ...string) kubeapi.Workload {
+		return kubeapi.Workload{Kind: kind, Metadata: kubeapi.Meta{Namespace: ns, Name: name, Created: created},
+			Desired: desired, Ready: ready, UpToDate: desired, Available: ready, Images: images}
+	}
+	migrate := w(kubeapi.KindJob, "default", "migrate-db", up.Add(-15*time.Minute), 1, 1, "app:dev")
+	migrate.UpToDate, migrate.Available, migrate.JobState = 0, 0, "Complete"
+	sys := func(name, image string) kubeapi.Workload {
+		return w(kubeapi.KindDeployment, "kube-system", name, cluster, 1, 1, image)
+	}
+	return []kubeapi.Workload{
+		w(kubeapi.KindDeployment, "default", "api", now.Add(-25*time.Minute), 1, 0, "ghcr.io/acme/api:dev"),
+		w(kubeapi.KindDeployment, "default", "web", up.Add(-20*time.Minute), 2, 2, "nginx:alpine", "nginx/nginx-prometheus-exporter:1.4"),
+		migrate,
+		w(kubeapi.KindStatefulSet, "shop", "redis", up.Add(-30*time.Minute), 1, 1, "redis:7-alpine"),
+		sys("coredns", "rancher/mirrored-coredns-coredns:1.12.0"),
+		sys("local-path-provisioner", "rancher/local-path-provisioner:v0.0.30"),
+		sys("metrics-server", "rancher/mirrored-metrics-server:v0.7.2"),
+	}
+}
+
+// demoServices lead to the demo's pods: the API server's own, web's
+// NodePort in the range the sandbox publishes, api's outside it, redis's
+// ClusterIP, and k3s's own in kube-system. traefik and servicelb are off
+// in the recipe, so no LoadBalancer has an address.
+func demoServices(now time.Time) []kubeapi.Service {
+	up := now.Add(-2 * time.Hour)
+	cluster := up.Add(-3 * 24 * time.Hour)
+	tcp := func(port int, target kubeapi.IntOrString, node int) kubeapi.ServicePort {
+		return kubeapi.ServicePort{Protocol: "TCP", Port: port, TargetPort: target, NodePort: node}
+	}
+	num := func(n int) kubeapi.IntOrString { return kubeapi.IntOrString{Int: n} }
+	named := func(s string) kubeapi.IntOrString { return kubeapi.IntOrString{Str: s} }
+	svc := func(ns, name, typ, ip string, created time.Time, sel map[string]string, ports ...kubeapi.ServicePort) kubeapi.Service {
+		return kubeapi.Service{Metadata: kubeapi.Meta{Namespace: ns, Name: name, Created: created},
+			Spec: kubeapi.ServiceSpec{Type: typ, ClusterIP: ip, Selector: sel, Ports: ports}}
+	}
+	dns := tcp(53, num(53), 0)
+	dns.Name, dns.Protocol = "dns", "UDP"
+	return []kubeapi.Service{
+		svc("default", "api", "NodePort", "10.43.88.21", now.Add(-25*time.Minute), map[string]string{"app": "api"}, tcp(8080, named("http"), 30080)),
+		svc("default", "kubernetes", "ClusterIP", "10.43.0.1", cluster, nil, tcp(443, num(6443), 0)),
+		svc("default", "web", "NodePort", "10.43.12.7", up.Add(-20*time.Minute), map[string]string{"app": "web"},
+			tcp(80, named("http"), 30000), tcp(9113, named("metrics"), 30001)),
+		svc("shop", "redis", "ClusterIP", "10.43.150.3", up.Add(-30*time.Minute), map[string]string{"app": "redis"}, tcp(6379, num(6379), 0)),
+		svc("kube-system", "kube-dns", "ClusterIP", "10.43.0.10", cluster, map[string]string{"k8s-app": "kube-dns"},
+			dns, tcp(53, num(53), 0), tcp(9153, num(9153), 0)),
+		svc("kube-system", "metrics-server", "ClusterIP", "10.43.40.88", cluster, map[string]string{"k8s-app": "metrics-server"}, tcp(443, named("https"), 0)),
+	}
+}
+
+// demoForwards are the port forwards the demo runs: one to a web pod, one
+// to redis's service whose last connection failed.
+func demoForwards() []ui.PortForward {
+	return []ui.PortForward{
+		{ID: 1, Target: kubeapi.Target{Namespace: "default", Pod: "web-7d4b9c8f6d-2m9qz", Port: 80}, Local: 8080, Served: 12},
+		{ID: 2, Target: kubeapi.Target{Namespace: "shop", Service: "redis", Port: 6379}, Local: 6379, Served: 3,
+			Err: "error forwarding port 6379 to pod redis-0, uid : failed to connect to localhost:6379 inside namespace: connection refused"},
 	}
 }
 
@@ -392,10 +541,10 @@ func demoContainers() []dockerapi.Container {
 	return []dockerapi.Container{
 		{ID: "3f2a9c1b7d4e5f60", Names: []string{"/shop-web-1"}, Image: "nginx:alpine", State: "running", Status: "Up 2 hours", Created: created,
 			Ports:  []dockerapi.Port{{IP: "0.0.0.0", PrivatePort: 80, PublicPort: 9000, Type: "tcp"}, {IP: "::", PrivatePort: 80, PublicPort: 9000, Type: "tcp"}},
-			Labels: map[string]string{"com.docker.compose.project": "shop"}},
+			Labels: map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "web"}},
 		{ID: "8b7c6d5e4f3a2b10", Names: []string{"/shop-redis-1"}, Image: "redis:alpine", State: "running", Status: "Up 2 hours", Created: created,
 			Ports:  []dockerapi.Port{{PrivatePort: 6379, Type: "tcp"}},
-			Labels: map[string]string{"com.docker.compose.project": "shop"}},
+			Labels: map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "redis"}},
 		{ID: "1a2b3c4d5e6f7081", Names: []string{"/migrate"}, Image: "app:dev", State: "exited", Status: "Exited (0) 2 hours ago", Created: created - 60},
 	}
 }

@@ -102,44 +102,175 @@ func dockerGate() gateWords {
 	}
 }
 
-// containersTable is the engine's containers, filtered by the query.
+// containersTable is the engine's containers, filtered by the query, each
+// Compose project's under a head that folds them away.
 func containersTable(m *Model) ggui.Widget {
 	all := ggui.Map(m.DockerContainers, func(l Listing[dockerapi.Container]) []dockerapi.Container { return l.Items }).WithEqual(nil)
-	visible := ggui.Combine(all, m.ContainerQuery, filterContainers).WithEqual(nil)
-	count := ggui.Combine(visible, all, func(v, a []dockerapi.Container) string { return showing(len(v), len(a)) })
-	selected := ggui.Bind(ggui.Map(m.Container, func(c dockerapi.Container) string { return c.ID }).Get, m.SelectContainer)
+	rows := ggui.Derived(func() []containerRow {
+		return containerRows(all.Get(), m.ContainerQuery.Get(), m.ComposeFolded.Get())
+	}).WithEqual(nil)
+	count := ggui.Combine(all, m.ContainerQuery, func(a []dockerapi.Container, q string) string {
+		return showing(len(filterContainers(a, q)), len(a))
+	})
+	// A head is no container to choose: choosing one leaves the choice.
+	selected := ggui.Bind(ggui.Map(m.Container, func(c dockerapi.Container) string { return c.ID }).Get, func(id string) {
+		if !strings.HasPrefix(id, composeKey("")) {
+			m.SelectContainer(id)
+		}
+	})
+	// cell builds a column's cell for a container's row, or with head for a
+	// project's head, which has nothing in the column without one. A row
+	// keeps its key, and so whether it is a head.
+	cell := func(ctr func(ggui.Readable[dockerapi.Container]) ggui.Widget, head func(ggui.Readable[containerRow]) ggui.Widget) func(ggui.Readable[containerRow]) ggui.Widget {
+		return func(r ggui.Readable[containerRow]) ggui.Widget {
+			if ggui.Peek(r).Head {
+				if head == nil {
+					return widget.Box()
+				}
+				return head(r)
+			}
+			return ctr(ggui.Map(r, func(row containerRow) dockerapi.Container { return row.C }).WithEqual(dockerapi.Container.Equal))
+		}
+	}
 	// As tall as its rows up to six, as the sandboxes' table is.
-	return ui.Table(visible, func(c dockerapi.Container) string { return c.ID },
-		ui.Col(tr("Status"), func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
+	return ui.Table(rows, containerRow.key,
+		ui.Col(tr("Status"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
 			return ggui.View(r, containerStatusLabel)
-		}).W(150),
-		ui.Col(tr("Name"), func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
-			return widget.Column(
+		}, func(r ggui.Readable[containerRow]) ggui.Widget {
+			return ggui.View(ggui.Map(r, func(row containerRow) []dockerapi.Container { return row.Members }).WithEqual(nil), projectStatusLabel)
+		})).W(150),
+		ui.Col(tr("Name"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
+			name := widget.Column(
 				widget.TextOf(ggui.Map(r, dockerapi.Container.Name)).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
 				ui.CaptionOf(ggui.Map(r, dockerapi.Container.ShortID)).Size(11).NoWrap(),
 			).Gap(1)
-		}).Grow(2),
-		ui.Col(tr("Image"), func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
+			if ggui.Peek(r).Project() == "" {
+				return name
+			}
+			// A project's container stands in from its head's name.
+			return widget.Padding(name, 0, 0, 0, projectIndent)
+		}, func(r ggui.Readable[containerRow]) ggui.Widget { return projectName(m, r) })).Grow(2),
+		ui.Col(tr("Image"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
 			return ui.CaptionOf(ggui.Map(r, func(c dockerapi.Container) string { return c.Image })).Size(12).NoWrap().Ellipsis()
-		}).Grow(2),
-		ui.Col(tr("Ports"), func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
+		}, nil)).Grow(2),
+		ui.Col(tr("Ports"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
 			return ui.CaptionOf(ggui.Map(r, containerPortsSummary)).Size(12).NoWrap().Ellipsis()
-		}).Grow(2),
-		ui.Col(tr("Created"), func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
+		}, nil)).Grow(2),
+		ui.Col(tr("CPU / Memory"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
+			return usageCell(ggui.Combine(r, m.ContainerUsage, func(c dockerapi.Container, all map[string]Usage) usageView {
+				u, ok := all[c.ID]
+				return usageOf(u, ok)
+			}))
+		}, func(r ggui.Readable[containerRow]) ggui.Widget {
+			return usageCell(ggui.Combine(r, m.ContainerUsage, func(row containerRow, all map[string]Usage) usageView {
+				u, ok := projectUsage(row.Members, all)
+				return usageOf(u, ok)
+			}))
+		})).W(usageWidth),
+		ui.Col(tr("Created"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
 			return ui.CaptionOf(ggui.Combine(r, m.Now, func(c dockerapi.Container, now time.Time) string {
 				if c.Created == 0 {
 					return "—"
 				}
 				return since(time.Unix(c.Created, 0), now)
 			})).Size(12).NoWrap()
-		}).W(130),
-		ui.Col("", func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
+		}, nil)).W(130),
+		ui.Col("", cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
 			return ggui.View(r, func(c dockerapi.Container) ggui.Widget {
 				return widget.Row(containerQuickAction(m, c), containerMenu(m, c)).Gap(2).Justify(widget.JustifyEnd)
 			})
-		}).W(84).Identified("actions"),
-	).BindSelected(selected).RowName(dockerapi.Container.Name).RowHeight(48).MaxRows(6).
-		Toolbar(filterBar(m.ContainerQuery, tr("Filter by name or image"), count))
+		}, func(r ggui.Readable[containerRow]) ggui.Widget {
+			return ggui.View(r, func(row containerRow) ggui.Widget {
+				return widget.Row(projectQuickAction(m, row), projectMenu(m, row)).Gap(2).Justify(widget.JustifyEnd)
+			})
+		})).W(84).Identified("actions"),
+	).BindSelected(selected).RowName(containerRow.name).RowHeight(48).MaxRows(6).
+		Toolbar(filterBar(m.ContainerQuery, tr("Filter by name, image or project"), count))
+}
+
+// projectIndent is how far a project's containers stand in from its name.
+const projectIndent = 26
+
+// projectName is a Compose project's name in its head, after the button
+// that folds its containers away or brings them back.
+func projectName(m *Model, r ggui.Readable[containerRow]) ggui.Widget {
+	project := ggui.Peek(r).Project
+	fold := ggui.View(ggui.Map(r, func(row containerRow) bool { return row.Folded }), func(folded bool) ggui.Widget {
+		icon, name := lucide.ChevronDown, tr("Fold %s", project)
+		if folded {
+			icon, name = lucide.ChevronRight, tr("Unfold %s", project)
+		}
+		return ui.ButtonOf(glyph(icon, 14), func() { m.ToggleProject(project) }).Name(name).Size(ui.ButtonIconExtraSmall).Ghost()
+	})
+	services := ui.CaptionOf(ggui.Map(r, func(row containerRow) string {
+		return trn(len(row.Members), "Compose · %d container", "Compose · %d containers")
+	})).Size(11).NoWrap().Ellipsis()
+	return widget.Row(
+		fold,
+		widget.Flexible(widget.Column(
+			widget.Text(project).Size(13).Weight(ggui.WeightSemibold).NoWrap().Ellipsis(),
+			services,
+		).Gap(1)),
+	).Gap(4).Align(widget.AlignCenter)
+}
+
+// projectStatusLabel is a project's state: green with all its containers
+// running, amber with some, gray with none, and red while one has failed.
+func projectStatusLabel(members []dockerapi.Container) ggui.Widget {
+	running, total := projectCounts(members)
+	col := colorGray
+	switch {
+	case running == total && total > 0:
+		col = colorGreen
+	case running > 0:
+		col = colorAmber
+	}
+	for _, c := range members {
+		if c2, _, _ := containerStatus(c); c2 == colorRed {
+			col = colorRed
+		}
+	}
+	return stateLabel(col, tr("%d of %d running", running, total), false, "")
+}
+
+// projectUsage sums what a project's running containers use; ok is false
+// while none of theirs is known. Its CPU is known when every one's is.
+func projectUsage(members []dockerapi.Container, all map[string]Usage) (u Usage, ok bool) {
+	u.HasCPU = true
+	for _, c := range members {
+		cu, found := all[c.ID]
+		if !found {
+			continue
+		}
+		ok = true
+		u.CPU += cu.CPU
+		u.HasCPU = u.HasCPU && cu.HasCPU
+		u.Memory += cu.Memory
+	}
+	return u, ok
+}
+
+// projectQuickAction stops a project with containers running, and starts
+// one with none.
+func projectQuickAction(m *Model, row containerRow) ggui.Widget {
+	if running, _ := projectCounts(row.Members); running > 0 {
+		return tip(iconButton(lucide.Square, tr("Stop %s", row.Project), func() { m.ProjectAction("stop", row.Project, row.Members) }), tr("Stop all"))
+	}
+	return tip(iconButton(lucide.Play, tr("Start %s", row.Project), func() { m.ProjectAction("start", row.Project, row.Members) }), tr("Start all"))
+}
+
+// projectMenu is what can be done to a project's containers together.
+func projectMenu(m *Model, row containerRow) ggui.Widget {
+	p, members := row.Project, row.Members
+	running, total := projectCounts(members)
+	return ui.MenuOf(glyph(lucide.Ellipsis, 16),
+		ui.MenuItem(tr("Start all"), func() { m.ProjectAction("start", p, members) }).Disabled(running == total),
+		ui.MenuItem(tr("Stop all"), func() { m.ProjectAction("stop", p, members) }).Disabled(running == 0),
+		ui.MenuItem(tr("Restart all"), func() { m.ProjectAction("restart", p, members) }),
+		ui.MenuItem(tr("Copy project name"), func() { m.Copy(p, p) }),
+		ui.MenuDivider(),
+		ui.MenuItem(tr("Remove all…"), func() { m.AskRemoveProject(p, members) }).Destructive(),
+	).Name(tr("More actions for %s", p))
 }
 
 // containerStatus is a container's state as a color, words, and whether it
@@ -276,7 +407,12 @@ func containerHeader(m *Model, c dockerapi.Container) ggui.Widget {
 		}
 		return strings.Join(parts, " · ")
 	})).Size(12)
-	return detailHead(c.Name(), containerStatusLabel(c), meta, actions...)
+	usage := usageLine(ggui.Map(m.ContainerUsage, func(all map[string]Usage) usageView {
+		u, ok := all[c.ID]
+		return usageOf(u, ok)
+	}))
+	state := widget.Row(containerStatusLabel(c), usage).Gap(16).Align(widget.AlignCenter)
+	return detailHead(c.Name(), state, meta, actions...)
 }
 
 // containerLogsView shows the last lines the chosen container wrote, read

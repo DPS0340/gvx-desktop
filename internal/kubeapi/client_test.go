@@ -164,8 +164,7 @@ func TestTLSVerifiesTheServerAgainstTheKubeconfigCA(t *testing.T) {
 	wrong := k.entry
 	wrong.CA = base64.StdEncoding.EncodeToString(other.pem)
 	_, err := connect(t, wrong).Pods(ctx)
-	var unknown x509.UnknownAuthorityError
-	if !errors.As(err, &unknown) {
+	if _, ok := errors.AsType[x509.UnknownAuthorityError](err); !ok {
 		t.Errorf("with another CA: %v", err)
 	}
 

@@ -39,8 +39,10 @@ type MenuState struct {
 	Pods                             []MenuPod
 	PodsMore                         int
 	PodsListed, PodsErr, PodsWaiting bool
-	DockerLink                       LinkView
-	KubeLink                         LinkView
+	// Forwards are the port forwards that run, as the menu tells of them.
+	Forwards   []PortForward
+	DockerLink LinkView
+	KubeLink   LinkView
 }
 
 // MenuPod is a pod as the Kubernetes menu tells of it.
@@ -58,7 +60,7 @@ func (s MenuState) Equal(o MenuState) bool {
 		slices.EqualFunc(s.Pods, o.Pods, func(a, b MenuPod) bool {
 			return a.Pod.Key() == b.Pod.Key() && a.Status == b.Status && a.Health == b.Health
 		}) &&
-		s.DockerLink.Equal(o.DockerLink) && s.KubeLink.Equal(o.KubeLink) &&
+		s.DockerLink.Equal(o.DockerLink) && s.KubeLink.Equal(o.KubeLink) && slices.Equal(s.Forwards, o.Forwards) &&
 		slices.EqualFunc(s.Containers, o.Containers, func(a, b dockerapi.Container) bool {
 			return a.ID == b.ID && a.Name() == b.Name() && a.State == b.State
 		})
@@ -144,6 +146,7 @@ func (m *Model) RecipeMenu(recipe string, show func()) []ggui.MenuItem {
 	}
 	if recipe == recipes.Kubernetes && e.Status == sandbox.Running {
 		items = append(items, podItems(m, s, show)...)
+		items = append(items, forwardItems(m, s)...)
 	}
 	return items
 }
@@ -265,6 +268,35 @@ func podItems(m *Model, s MenuState, show func()) []ggui.MenuItem {
 	}
 	if s.PodsMore > 0 {
 		items = append(items, ggui.MenuAction(tr("All %d Pods…", len(s.Pods)+s.PodsMore), "", func() { show(); m.Go(PagePods) }))
+	}
+	return items
+}
+
+// menuForwards are the forwards as the menu tells of them: where they
+// listen and what they reach, not how their connections went, which would
+// build the menu again for each.
+func menuForwards(list []PortForward) []PortForward {
+	out := make([]PortForward, len(list))
+	for i, f := range list {
+		out[i] = PortForward{ID: f.ID, Target: f.Target, Local: f.Local}
+	}
+	return out
+}
+
+// forwardItems are the Kubernetes menu's port forwards, each a submenu to
+// open, copy or stop it.
+func forwardItems(m *Model, s MenuState) []ggui.MenuItem {
+	if len(s.Forwards) == 0 {
+		return nil
+	}
+	items := []ggui.MenuItem{ggui.MenuSeparator(), off(tr("Port Forwards"))}
+	for _, f := range s.Forwards {
+		items = append(items, ggui.Menu(f.Address()+" → "+f.TargetText(),
+			ggui.MenuAction(tr("Open in Browser"), "", func() { m.Open(f.URL()) }),
+			ggui.MenuAction(tr("Copy Address"), "", func() { m.Copy(f.Address(), f.Address()) }),
+			ggui.MenuSeparator(),
+			ggui.MenuAction(tr("Stop"), "", func() { m.StopForward(f.ID, "") }),
+		))
 	}
 	return items
 }

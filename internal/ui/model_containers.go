@@ -2,7 +2,12 @@ package ui
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ironpark/ggui"
@@ -55,8 +60,8 @@ func chosenContainer(list []dockerapi.Container, id string) dockerapi.Container 
 	return dockerapi.Container{}
 }
 
-// filterContainers keeps the containers whose name, image or ID has q in
-// it, in either case.
+// filterContainers keeps the containers whose name, image, ID or Compose
+// project has q in it, in either case.
 func filterContainers(list []dockerapi.Container, q string) []dockerapi.Container {
 	q = strings.ToLower(strings.TrimSpace(q))
 	if q == "" {
@@ -64,11 +69,170 @@ func filterContainers(list []dockerapi.Container, q string) []dockerapi.Containe
 	}
 	var out []dockerapi.Container
 	for _, c := range list {
-		if strings.Contains(strings.ToLower(c.Name()+" "+c.Image+" "+c.ShortID()), q) {
+		if strings.Contains(strings.ToLower(c.Name()+" "+c.Image+" "+c.ShortID()+" "+c.Project()), q) {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// containerRow is a row of the containers' table: a container, or the
+// head of a Compose project, which its containers follow unless it is
+// folded.
+type containerRow struct {
+	Project string // the head's project
+	Head    bool
+	C       dockerapi.Container   // the row's container, for one that is not a head
+	Members []dockerapi.Container // the head's: every container of its project
+	Folded  bool                  // the head's: its containers are hidden
+}
+
+// composeKey is the key of a project's head: no container's ID has a colon.
+func composeKey(project string) string { return "compose:" + project }
+
+// key is what the table keys the row by: its container's ID, or its
+// project's composeKey.
+func (r containerRow) key() string {
+	if r.Head {
+		return composeKey(r.Project)
+	}
+	return r.C.ID
+}
+
+// name is the row as a screen reader names it.
+func (r containerRow) name() string {
+	if r.Head {
+		return tr("Compose project %s", r.Project)
+	}
+	return r.C.Name()
+}
+
+// containerRows lays the containers q leaves out as the table shows them:
+// those of no Compose project first, as the engine lists them, then each
+// project in the order of its name, its head followed by those of its
+// containers q leaves unless it is folded. A project shows while any of
+// its containers is left; its head counts all of them.
+func containerRows(list []dockerapi.Container, q string, folded map[string]bool) []containerRow {
+	var out, grouped []containerRow
+	members := map[string][]dockerapi.Container{}
+	for _, c := range list {
+		if p := c.Project(); p != "" {
+			members[p] = append(members[p], c)
+		}
+	}
+	shown := map[string][]dockerapi.Container{}
+	for _, c := range filterContainers(list, q) {
+		p := c.Project()
+		if p == "" {
+			out = append(out, containerRow{C: c})
+			continue
+		}
+		shown[p] = append(shown[p], c)
+	}
+	for _, p := range slices.Sorted(maps.Keys(shown)) {
+		grouped = append(grouped, containerRow{Project: p, Head: true, Members: members[p], Folded: folded[p]})
+		if folded[p] {
+			continue
+		}
+		for _, c := range shown[p] {
+			grouped = append(grouped, containerRow{Project: p, C: c})
+		}
+	}
+	return append(out, grouped...)
+}
+
+// projectCounts counts a project's running containers and all of them.
+func projectCounts(members []dockerapi.Container) (running, total int) {
+	for _, c := range members {
+		if c.State == "running" {
+			running++
+		}
+	}
+	return running, len(members)
+}
+
+// ToggleProject folds a Compose project's containers under its head, or
+// unfolds them.
+func (m *Model) ToggleProject(project string) {
+	m.ComposeFolded.Update(func(f map[string]bool) map[string]bool {
+		f = maps.Clone(f)
+		if f == nil {
+			f = map[string]bool{}
+		}
+		if f[project] {
+			delete(f, project)
+		} else {
+			f[project] = true
+		}
+		return f
+	})
+}
+
+// projectTargets are the containers of a project an action on it acts on:
+// start those that are not running, stop those that are, and restart or
+// remove all of them, as docker compose does.
+func projectTargets(action string, members []dockerapi.Container) []dockerapi.Container {
+	var out []dockerapi.Container
+	for _, c := range members {
+		running := c.State == "running" || c.State == "restarting"
+		switch {
+		case action == "start" && !running && c.State != "removing",
+			action == "stop" && running,
+			action == "restart", action == "remove":
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// ProjectAction runs start, stop, restart or remove on the containers of
+// a Compose project, all at once, and says which failed.
+func (m *Model) ProjectAction(action, project string, members []dockerapi.Container) {
+	targets := projectTargets(action, members)
+	if len(targets) == 0 || m.Offline {
+		return
+	}
+	host := m.dockerHost()
+	m.async(func(ctx context.Context) error {
+		c, err := dockerapi.New(host)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		var errs []error
+		for _, t := range targets {
+			wg.Go(func() {
+				if err := dockerDo(ctx, c, action, t.ID); err != nil {
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("%s: %w", t.Name(), err))
+					mu.Unlock()
+				}
+			})
+		}
+		wg.Wait()
+		return errors.Join(errs...)
+	}, func(err error) {
+		if err != nil {
+			m.toastError(tr("Could not %s project %s", action, project), err)
+		}
+		m.LoadDocker()
+		if ggui.Peek(m.Page) == PageContainers && ggui.Peek(m.Container).Project() == project {
+			m.LoadContainerLogs()
+		}
+	})
+}
+
+// AskRemoveProject confirms and removes the containers of a Compose
+// project.
+func (m *Model) AskRemoveProject(project string, members []dockerapi.Container) {
+	m.Confirm(tr("Remove project %s?", project),
+		trn(len(members), "Its %d container is stopped and removed from the engine. Its volumes, networks and images stay.",
+			"Its %d containers are stopped and removed from the engine. Its volumes, networks and images stay."),
+		tr("Remove containers"), func() { m.ProjectAction("remove", project, members) })
 }
 
 // SelectContainer shows a container in the details under the table.

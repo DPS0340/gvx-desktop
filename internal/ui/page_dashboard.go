@@ -136,6 +136,7 @@ func recentSandboxes(m *Model) ggui.Widget {
 				statusMark(r.State),
 				widget.Text(r.Spec.Name).Size(14).Weight(ggui.WeightMedium).NoWrap(),
 				widget.Expanded(ui.Caption(r.Spec.Image).Size(13).NoWrap().Ellipsis()),
+				sandboxUsageBrief(m, id),
 				ui.Caption(statusText(r.State)).Size(12).NoWrap(),
 				sandboxQuickActions(m, r),
 			).Gap(10).Align(widget.AlignCenter), func() { m.ShowSandbox(id, 0) })
@@ -150,6 +151,26 @@ func recentSandboxes(m *Model) ggui.Widget {
 			Action(ui.Button(tr("View all"), func() { m.Go(PageSandboxes) }).Ghost().Size(ui.ButtonSmall)),
 		ui.CardContent(list),
 	)
+}
+
+// sandboxUsageBrief is what a running sandbox uses, CPU and memory, as
+// short as the dashboard's rows have room for; nothing while it is not
+// known.
+func sandboxUsageBrief(m *Model, id string) ggui.Widget {
+	text := ggui.Map(m.SandboxUsage, func(all map[string]Usage) string {
+		u, ok := all[id]
+		if !ok {
+			return ""
+		}
+		v := usageOf(u, true)
+		return v.CPU + " · " + v.Mem
+	})
+	return ggui.View(text, func(s string) ggui.Widget {
+		if s == "" {
+			return widget.Box()
+		}
+		return ui.Mono(s).Size(11).Color(colorGray).NoWrap()
+	})
 }
 
 // sandboxQuickActions are the start/stop buttons of a row.

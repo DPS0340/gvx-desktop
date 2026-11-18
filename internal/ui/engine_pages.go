@@ -2,6 +2,7 @@ package ui
 
 import (
 	"image/color"
+	"slices"
 	"time"
 
 	"github.com/ironpark/ggui"
@@ -221,10 +222,8 @@ func (m *Model) recipePageInterval(recipe string, pages ...string) time.Duration
 		return 0
 	}
 	page := m.Page.Get()
-	for _, p := range pages {
-		if page == p {
-			return 3 * time.Second
-		}
+	if slices.Contains(pages, page) {
+		return 3 * time.Second
 	}
 	return 10 * time.Second
 }

@@ -51,6 +51,12 @@ func sandboxesPage(m *Model) ggui.Widget {
 		ui.Col(tr("Ports"), func(r ggui.Readable[Row]) ggui.Widget {
 			return ui.CaptionOf(ggui.Map(r, portsSummary)).Size(12).NoWrap().Ellipsis()
 		}).Grow(2),
+		ui.Col(tr("CPU / Memory"), func(r ggui.Readable[Row]) ggui.Widget {
+			return usageCell(ggui.Combine(r, m.SandboxUsage, func(r Row, all map[string]Usage) usageView {
+				u, ok := all[r.Spec.ID]
+				return usageOf(u, ok && r.State.Status.Active())
+			}))
+		}).W(usageWidth),
 		ui.Col(tr("Uptime"), func(r ggui.Readable[Row]) ggui.Widget {
 			return ui.CaptionOf(ggui.Combine(r, m.Now, func(r Row, now time.Time) string {
 				if r.State.Status.Active() {
@@ -190,8 +196,12 @@ func detailHeader(m *Model, r Row) ggui.Widget {
 	if st.Restored != "" {
 		meta = append(meta, tr("restored from %s", shortPath(st.Restored)))
 	}
+	usage := usageLine(ggui.Map(m.SandboxUsage, func(all map[string]Usage) usageView {
+		u, ok := all[id]
+		return usageOf(u, ok && st.Status.Active())
+	}))
 	head := widget.Column(
-		widget.Row(ui.Title(r.Spec.Name).Size(20), statusLabel(st)).Gap(12).Align(widget.AlignCenter),
+		widget.Row(ui.Title(r.Spec.Name).Size(20), statusLabel(st), usage).Gap(12).Align(widget.AlignCenter),
 		ui.Caption(strings.Join(meta, " · ")).Size(12),
 	).Gap(4)
 	var problem ggui.Widget = widget.Box()

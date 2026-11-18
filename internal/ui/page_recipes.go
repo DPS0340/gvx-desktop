@@ -333,8 +333,8 @@ func kubectlCard(m *Model, status ggui.Widget) ggui.Widget {
 				copyable(m, "export KUBECONFIG="+cfg, "KUBECONFIG"),
 				copyable(m, "kubectl get nodes", "kubectl get nodes"),
 				copyable(m, "kubectl create deployment web --image=nginx:alpine", tr("example deployment")),
-				copyable(m, "kubectl expose deployment web --type=NodePort --port=80 --overrides='{\"spec\":{\"ports\":[{\"port\":80,\"nodePort\":30080}]}}'", tr("example service")),
-				ui.Caption(tr("Then open http://127.0.0.1:30080.")),
+				copyable(m, "kubectl expose deployment web --type=NodePort --port=80 --overrides='{\"spec\":{\"ports\":[{\"port\":80,\"nodePort\":30000}]}}'", tr("example service")),
+				ui.Caption(tr("Then open http://127.0.0.1:30000.")),
 			}
 		})),
 	)

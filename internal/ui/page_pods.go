@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"image/color"
 	"maps"
 	"slices"
@@ -15,33 +16,32 @@ import (
 
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
+	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
 // The states of the Pods page, past the cluster's sandbox's: k3s is still
-// coming up, the API server did not answer, it has yet to, it has no pods,
-// it has only the system's and those are hidden, or it has some to show.
+// coming up, the API server did not answer, it has yet to, or it answered;
+// and of its Pods view: the cluster has no pods, it has only the system's
+// and those are hidden, the workload chosen has none, or it has some to
+// show.
 const (
 	podsWaiting = iota + 1
 	podsFailed
 	podsLoading
+	podsAnswered
 	podsNone
 	podsOnlySystem
+	podsNoneOwned
 	podsListed
 )
 
-// podsPage lists the k3s cluster's pods as the Containers page lists the
-// Docker Engine's containers: a table to filter, and the details of the
-// chosen one under it. It tells what to do while the cluster is not
+// podsPage is the app's view of the k3s cluster: its pods, as the
+// Containers page lists the Docker Engine's containers, with the details
+// of the chosen one under them; the workloads that keep them; and the
+// services that lead to them, one view at a time, with the port forwards
+// that run above each. It tells what to do while the cluster is not
 // running.
 func podsPage(m *Model) ggui.Widget {
-	summary := ui.CaptionOf(ggui.Combine(m.PodsOpen, m.Pods, func(open bool, l Listing[kubeapi.Pod]) string {
-		if !open || !l.Loaded || l.Err != "" {
-			return tr("Pods run on the k3s node in the Kubernetes sandbox.")
-		}
-		running, total, namespaces := podCounts(l.Items)
-		return tr("%d running · %d total in %d namespaces. Pods run on the k3s node in the Kubernetes sandbox.", running, total, namespaces)
-	}))
-
 	state := ggui.Derived(func() int {
 		l := m.Pods.Get()
 		switch {
@@ -53,15 +53,10 @@ func podsPage(m *Model) ggui.Widget {
 			return podsFailed
 		case !l.Loaded:
 			return podsLoading
-		case len(l.Items) == 0:
-			return podsNone
-		case len(userPods(l.Items, m.SystemPods.Get())) == 0:
-			return podsOnlySystem
 		}
-		return podsListed
+		return podsAnswered
 	})
 	body := ggui.View(state, func(s int) ggui.Widget {
-		media := glyph(lucide.Hexagon, 32).Color(colorGray)
 		kube := ui.Button(tr("Open Kubernetes page"), func() { m.Go(PageKubernetes) }).Outline()
 		switch s {
 		case 0:
@@ -74,28 +69,112 @@ func podsPage(m *Model) ggui.Widget {
 			return ui.Alert(tr("Could not reach the API server"), ggui.Peek(m.Pods).Err).Destructive().Icon(icons.Alert)
 		case podsLoading:
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking the API server…"))).Gap(8)
+		}
+		return ui.Tabs(m.KubeView,
+			ui.Tab(tr("Pods"), kubeView(m, podsView(m))),
+			ui.Tab(tr("Workloads"), kubeView(m, workloadsView(m))),
+			ui.Tab(tr("Services"), kubeView(m, servicesView(m))),
+		).Name(tr("Cluster views"))
+	})
+
+	header := ggui.View(m.KubeView, func(v int) ggui.Widget {
+		return pageHeader(kubeViewTitle(v), ui.CaptionOf(ggui.Derived(func() string { return kubeViewSummary(m, v) })),
+			tip(iconButton(lucide.RefreshCw, tr("Refresh"), func() {
+				m.LoadPods()
+				m.LoadPodLogs()
+			}).BindDisabled(ggui.Not(m.PodsOpen)), tr("Refresh")),
+			ui.Button("Kubernetes", func() { m.Go(PageKubernetes) }).Outline().Icon(glyph(lucide.ShipWheel, 16)),
+		)
+	})
+	return page(header, body)
+}
+
+// kubeViewTitle is the title of the page on a view.
+func kubeViewTitle(v int) string {
+	switch v {
+	case KubeWorkloads:
+		return tr("Workloads")
+	case KubeServices:
+		return tr("Services")
+	}
+	return tr("Pods")
+}
+
+// kubeViewSummary is the line under the page's title on a view: what it
+// counts, once the cluster has answered.
+func kubeViewSummary(m *Model, v int) string {
+	answered := m.PodsOpen.Get() && m.Pods.Get().Loaded && m.Pods.Get().Err == ""
+	switch v {
+	case KubeWorkloads:
+		l := m.Workloads.Get()
+		if !answered || !l.Loaded || l.Err != "" {
+			return tr("Deployments, StatefulSets, DaemonSets and Jobs make the cluster's pods and keep them running.")
+		}
+		return trn(len(l.Items), "%d workload in all. Deployments, StatefulSets, DaemonSets and Jobs make the cluster's pods and keep them running.",
+			"%d workloads in all. Deployments, StatefulSets, DaemonSets and Jobs make the cluster's pods and keep them running.")
+	case KubeServices:
+		ranges := recipes.NodePortRanges(m.clusterSpec())
+		if len(ranges) == 0 {
+			return tr("Services give pods one address in the cluster. No NodePorts reach this computer; forward a port instead.")
+		}
+		return tr("Services give pods one address in the cluster. NodePorts %s reach this computer; forward a port for any other.", strings.Join(ranges, ", "))
+	}
+	if l := m.Pods.Get(); answered {
+		running, total, namespaces := podCounts(l.Items)
+		return tr("%d running · %d total in %d namespaces. Pods run on the k3s node in the Kubernetes sandbox.", running, total, namespaces)
+	}
+	return tr("Pods run on the k3s node in the Kubernetes sandbox.")
+}
+
+// clusterSpec is the spec of the cluster's sandbox, whose ports say which
+// NodePorts reach this computer.
+func (m *Model) clusterSpec() sandbox.Spec {
+	r, _ := m.RecipeSandbox(m.Rows.Get(), recipes.Kubernetes)
+	return r.Spec
+}
+
+// kubeView is a view of the cluster under the port forwards that run.
+func kubeView(m *Model, view ggui.Widget) ggui.Widget {
+	return widget.Padding(widget.Column(forwardsCard(m), view).Stretch(), 12, 0, 0, 0)
+}
+
+// podsView is the Pods view: the table of pods and the chosen one's
+// details, or why there is none.
+func podsView(m *Model) ggui.Widget {
+	state := ggui.Derived(func() int {
+		l := m.Pods.Get()
+		mine := userPods(l.Items, m.SystemPods.Get())
+		switch {
+		case len(l.Items) == 0:
+			return podsNone
+		case len(mine) == 0:
+			return podsOnlySystem
+		case len(ownedPods(mine, m.PodOwner.Get())) == 0:
+			return podsNoneOwned
+		}
+		return podsListed
+	})
+	return ggui.View(state, func(s int) ggui.Widget {
+		media := glyph(lucide.Hexagon, 32).Color(colorGray)
+		switch s {
 		case podsNone:
 			return ui.Empty(tr("No pods"), tr("Run one with kubectl: kubectl create deployment web --image=nginx:alpine")).Media(media).Outline()
 		case podsOnlySystem:
 			return ui.Empty(tr("No pods of your own"), tr("Only the cluster's own pods run, in kube-system. Run one with kubectl: kubectl create deployment web --image=nginx:alpine")).
 				Media(media).Action(ui.Button(tr("Show system pods"), func() { m.SystemPods.Set(true) }).Outline()).Outline()
+		case podsNoneOwned:
+			ref := ggui.Peek(m.PodOwner)
+			return widget.Column(
+				tableCard(podsTable(m)),
+				ui.Empty(tr("%s %s has no pods", ref.Kind, ref.Name), tr("It has none running now, or they are in a namespace the System switch hides.")).
+					Media(media).Action(ui.Button(tr("Show all pods"), func() { m.PodOwner.Set(WorkloadRef{}) }).Outline()).Outline(),
+			).Gap(16).Stretch()
 		}
 		return widget.Column(
 			tableCard(podsTable(m)),
 			podDetail(m),
 		).Gap(16).Stretch()
 	})
-
-	return page(
-		pageHeader(tr("Pods"), summary,
-			tip(iconButton(lucide.RefreshCw, tr("Refresh pods"), func() {
-				m.LoadPods()
-				m.LoadPodLogs()
-			}).BindDisabled(ggui.Not(m.PodsOpen)), tr("Refresh")),
-			ui.Button("Kubernetes", func() { m.Go(PageKubernetes) }).Outline().Icon(glyph(lucide.ShipWheel, 16)),
-		),
-		body,
-	)
 }
 
 // kubeGate words the Pods page while the cluster does not run.
@@ -111,17 +190,26 @@ func kubeGate() gateWords {
 	}
 }
 
-// podsTable is the cluster's pods, the system's only when asked for,
-// filtered by the query.
+// podsTable is the cluster's pods, the system's only when asked for, those
+// of one workload when one is chosen, filtered by the query.
 func podsTable(m *Model) ggui.Widget {
-	all := ggui.Combine(m.Pods, m.SystemPods, func(l Listing[kubeapi.Pod], system bool) []kubeapi.Pod {
-		return userPods(l.Items, system)
+	all := ggui.Derived(func() []kubeapi.Pod {
+		return ownedPods(userPods(m.Pods.Get().Items, m.SystemPods.Get()), m.PodOwner.Get())
 	}).WithEqual(nil)
 	visible := ggui.Combine(all, m.PodQuery, filterPods).WithEqual(nil)
 	count := ggui.Combine(visible, all, func(v, a []kubeapi.Pod) string { return showing(len(v), len(a)) })
 	selected := ggui.Bind(ggui.Map(m.Pod, kubeapi.Pod.Key).Get, m.SelectPod)
+	// The workload whose pods alone show, with a way back to all of them.
+	owner := ggui.View(m.PodOwner, func(ref WorkloadRef) ggui.Widget {
+		if ref == (WorkloadRef{}) {
+			return widget.Box()
+		}
+		return tip(ui.Button(ref.Kind+" "+ref.Name, func() { m.PodOwner.Set(WorkloadRef{}) }).Outline().Size(ui.ButtonExtraSmall).
+			Icon(glyph(lucide.X, 12)).Name(tr("Show all pods")), tr("Show all pods"))
+	})
 	toolbar := widget.Row(
 		widget.Expanded(filterBar(m.PodQuery, tr("Filter by name, namespace or status"), count)),
+		owner,
 		ui.Switch(m.SystemPods, tr("System pods")).Small(),
 	).Gap(16).Align(widget.AlignCenter)
 	return ui.Table(visible, kubeapi.Pod.Key,
@@ -147,6 +235,12 @@ func podsTable(m *Model) ggui.Widget {
 				return widget.Column(n, ui.CaptionOf(ggui.Map(m.Now, func(now time.Time) string { return ago(last, now) })).Size(11).NoWrap()).Gap(1)
 			})
 		}).W(100),
+		ui.Col(tr("CPU / Memory"), func(r ggui.Readable[kubeapi.Pod]) ggui.Widget {
+			return usageCell(ggui.Combine(r, m.PodUsage, func(p kubeapi.Pod, all map[string]PodUse) usageView {
+				u, ok := all[p.Key()]
+				return podUsageOf(u.Total, ok)
+			}))
+		}).W(usageWidth),
 		ui.Col(tr("Age"), func(r ggui.Readable[kubeapi.Pod]) ggui.Widget {
 			return ui.CaptionOf(ggui.Combine(r, m.Now, func(p kubeapi.Pod, now time.Time) string {
 				if p.Metadata.Created.IsZero() {
@@ -202,6 +296,8 @@ func podMenu(m *Model, p kubeapi.Pod) ggui.Widget {
 		ui.MenuItem(tr("Copy kubectl exec command"), func() { m.Copy(kubectlExec(link, p, ctr), "kubectl exec") }),
 		ui.MenuItem(tr("Copy kubectl describe command"), func() { m.Copy(kubectlDescribe(link, p), "kubectl describe") }),
 		ui.MenuDivider(),
+		ui.MenuItem(tr("Forward a port…"), func() { m.AskForwardPod(p) }).Disabled(!podForwardable(p)),
+		ui.MenuDivider(),
 		ui.MenuItem(tr("Delete…"), func() { m.AskDeletePod(p) }).Destructive(),
 	).Name(tr("More actions for %s", p.Name()))
 }
@@ -245,7 +341,13 @@ func podHeader(m *Model, p kubeapi.Pod) ggui.Widget {
 		}
 		return strings.Join(parts, " · ")
 	})).Size(12).NoWrap().Ellipsis()
-	return detailHead(p.Name(), podStatusLabel(p), meta,
+	usage := usageLine(ggui.Map(m.PodUsage, func(all map[string]PodUse) usageView {
+		u, ok := all[p.Key()]
+		return podUsageOf(u.Total, ok)
+	}))
+	state := widget.Row(podStatusLabel(p), usage).Gap(16).Align(widget.AlignCenter)
+	return detailHead(p.Name(), state, meta,
+		ui.Button(tr("Forward a port…"), func() { m.AskForwardPod(p) }).Outline().Icon(glyph(lucide.ArrowLeftRight, 14)).Disabled(!podForwardable(p)),
 		ui.Button(tr("Delete"), func() { m.AskDeletePod(p) }).Outline().Icon(glyph(lucide.Trash, 14)).Disabled(p.Metadata.Deleted != nil),
 		podMenu(m, p),
 	)
@@ -304,7 +406,7 @@ func podTerminal(m *Model) ggui.Widget {
 func podInfo(m *Model, p kubeapi.Pod) ggui.Widget {
 	parts := []ggui.Widget{sectionTitle(tr("Containers"), "")}
 	for _, c := range append(slices.Clone(p.Spec.Containers), p.Spec.InitContainers...) {
-		parts = append(parts, podContainerRow(p, c))
+		parts = append(parts, podContainerRow(m, p, c))
 	}
 	text := func(s string) string {
 		if s == "" {
@@ -321,6 +423,7 @@ func podInfo(m *Model, p kubeapi.Pod) ggui.Widget {
 		kvText(tr("Namespace"), p.Namespace()),
 		kvText(tr("Node"), text(p.Spec.Node)),
 		kvText(tr("Pod IP"), text(p.Status.PodIP)),
+		kvText(tr("Ports"), text(podPortsText(p))),
 		kvText(tr("Created"), created),
 		kvText(tr("Owner"), text(workloadText(p))),
 	)
@@ -350,9 +453,22 @@ func podInfo(m *Model, p kubeapi.Pod) ggui.Widget {
 	return widget.Padding(widget.Column(parts...).Gap(10).Stretch(), 8, 0)
 }
 
-// podContainerRow is a container of a pod: its state, name, image and
-// restarts.
-func podContainerRow(p kubeapi.Pod, c kubeapi.Container) ggui.Widget {
+// podPortsText lists the ports a pod's containers declare: 80/TCP (http).
+func podPortsText(p kubeapi.Pod) string {
+	var out []string
+	for _, cp := range p.Ports() {
+		s := itoa(cp.Port) + "/" + cmp.Or(cp.Protocol, "TCP")
+		if cp.Name != "" {
+			s += " (" + cp.Name + ")"
+		}
+		out = append(out, s)
+	}
+	return strings.Join(out, ", ")
+}
+
+// podContainerRow is a container of a pod: its state, name, image,
+// restarts, and what it uses as metrics-server last sampled it.
+func podContainerRow(m *Model, p kubeapi.Pod, c kubeapi.Container) ggui.Widget {
 	st, ok := p.ContainerStatusOf(c.Name)
 	col, state := colorGray, tr("Not created yet")
 	if ok {
@@ -384,42 +500,68 @@ func podContainerRow(p kubeapi.Pod, c kubeapi.Container) ggui.Widget {
 		).Gap(2)),
 		widget.Box(ui.Caption(state).Size(12).NoWrap().Ellipsis()).Width(200),
 		widget.Box(ui.Caption(restarts).Size(12).NoWrap()).Width(90),
+		widget.Box(usageCell(ggui.Map(m.PodUsage, func(all map[string]PodUse) usageView {
+			u, ok := all[p.Key()].Containers[c.Name]
+			return podUsageOf(u, ok)
+		}))).Width(usageWidth),
 	).Gap(10).Align(widget.AlignCenter)
 }
 
-// podsSummary counts the cluster's pods and leads to the Pods page, which
-// lists them.
+// podsSummary counts the cluster's pods, workloads, services and the port
+// forwards that run, and leads to the Pods page, which lists them.
 func podsSummary(m *Model) ggui.Widget {
-	line := ggui.Derived(func() [2]string {
+	line := ggui.Derived(func() [3]string {
 		a, l := m.PodsAccess.Get(), m.Pods.Get()
 		switch {
 		case a != PodsOpen:
-			return [2]string{a.Reason(), ""}
+			return [3]string{a.Reason()}
 		case m.PodsWaiting.Get():
-			return [2]string{tr("The cluster is starting…"), tr("Its pods show here once the API server answers. k3s takes up to two minutes to come up.")}
+			return [3]string{tr("The cluster is starting…"), tr("Its pods show here once the API server answers. k3s takes up to two minutes to come up.")}
 		case l.Err != "":
-			return [2]string{tr("Could not reach the API server"), l.Err}
+			return [3]string{tr("Could not reach the API server"), l.Err}
 		case !l.Loaded:
-			return [2]string{tr("Asking the API server…"), ""}
+			return [3]string{tr("Asking the API server…")}
 		}
 		running, total, _ := podCounts(l.Items)
 		var mine []string
 		for _, p := range userPods(l.Items, false) {
 			mine = append(mine, p.Name())
 		}
-		return [2]string{tr("%d running · %d total", running, total), strings.Join(mine, ", ")}
+		return [3]string{tr("%d running · %d total", running, total), clusterCounts(m.Workloads.Get(), m.Services.Get(), m.Forwards.Get()), strings.Join(mine, ", ")}
 	})
-	text := ggui.View(line, func(t [2]string) ggui.Widget {
+	text := ggui.View(line, func(t [3]string) ggui.Widget {
 		col := []ggui.Widget{widget.Text(t[0]).Size(13).Weight(ggui.WeightMedium)}
-		if t[1] != "" {
-			col = append(col, ui.Caption(t[1]).Size(12).NoWrap().Ellipsis())
+		for _, s := range t[1:] {
+			if s != "" {
+				col = append(col, ui.Caption(s).Size(12).NoWrap().Ellipsis())
+			}
 		}
 		return widget.Column(col...).Gap(2)
 	})
 	return ui.Card(widget.Row(
 		glyph(lucide.Hexagon, 20).Color(colorGray),
 		widget.Expanded(text),
-		ui.Button(tr("Open Pods"), func() { m.Go(PagePods) }).Outline().Size(ui.ButtonSmall).
+		ui.Button(tr("Open Pods"), func() { m.GoKube(KubePods) }).Outline().Size(ui.ButtonSmall).
 			Icon(glyph(lucide.ArrowRight, 14)).BindDisabled(ggui.Not(m.PodsOpen)),
 	).Gap(14).Align(widget.AlignCenter))
+}
+
+// clusterCounts counts in a line the workloads and services, as far as
+// they were read, and the port forwards that run, with where they listen.
+func clusterCounts(wl Listing[kubeapi.Workload], sv Listing[kubeapi.Service], fw []PortForward) string {
+	var parts []string
+	if wl.Loaded && wl.Err == "" {
+		parts = append(parts, trn(len(wl.Items), "%d workload", "%d workloads"))
+	}
+	if sv.Loaded && sv.Err == "" {
+		parts = append(parts, trn(len(sv.Items), "%d service", "%d services"))
+	}
+	if len(fw) > 0 {
+		var at []string
+		for _, f := range fw {
+			at = append(at, f.Address()+" → "+f.TargetText())
+		}
+		parts = append(parts, trn(len(fw), "%d port forward", "%d port forwards")+": "+strings.Join(at, ", "))
+	}
+	return strings.Join(parts, " · ")
 }

@@ -483,17 +483,7 @@ func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
 		defer c.Close()
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		switch action {
-		case "start":
-			return c.Start(ctx, ctr.ID)
-		case "stop":
-			return c.Stop(ctx, ctr.ID)
-		case "restart":
-			return c.Restart(ctx, ctr.ID)
-		case "remove":
-			return c.Remove(ctx, ctr.ID, true)
-		}
-		return fmt.Errorf("unknown action %s", action)
+		return dockerDo(ctx, c, action, ctr.ID)
 	}, func(err error) {
 		if err != nil {
 			m.toastError(fmt.Sprintf(tr("Could not %s %s"), action, ctr.Name()), err)
@@ -503,6 +493,21 @@ func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
 			m.LoadContainerLogs() // what it wrote as it stopped or started
 		}
 	})
+}
+
+// dockerDo runs start, stop, restart or remove on the container id.
+func dockerDo(ctx context.Context, c *dockerapi.Client, action, id string) error {
+	switch action {
+	case "start":
+		return c.Start(ctx, id)
+	case "stop":
+		return c.Stop(ctx, id)
+	case "restart":
+		return c.Restart(ctx, id)
+	case "remove":
+		return c.Remove(ctx, id, true)
+	}
+	return fmt.Errorf("unknown action %s", action)
 }
 
 // AskRemoveContainer confirms and removes a container.

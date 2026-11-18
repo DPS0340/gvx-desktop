@@ -1,6 +1,6 @@
 // Package dockerapi is a small client of the Docker Engine API, enough to
-// list, control and read the logs of the containers of a dockerd that runs
-// in a gvx sandbox.
+// list, control and read the logs and the usage of the containers of a
+// dockerd that runs in a gvx sandbox.
 package dockerapi
 
 import (
@@ -156,6 +156,10 @@ func (c Container) Name() string {
 
 // Project is the Compose project the container belongs to, if any.
 func (c Container) Project() string { return c.Labels["com.docker.compose.project"] }
+
+// Service is the service of its Compose project the container runs, if
+// any.
+func (c Container) Service() string { return c.Labels["com.docker.compose.service"] }
 
 // PortsText formats the published ports as docker ps does.
 func (c Container) PortsText() string {

@@ -141,8 +141,10 @@ func run(st store.Store, dir string, hidden bool) error {
 	runErr := app.Run()
 	signal.Stop(sigs)
 	// The shells of the terminals end with the app, and what they run in
-	// their containers with them.
+	// their containers with them; so do the port forwards, and the
+	// connections they carry.
 	m.CloseTerminals()
+	m.CloseForwards()
 	// Whatever ended the app, no sandbox outlives it: gvx has no daemon to
 	// adopt them.
 	m.Supervisor().StopAll(10 * time.Second)
@@ -226,7 +228,9 @@ func installMenus(app *ggui.App, m *ui.Model) {
 			ggui.MenuAction(ui.T("Dashboard"), "", func() { m.Go(ui.PageDashboard) }),
 			ggui.MenuAction(ui.T("Sandboxes"), "", func() { m.Go(ui.PageSandboxes) }),
 			ggui.MenuAction(ui.T("Containers"), "", func() { m.Go(ui.PageContainers) }).BindEnabled(m.ContainersOpen),
-			ggui.MenuAction(ui.T("Pods"), "", func() { m.Go(ui.PagePods) }).BindEnabled(m.PodsOpen),
+			ggui.MenuAction(ui.T("Pods"), "", func() { m.GoKube(ui.KubePods) }).BindEnabled(m.PodsOpen),
+			ggui.MenuAction(ui.T("Workloads"), "", func() { m.GoKube(ui.KubeWorkloads) }).BindEnabled(m.PodsOpen),
+			ggui.MenuAction(ui.T("Services"), "", func() { m.GoKube(ui.KubeServices) }).BindEnabled(m.PodsOpen),
 			ggui.MenuAction(ui.T("Images"), "", func() { m.Go(ui.PageImages) }),
 			ggui.MenuAction(ui.T("Volumes"), "", func() { m.Go(ui.PageVolumes) }),
 			ggui.MenuAction(ui.T("Snapshots"), "", func() { m.Go(ui.PageSnapshots) }),

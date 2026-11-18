@@ -1,11 +1,14 @@
 // Package kubeapi is a small client of the Kubernetes API, enough to list,
 // delete and read the logs of the pods of the k3s cluster a gvx sandbox
-// runs. It reaches the API server with the credentials of a kubeconfig, as
-// kubectl would, over plain net/http.
+// runs, and what they use as metrics-server tells it, list, scale, restart
+// and delete its workloads, list its services and forward ports to its
+// pods. It reaches the API server with the credentials of a kubeconfig,
+// as kubectl would, over plain net/http.
 package kubeapi
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -14,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -26,6 +30,8 @@ type Client struct {
 	http  *http.Client
 	base  string
 	token string
+	tls   *tls.Config // what the client checks the server with and shows it
+	host  string      // the server's host:port, which a port forward dials
 }
 
 // Open reads the kubeconfig at path and connects with its current context.
@@ -93,7 +99,11 @@ func New(e Entry) (*Client, error) {
 		ForceAttemptHTTP2:   true,
 	}
 	base := strings.TrimRight(u.Scheme+"://"+u.Host+u.Path, "/")
-	return &Client{http: &http.Client{Transport: tr, Timeout: 15 * time.Second}, base: base, token: e.Token}, nil
+	host := u.Host
+	if u.Port() == "" {
+		host = net.JoinHostPort(u.Hostname(), "443")
+	}
+	return &Client{http: &http.Client{Transport: tr, Timeout: 15 * time.Second}, base: base, token: e.Token, tls: conf.Clone(), host: host}, nil
 }
 
 // Close releases idle connections.
@@ -109,11 +119,23 @@ type status struct {
 // send makes a request and returns the body of a successful answer, which
 // the caller closes.
 func (c *Client) send(ctx context.Context, method, path string) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
+	return c.sendBody(ctx, method, path, "", nil)
+}
+
+// sendBody is send with a body of the content type given.
+func (c *Client) sendBody(ctx context.Context, method, path, contentType string, body []byte) (io.ReadCloser, error) {
+	var r io.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, r)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
@@ -125,12 +147,18 @@ func (c *Client) send(ctx context.Context, method, path string) (io.ReadCloser, 
 		return res.Body, nil
 	}
 	defer res.Body.Close()
+	return nil, failure(res, method, path)
+}
+
+// failure is the error a failed answer carries: the message of the Status
+// the API server answers with, or its HTTP status.
+func failure(res *http.Response, method, path string) error {
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
 	var s status
 	if json.Unmarshal(body, &s) == nil && s.Message != "" {
-		return nil, &APIError{Code: res.StatusCode, Reason: s.Reason, Message: s.Message}
+		return &APIError{Code: res.StatusCode, Reason: s.Reason, Message: s.Message}
 	}
-	return nil, &APIError{Code: res.StatusCode, Message: fmt.Sprintf("%s %s: %s", method, path, res.Status)}
+	return &APIError{Code: res.StatusCode, Message: fmt.Sprintf("%s %s: %s", method, path, res.Status)}
 }
 
 // APIError is a failure the API server answered with.
@@ -143,7 +171,13 @@ type APIError struct {
 func (e *APIError) Error() string { return e.Message }
 
 func (c *Client) do(ctx context.Context, method, path string, out any) error {
-	body, err := c.send(ctx, method, path)
+	return c.doBody(ctx, method, path, "", nil, out)
+}
+
+// doBody makes a request with a body and decodes the answer into out, or
+// drops it for a nil out.
+func (c *Client) doBody(ctx context.Context, method, path, contentType string, in []byte, out any) error {
+	body, err := c.sendBody(ctx, method, path, contentType, in)
 	if err != nil {
 		return err
 	}

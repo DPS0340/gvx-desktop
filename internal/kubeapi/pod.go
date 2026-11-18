@@ -3,6 +3,7 @@ package kubeapi
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
@@ -41,8 +42,9 @@ type PodSpec struct {
 
 // Container is a container of a pod's spec.
 type Container struct {
-	Name  string `json:"name"`
-	Image string `json:"image"`
+	Name  string          `json:"name"`
+	Image string          `json:"image"`
+	Ports []ContainerPort `json:"ports,omitempty"`
 	// RestartPolicy Always makes an init container a sidecar, which runs
 	// beside the others.
 	RestartPolicy string `json:"restartPolicy,omitempty"`
@@ -272,8 +274,8 @@ func (p Pod) Summarize() Summary {
 	if !initializing || condition(st.Conditions, "Initialized") {
 		restarts, lastRestart = sidecarRestarts, lastSidecarRestart
 		running := false
-		for i := len(st.Containers) - 1; i >= 0; i-- {
-			c := st.Containers[i]
+		for _, c := range slices.Backward(st.Containers) {
+
 			restarts += c.Restarts
 			later(&lastRestart, c.Last)
 			w, t := c.State.Waiting, c.State.Terminated

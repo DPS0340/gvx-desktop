@@ -44,11 +44,13 @@ PowerShell에서 설치합니다. 샌드박스를 실행하려면 **Windows 하�
 irm https://raw.githubusercontent.com/ironpark/gvx-desktop/main/install.ps1 | iex
 ```
 
-[설치 스크립트](install.ps1)는 릴리스 ZIP을 다운로드하고 함께 게시된 SHA-256 체크섬으로 검증합니다. 관리자 권한 없이 현재 사용자 계정에 앱을 설치하고 시작 메뉴에 바로 가기를 추가합니다.
+인터랙티브 [설치 스크립트](install.ps1)는 실행 중인 GVX Desktop 확인 및 종료, SHA-256 체크섬 검증, 관리자 권한 없는 현재 사용자 설치, 시작 메뉴·바탕 화면 바로가기 생성, 설치 후 실행 여부 선택을 TUI로 제공합니다. 기본 언어는 영어이며 사용자 설정이나 Windows 로캘에 따라 영어·한국어·일본어를 지원합니다(설치 중 `L` 키로 전환 가능).
 
 - **업데이트**하려면 같은 명령을 다시 실행합니다.
-- **특정 버전**을 설치하려면 명령을 실행하기 전에 `$env:GVX_DESKTOP_VERSION = '0.1.0'`을 설정합니다.
-- **제거**하려면 `%LOCALAPPDATA%\Programs\GVX Desktop` 폴더와 시작 메뉴의 **GVX Desktop** 바로 가기를 삭제합니다.
+- **특정 버전**을 설치하려면 명령을 실행하기 전에 `$env:GVX_DESKTOP_VERSION = '0.5.0'`을 설정합니다.
+- **설치 언어 지정**은 `$env:GVX_DESKTOP_LANG = 'ko'` (`en`, `ko`, `ja`)로 설정하거나 설치 화면에서 `L` 키를 누릅니다.
+- **비대화형 설치**는 `$env:GVX_DESKTOP_NONINTERACTIVE = '1'`을 설정합니다(선택: `$env:GVX_DESKTOP_DESKTOP_SHORTCUT = '0'`, `$env:GVX_DESKTOP_LAUNCH = '1'`).
+- **제거**하려면 `%LOCALAPPDATA%\Programs\GVX Desktop` 폴더와 시작 메뉴·바탕 화면의 **GVX Desktop** 바로 가기를 삭제합니다.
 
 직접 설치하려면 [릴리스 페이지](https://github.com/ironpark/gvx-desktop/releases)에서 PC에 맞는 ZIP을 다운로드합니다. Intel과 AMD는 `windows-amd64`, Arm은 `windows-arm64`를 선택합니다. 압축을 푼 뒤 `GVX Desktop.exe`를 실행합니다.
 

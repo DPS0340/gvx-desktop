@@ -44,11 +44,13 @@ Install from PowerShell. Windows Hypervisor Platform must be enabled to run sand
 irm https://raw.githubusercontent.com/ironpark/gvx-desktop/main/install.ps1 | iex
 ```
 
-The [installer](install.ps1) verifies the release ZIP against its published SHA-256 checksum. It installs for the current user without administrator privileges and adds a Start menu shortcut.
+The interactive [installer](install.ps1) checks for running instances, verifies the release ZIP against its published SHA-256 checksum, installs for the current user without administrator privileges, creates Start Menu and Desktop shortcuts, and offers to launch the app when finished. It defaults to English and supports English, Korean, and Japanese (detected from your settings or Windows locale, or toggled with `L`).
 
 - **Update** by running the same command again.
-- **Install a specific version** by setting `$env:GVX_DESKTOP_VERSION = '0.1.0'` before running the command.
-- **Uninstall** by deleting `%LOCALAPPDATA%\Programs\GVX Desktop` and the **GVX Desktop** Start menu shortcut.
+- **Install a specific version** by setting `$env:GVX_DESKTOP_VERSION = '0.5.0'` before running the command.
+- **Choose installer language** by setting `$env:GVX_DESKTOP_LANG = 'en'` (`en`, `ko`, or `ja`), or press `L` in the installer.
+- **Non-interactive install** by setting `$env:GVX_DESKTOP_NONINTERACTIVE = '1'` (optional: `$env:GVX_DESKTOP_DESKTOP_SHORTCUT = '0'`, `$env:GVX_DESKTOP_LAUNCH = '1'`).
+- **Uninstall** by deleting `%LOCALAPPDATA%\Programs\GVX Desktop` and the **GVX Desktop** Start Menu / Desktop shortcuts.
 
 For a manual install, download the ZIP from the [release page](https://github.com/ironpark/gvx-desktop/releases). Choose `windows-amd64` for Intel or AMD, or `windows-arm64` for Arm. Extract the ZIP and open `GVX Desktop.exe`.
 

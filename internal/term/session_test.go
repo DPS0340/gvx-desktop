@@ -49,8 +49,10 @@ func TestAShellRunsAndExits(t *testing.T) {
 	if exited, code := s.Exited(); !exited || code != 3 {
 		t.Fatalf("exited %v with %d, want 3", exited, code)
 	}
-	// The command line is echoed as typed; only the output reads hello.
-	if text := screenText(t, s); !strings.Contains(text, "\nhello") {
+	// The command line is echoed as typed ("hel''lo"); only the output reads
+	// "hello" (which may follow the shell's "$ " prompt if input arrived
+	// before the prompt was printed).
+	if text := screenText(t, s); !strings.Contains(text, "hello") {
 		t.Fatalf("the screen shows no hello:\n%s", text)
 	}
 	select {

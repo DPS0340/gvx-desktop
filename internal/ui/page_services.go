@@ -184,5 +184,5 @@ func serviceMenu(m *Model, s kubeapi.Service, spec sandbox.Spec) ggui.Widget {
 		f := PortForward{Target: kubeapi.Target{Namespace: s.Namespace(), Service: s.Name(), Port: p}, Local: defaultLocal(p)}
 		items = append(items, ui.MenuItem(tr("Copy kubectl port-forward command"), func() { m.Copy(kubectlForward(link, f), "kubectl port-forward") }))
 	}
-	return ui.MenuOf(glyph(lucide.Ellipsis, 16), items...).Name(tr("More actions for %s", s.Name()))
+	return moreMenu(tr("More actions for %s", s.Name()), items...)
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/ironpark/ggui/ui"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/imagefs"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/registry"
@@ -118,6 +119,13 @@ type Model struct {
 	Disk      *ggui.StateValue[[]rungv.DiskUsage]
 	Snapshots *ggui.StateValue[[]sandbox.Snapshot]
 
+	// ImageView chooses between gvx's own image cache (ImagesGVX) and the
+	// images inside the Docker Engine sandbox (ImagesDocker).
+	ImageView           *ggui.StateValue[int]
+	DockerImages        *ggui.StateValue[Listing[dockerapi.Image]]
+	DockerImageQuery    *ggui.StateValue[string]
+	SelectedDockerImage *ggui.StateValue[string]
+
 	DockerContainers *ggui.StateValue[Listing[dockerapi.Container]]
 	DockerVersion    *ggui.StateValue[dockerapi.Version]
 	// ContainersAccess says whether the Containers page can be used, which
@@ -213,6 +221,7 @@ type Model struct {
 	ConfirmLabel  *ggui.StateValue[string]
 	confirmAction func()
 	PullOpen      *ggui.StateValue[bool]
+	PullTarget    *ggui.StateValue[int]
 	PullRef       *ggui.StateValue[string]
 	PullLog       *ggui.StateValue[string]
 	Pulling       *ggui.StateValue[bool]
@@ -228,39 +237,54 @@ type Model struct {
 	search         search
 	// Offline keeps the model from asking the network anything, as the
 	// screens rendered with made-up state must not.
-	Offline        bool
-	InspectOpen    *ggui.StateValue[bool]
-	InspectTitle   *ggui.StateValue[string]
-	InspectBody    *ggui.StateValue[string]
-	VolumeOpen     *ggui.StateValue[bool]
-	VolumeName     *ggui.StateValue[string]
-	VolumeDriver   *ggui.StateValue[string]
-	PaletteOpen    *ggui.StateValue[bool]
-	PaletteQuery   *ggui.StateValue[string]
-	QuitOpen       *ggui.StateValue[bool]
-	SidebarNarrow  *ggui.StateValue[bool]
-	ImageQuery     *ggui.StateValue[string]
-	SelectedImage  *ggui.StateValue[string]
-	SelectedVolume *ggui.StateValue[string]
+	Offline bool
+	// Image explorer dialog state (Files, Layers, Inspect).
+	ExploreOpen     *ggui.StateValue[bool]
+	ExploreTitle    *ggui.StateValue[string]
+	ExploreSource   *ggui.StateValue[string]
+	ExploreTab      *ggui.StateValue[int]
+	ExploreLoading  *ggui.StateValue[bool]
+	ExploreProgress *ggui.StateValue[string]
+	ExploreErr      *ggui.StateValue[string]
+	ExploreLayers   *ggui.StateValue[[]imagefs.Layer]
+	ExploreLayer    *ggui.StateValue[int]
+	ExplorePath     *ggui.StateValue[string]
+	ExploreQuery    *ggui.StateValue[string]
+	ExploreEntries  *ggui.StateValue[[]imagefs.Entry]
+	ExploreSelected *ggui.StateValue[string]
+	ExplorePreview  *ggui.StateValue[FilePreview]
+	ExploreInspect  *ggui.StateValue[string]
+	explorer        explorerSession
+	VolumeOpen      *ggui.StateValue[bool]
+	VolumeName      *ggui.StateValue[string]
+	VolumeDriver    *ggui.StateValue[string]
+	PaletteOpen     *ggui.StateValue[bool]
+	PaletteQuery    *ggui.StateValue[string]
+	QuitOpen        *ggui.StateValue[bool]
+	SidebarNarrow   *ggui.StateValue[bool]
+	ImageQuery      *ggui.StateValue[string]
+	SelectedImage   *ggui.StateValue[string]
+	SelectedVolume  *ggui.StateValue[string]
 
 	dirty     atomic.Bool
 	scheduled atomic.Bool
 	logSeq    int64
 	quitting  bool
 
-	runCLI                       cliRunner                  // runs docker and kubectl; tests replace it
-	dockerLoading, dockerAgain   bool                       // LoadDocker runs; it is wanted again after
-	logsLoading, logsAgain       bool                       // LoadContainerLogs runs; it is wanted again after
-	podsLoading, podsAgain       bool                       // LoadPods runs; it is wanted again after
-	podLogsLoading, podLogsAgain bool                       // LoadPodLogs runs; it is wanted again after
-	podsAnswered                 bool                       // the cluster's API server answered since it started
-	sandboxUsageLoading          bool                       // LoadSandboxUsage runs
-	containerUsageLoading        bool                       // LoadContainerUsage runs
-	sandboxSamples               map[string]sandboxSample   // the last of each sandbox's, by ID
-	containerStats               map[string]dockerapi.Stats // the last of each container's, by ID
-	terms                        liveTerminals
-	forwards                     liveForwards
-	forwarder                    forwarder // carries port forwards; tests replace it
+	runCLI                                 cliRunner                  // runs docker and kubectl; tests replace it
+	dockerLoading, dockerAgain             bool                       // LoadDocker runs; it is wanted again after
+	dockerImagesLoading, dockerImagesAgain bool                       // LoadDockerImages runs; it is wanted again after
+	logsLoading, logsAgain                 bool                       // LoadContainerLogs runs; it is wanted again after
+	podsLoading, podsAgain                 bool                       // LoadPods runs; it is wanted again after
+	podLogsLoading, podLogsAgain           bool                       // LoadPodLogs runs; it is wanted again after
+	podsAnswered                           bool                       // the cluster's API server answered since it started
+	sandboxUsageLoading                    bool                       // LoadSandboxUsage runs
+	containerUsageLoading                  bool                       // LoadContainerUsage runs
+	sandboxSamples                         map[string]sandboxSample   // the last of each sandbox's, by ID
+	containerStats                         map[string]dockerapi.Stats // the last of each container's, by ID
+	terms                                  liveTerminals
+	forwards                               liveForwards
+	forwarder                              forwarder // carries port forwards; tests replace it
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -275,7 +299,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Page:      ggui.State(PageDashboard),
 		Settings:  ggui.State(settings),
 		Engine:    ggui.State(Engine{Loading: true}),
-		Update:    ggui.State(Update{Source: settings.UpdateChannel == ChannelSource}),
+		Update:    ggui.State(Update{Source: settings.UpdateChannel == ChannelSource, Repo: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.DisplayRepo(), Branch: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.BranchName()}),
 		Autostart: ggui.State(false), // read by Start
 		BuildLog:  ggui.State(""),
 		Now:       ggui.State(time.Now()),
@@ -287,10 +311,14 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Detail:   ggui.State(0),
 		Query:    ggui.State(""),
 
-		Images:    ggui.State(Listing[rungv.Image]{}).WithEqual(nil),
-		Volumes:   ggui.State(Listing[rungv.Volume]{}).WithEqual(nil),
-		Disk:      ggui.State([]rungv.DiskUsage(nil)).WithEqual(slices.Equal[[]rungv.DiskUsage]),
-		Snapshots: ggui.State([]sandbox.Snapshot(nil)).WithEqual(slices.Equal[[]sandbox.Snapshot]),
+		Images:              ggui.State(Listing[rungv.Image]{}).WithEqual(nil),
+		Volumes:             ggui.State(Listing[rungv.Volume]{}).WithEqual(nil),
+		Disk:                ggui.State([]rungv.DiskUsage(nil)).WithEqual(slices.Equal[[]rungv.DiskUsage]),
+		Snapshots:           ggui.State([]sandbox.Snapshot(nil)).WithEqual(slices.Equal[[]sandbox.Snapshot]),
+		ImageView:           ggui.State(ImagesGVX),
+		DockerImages:        ggui.State(Listing[dockerapi.Image]{}).WithEqual(nil),
+		DockerImageQuery:    ggui.State(""),
+		SelectedDockerImage: ggui.State(""),
 
 		DockerContainers:  ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
 		DockerVersion:     ggui.State(dockerapi.Version{}),
@@ -331,36 +359,49 @@ func NewModel(st store.Store, dataDir string) *Model {
 		EditorOpen: ggui.State(false),
 		Draft:      ggui.State(Draft{}),
 
-		ConfirmOpen:    ggui.State(false),
-		ConfirmTitle:   ggui.State(""),
-		ConfirmText:    ggui.State(""),
-		ConfirmLabel:   ggui.State(tr("Confirm")),
-		PullOpen:       ggui.State(false),
-		PullRef:        ggui.State(""),
-		PullLog:        ggui.State(""),
-		Pulling:        ggui.State(false),
-		SearchResults:  ggui.State([]registry.Result(nil)),
-		SearchFor:      ggui.State(""),
-		SearchBusy:     ggui.State(false),
-		SearchErr:      ggui.State(""),
-		SearchTags:     ggui.State([]string(nil)),
-		SearchTagsOf:   ggui.State(""),
-		SearchTagsBusy: ggui.State(false),
-		InspectOpen:    ggui.State(false),
-		InspectTitle:   ggui.State(""),
-		InspectBody:    ggui.State(""),
-		VolumeOpen:     ggui.State(false),
-		VolumeName:     ggui.State(""),
-		VolumeDriver:   ggui.State("ext4lite"),
-		PaletteOpen:    ggui.State(false),
-		PaletteQuery:   ggui.State(""),
-		QuitOpen:       ggui.State(false),
-		SidebarNarrow:  ggui.State(settings.SidebarNarrow),
-		ImageQuery:     ggui.State(""),
-		SelectedImage:  ggui.State(""),
-		SelectedVolume: ggui.State(""),
-		runCLI:         runCLI,
-		forwarder:      forwardThroughCluster,
+		ConfirmOpen:     ggui.State(false),
+		ConfirmTitle:    ggui.State(""),
+		ConfirmText:     ggui.State(""),
+		ConfirmLabel:    ggui.State(tr("Confirm")),
+		PullOpen:        ggui.State(false),
+		PullTarget:      ggui.State(PullTargetGVX),
+		PullRef:         ggui.State(""),
+		PullLog:         ggui.State(""),
+		Pulling:         ggui.State(false),
+		SearchResults:   ggui.State([]registry.Result(nil)),
+		SearchFor:       ggui.State(""),
+		SearchBusy:      ggui.State(false),
+		SearchErr:       ggui.State(""),
+		SearchTags:      ggui.State([]string(nil)),
+		SearchTagsOf:    ggui.State(""),
+		SearchTagsBusy:  ggui.State(false),
+		ExploreOpen:     ggui.State(false),
+		ExploreTitle:    ggui.State(""),
+		ExploreSource:   ggui.State(""),
+		ExploreTab:      ggui.State(ExploreFiles),
+		ExploreLoading:  ggui.State(false),
+		ExploreProgress: ggui.State(""),
+		ExploreErr:      ggui.State(""),
+		ExploreLayers:   ggui.State([]imagefs.Layer(nil)).WithEqual(func(a, b []imagefs.Layer) bool { return slices.EqualFunc(a, b, imagefs.Layer.Equal) }),
+		ExploreLayer:    ggui.State(0),
+		ExplorePath:     ggui.State("/"),
+		ExploreQuery:    ggui.State(""),
+		ExploreEntries:  ggui.State([]imagefs.Entry(nil)).WithEqual(func(a, b []imagefs.Entry) bool { return slices.EqualFunc(a, b, imagefs.Entry.Equal) }),
+		ExploreSelected: ggui.State(""),
+		ExplorePreview:  ggui.State(FilePreview{}).WithEqual(FilePreview.Equal),
+		ExploreInspect:  ggui.State(""),
+		VolumeOpen:      ggui.State(false),
+		VolumeName:      ggui.State(""),
+		VolumeDriver:    ggui.State("ext4lite"),
+		PaletteOpen:     ggui.State(false),
+		PaletteQuery:    ggui.State(""),
+		QuitOpen:        ggui.State(false),
+		SidebarNarrow:   ggui.State(settings.SidebarNarrow),
+		ImageQuery:      ggui.State(""),
+		SelectedImage:   ggui.State(""),
+		SelectedVolume:  ggui.State(""),
+		runCLI:          runCLI,
+		forwarder:       forwardThroughCluster,
 	}
 	ggui.OnCleanup(m.Toasts.Close)
 	m.sup = &sandbox.Supervisor{
@@ -553,13 +594,17 @@ func (m *Model) Go(page string) {
 	switch page {
 	case PageImages:
 		m.LoadImages()
+		m.LoadDockerImages()
 	case PageVolumes:
 		m.LoadVolumes()
 	case PageSnapshots:
 		m.LoadSnapshots()
 	case PageDashboard, PageSettings:
 		m.LoadDisk()
-	case PageDocker, PageContainers:
+	case PageDocker:
+		m.LoadDocker()
+		m.LoadDockerImages()
+	case PageContainers:
 		m.LoadDocker()
 	case PageKubernetes:
 		m.CheckKubeconfig()

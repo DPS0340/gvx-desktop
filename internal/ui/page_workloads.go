@@ -145,7 +145,7 @@ func workloadMenu(m *Model, w kubeapi.Workload) ggui.Widget {
 		ui.MenuDivider(),
 		ui.MenuItem(tr("Delete…"), func() { m.AskDeleteWorkload(w) }).Destructive().Disabled(deleting),
 	)
-	return ui.MenuOf(glyph(lucide.Ellipsis, 16), items...).Name(tr("More actions for %s", w.Name()))
+	return moreMenu(tr("More actions for %s", w.Name()), items...)
 }
 
 // scaleDialog sets how many pods a Deployment or StatefulSet runs.

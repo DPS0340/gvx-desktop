@@ -90,7 +90,7 @@ func build(m *Model) ggui.Widget {
 		editorSheet(m),
 		confirmDialog(m),
 		pullDialog(m),
-		inspectDialog(m),
+		explorerDialog(m),
 		volumeDialog(m),
 		forwardDialog(m),
 		scaleDialog(m),
@@ -453,11 +453,27 @@ func pullDialog(m *Model) ggui.Widget {
 	logs := ggui.If(ggui.Map(m.PullLog, func(s string) bool { return s != "" }), func() ggui.Widget {
 		return ui.CodeBlockOf(m.PullLog).Height(180).Small().CopyButton(false)
 	})
+	heading := ui.HeadingOf(ggui.Map(m.PullTarget, func(t int) string {
+		if t == PullTargetDocker {
+			return tr("Pull an image into Docker Engine")
+		}
+		return tr("Pull an image")
+	})).Size(17)
+	help := ui.CaptionOf(ggui.Map(m.PullTarget, func(t int) string {
+		if t == PullTargetDocker {
+			return tr("Images run natively on this CPU (linux/%s) inside the Docker Engine sandbox.", goarch())
+		}
+		return tr("Images run natively on this CPU (linux/%s). Layers are compiled to read-only EROFS files once and cached.", goarch())
+	})).Size(12)
 	return ui.Dialog(m.PullOpen, widget.Column(
-		ui.Field(tr("Image"), field).Help(tr("Images run natively on this CPU (linux/%s). Layers are compiled to read-only EROFS files once and cached.", goarch())),
+		heading,
+		widget.Column(
+			ui.Field(tr("Image"), field),
+			help,
+		).Gap(6).Stretch(),
 		browse,
 		logs,
-	).Gap(14).Stretch()).Title(tr("Pull an image")).Width(600).Footer(
+	).Gap(14).Stretch()).Name(tr("Pull an image")).Width(600).Footer(
 		ui.Button(tr("Close"), func() { m.PullOpen.Set(false) }).Outline(),
 		ui.ButtonOf(ggui.If(m.Pulling, func() ggui.Widget {
 			return widget.Row(ui.Spinner().Size(14), widget.Text(tr("Pulling…"))).Gap(8)
@@ -521,13 +537,6 @@ func suggestion(m *Model, ref string) ggui.Widget {
 	return ui.Badge(ref).Outline().OnTap(func() { m.PullRef.Set(ref) })
 }
 
-func inspectDialog(m *Model) ggui.Widget {
-	return ui.Dialog(m.InspectOpen, widget.Column(
-		ui.HeadingOf(m.InspectTitle).Size(16),
-		ui.CodeBlockOf(m.InspectBody).Language("json").Height(420).LineNumbers(true),
-	).Gap(12).Stretch()).Width(720).Name(tr("Image details")).CloseButton(true)
-}
-
 func volumeDialog(m *Model) ggui.Widget {
 	invalid := ggui.Map(m.VolumeName, func(s string) bool {
 		s = strings.TrimSpace(s)
@@ -588,7 +597,8 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Pods"), close(func() { m.GoKube(KubePods) })).Group(tr("Go to")).Shortcut("cmd+4").Keywords("kubectl get pods k8s").Disabled(!pods),
 			ui.CommandItem(tr("Workloads"), close(func() { m.GoKube(KubeWorkloads) })).Group(tr("Go to")).Keywords("k8s deployments statefulsets daemonsets jobs").Disabled(!pods),
 			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!pods),
-			ui.CommandItem(tr("Images"), close(func() { m.Go(PageImages) })).Group(tr("Go to")).Shortcut("cmd+5"),
+			ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Group(tr("Go to")).Shortcut("cmd+5"),
+			ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Group(tr("Go to")).Keywords("docker images rmi pull"),
 			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Group(tr("Go to")).Shortcut("cmd+6"),
 			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Group(tr("Go to")).Shortcut("cmd+7"),
 			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Group(tr("Go to")).Shortcut("cmd+,"),
@@ -616,6 +626,7 @@ func palette(m *Model) ggui.Widget {
 func (m *Model) RefreshAll() {
 	m.DetectEngine(nil)
 	m.LoadDocker()
+	m.LoadDockerImages()
 	m.LoadPods()
 	switch ggui.Peek(m.Page) {
 	case PageContainers:

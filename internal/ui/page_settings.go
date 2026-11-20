@@ -137,10 +137,13 @@ func settingsPage(m *Model) ggui.Widget {
 			engineFacts(m),
 		),
 		settingsGroup(lucide.Download, tr("Updates"),
-			settingRow(tr("Channel"),
-				tr("Releases are gvx's published builds. main is its newest commit, cloned and built on this computer, which needs git and Go."),
-				ui.ToggleGroup[string](channel).Options([]string{ChannelRelease, ChannelSource}).Format(channelName).Outline().Spacing(0).
-					BindDisabled(ggui.Map(m.Update, func(u Update) bool { return u.Installing })).Name(tr("Channel"))),
+			widget.Column(
+				settingRow(tr("Channel"),
+					tr("Releases are gvx's published builds. From source clones a git repository and builds rungv on this computer, which needs git and Go."),
+					ui.ToggleGroup[string](channel).Options([]string{ChannelRelease, ChannelSource}).Format(channelName).Outline().Spacing(0).
+						BindDisabled(ggui.Map(m.Update, func(u Update) bool { return u.Installing })).Name(tr("Channel"))),
+				sourceFields(m),
+			).Gap(12).Stretch(),
 			releaseRow(m),
 			settingRow(tr("Look for a newer rungv when the app starts"),
 				tr("Asks GitHub for the newest release of gvx. Nothing is installed until you say so."),
@@ -196,6 +199,51 @@ func aboutCard(m *Model) ggui.Widget {
 	).Gap(16).Align(widget.AlignCenter))
 }
 
+// sourceFields lets the user choose which git repository and branch are cloned
+// and built when the From source channel is selected.
+func sourceFields(m *Model) ggui.Widget {
+	isSource := ggui.Map(m.Settings, func(s storeSettings) bool { return s.UpdateChannel == ChannelSource })
+	return ggui.If(isSource, func() ggui.Widget {
+		set := ggui.Peek(m.Settings)
+		repo := ggui.State(set.SourceRepo)
+		branch := ggui.State(set.SourceBranch)
+		ggui.Watch(m.Settings, func(s storeSettings) {
+			if ggui.Peek(repo) != s.SourceRepo {
+				repo.Set(s.SourceRepo)
+			}
+			if ggui.Peek(branch) != s.SourceBranch {
+				branch.Set(s.SourceBranch)
+			}
+		})
+		installing := ggui.Map(m.Update, func(u Update) bool { return u.Installing })
+		custom := ggui.Map(m.Settings, func(s storeSettings) bool { return s.SourceRepo != "" || s.SourceBranch != "" })
+		commit := func(string) { m.SetSource(ggui.Peek(repo), ggui.Peek(branch)) }
+		reset := ggui.If(custom, func() ggui.Widget {
+			return ui.Button(tr("Reset"), func() {
+				repo.Set("")
+				branch.Set("")
+				m.SetSource("", "")
+			}).Outline().Size(ui.ButtonSmall).BindDisabled(installing)
+		})
+		return widget.Column(
+			widget.Row(
+				widget.Expanded(widget.Column(
+					ui.Caption(tr("Repository")).Size(12),
+					ui.TextField(repo).Placeholder(rungv.SourceURL).Name(tr("Source repository")).
+						OnCommit(commit).BindDisabled(installing),
+				).Gap(4).Stretch()),
+				widget.Box(widget.Column(
+					ui.Caption(tr("Branch")).Size(12),
+					ui.TextField(branch).Placeholder(rungv.SourceBranch).Name(tr("Source branch")).
+						OnCommit(commit).BindDisabled(installing),
+				).Gap(4).Stretch()).Width(180),
+				widget.Padding(reset, 18, 0, 0, 0),
+			).Gap(8).Align(widget.AlignStart),
+			ui.Caption(tr("Git URL, GitHub owner/repo, or a local checkout. Leave empty for gfire-sigs/gvx (main).")),
+		).Gap(6).Stretch()
+	})
+}
+
 // releaseRow says what the channel's newest gvx is, and installs it.
 func releaseRow(m *Model) ggui.Widget {
 	type state struct {
@@ -205,6 +253,7 @@ func releaseRow(m *Model) ggui.Widget {
 	both := ggui.Combine(m.Engine, m.Update, func(e Engine, u Update) state { return state{e, u} })
 	row := ggui.View(both, func(s state) ggui.Widget {
 		e, u := s.e, s.u
+		branch := u.BranchName()
 		var text string
 		var action ggui.Widget = widget.Box()
 		install := tr("Install rungv")
@@ -213,13 +262,13 @@ func releaseRow(m *Model) ggui.Widget {
 		}
 		switch {
 		case u.Installing && u.Source:
-			text = tr("Building rungv from main")
+			text = tr("Building rungv from %s", branch)
 			action = installButton(m, u, install).Size(ui.ButtonSmall)
 		case u.Installing:
 			text = tr("Installing rungv %s", u.Name())
 			action = installButton(m, u, install).Size(ui.ButtonSmall)
 		case u.Checking:
-			text = tr("Asking GitHub for the newest…")
+			text = tr("Checking for the newest…")
 		case !u.Known() && u.Err != "":
 			text = tr("The newest could not be read: %s", u.Err)
 		case !u.Known():
@@ -230,9 +279,9 @@ func releaseRow(m *Model) ggui.Widget {
 		case u.Available(e):
 			switch {
 			case u.Source && u.Ahead > 0:
-				text = tr("main is %d commits past this computer's %s.", u.Ahead, engineVersion(e))
+				text = tr("%s is %d commits past this computer's %s.", branch, u.Ahead, engineVersion(e))
 			case u.Source:
-				text = tr("main is at %s; this computer has %s.", u.Name(), engineVersion(e))
+				text = tr("%s is at %s; this computer has %s.", branch, u.Name(), engineVersion(e))
 			case u.Newer(e):
 				text = tr("rungv %s is available; this computer has %s.", u.Name(), engineVersion(e))
 			default:
@@ -240,7 +289,7 @@ func releaseRow(m *Model) ggui.Widget {
 			}
 			action = installButton(m, u, updateVerb(u, e)).Size(ui.ButtonSmall)
 		case u.Source:
-			text = tr("rungv is up to date with main (%s).", u.Name())
+			text = tr("rungv is up to date with %s (%s).", branch, u.Name())
 			action = ui.Button(tr("Build again"), m.InstallRungv).Outline().Size(ui.ButtonSmall)
 		default:
 			text = tr("rungv is up to date: %s is the newest release.", u.Name())
@@ -262,7 +311,7 @@ func releaseRow(m *Model) ggui.Widget {
 // channelName words a channel.
 func channelName(c string) string {
 	if c == ChannelSource {
-		return tr("main, built here")
+		return tr("From source")
 	}
 	return tr("Releases")
 }

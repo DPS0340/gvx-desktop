@@ -82,7 +82,7 @@ func dockerPage(m *Model) ggui.Widget {
 
 	return page(
 		pageHeader("Docker Engine", version,
-			tip(iconButton(lucide.RefreshCw, tr("Refresh containers"), func() { m.LoadDocker(); m.CheckLink(m.DockerLink) }), tr("Refresh")),
+			tip(iconButton(lucide.RefreshCw, tr("Refresh containers"), func() { m.LoadDocker(); m.LoadDockerImages(); m.CheckLink(m.DockerLink) }), tr("Refresh")),
 		),
 		recipeHero(m, recipes.Docker, row, "docker:dind",
 			tr("An unmodified dockerd in one sandbox. Images and containers persist in the gvx-docker volume; the API is published on %s.", m.DockerHost()),
@@ -90,12 +90,42 @@ func dockerPage(m *Model) ggui.Widget {
 		widget.Column(
 			sectionTitle(tr("Containers"), tr("Published container ports must be inside 9000–9019, the range the sandbox opened at start.")),
 			containersSummary(m),
+			dockerImagesSummary(m),
 		).Gap(10).Stretch(),
 		widget.Responsive(900,
 			widget.Row(widget.Flex(dockerCLICard(m), 1), widget.Flex(dockerNotesCard(), 1)).Gap(16).Align(widget.AlignStart),
 			widget.Column(dockerCLICard(m), dockerNotesCard()).Gap(16).Stretch(),
 		),
 	)
+}
+
+// dockerImagesSummary counts the engine's images and leads to the Docker
+// Engine tab of the Images page.
+func dockerImagesSummary(m *Model) ggui.Widget {
+	line := ggui.Combine(m.ContainersAccess, m.DockerImages, func(a ContainersAccess, l Listing[dockerapi.Image]) [2]string {
+		switch {
+		case a != ContainersOpen:
+			return [2]string{tr("Images inside the Docker Engine"), a.Reason()}
+		case l.Err != "":
+			return [2]string{tr("Could not list Docker images"), l.Err}
+		case !l.Loaded:
+			return [2]string{tr("Asking dockerd…"), ""}
+		}
+		return [2]string{tr("%d images · %s", len(l.Items), humanBytes(dockerImagesTotalSize(l.Items))), tr("Built or pulled inside the Docker Engine sandbox.")}
+	})
+	text := ggui.View(line, func(t [2]string) ggui.Widget {
+		col := []ggui.Widget{widget.Text(t[0]).Size(13).Weight(ggui.WeightMedium)}
+		if t[1] != "" {
+			col = append(col, ui.Caption(t[1]).Size(12).NoWrap().Ellipsis())
+		}
+		return widget.Column(col...).Gap(2)
+	})
+	return ui.Card(widget.Row(
+		glyph(lucide.Layers, 20).Color(colorGray),
+		widget.Expanded(text),
+		ui.Button(tr("Open Images"), func() { m.GoImages(ImagesDocker) }).Outline().Size(ui.ButtonSmall).
+			Icon(glyph(lucide.ArrowRight, 14)),
+	).Gap(14).Align(widget.AlignCenter))
 }
 
 // containersSummary counts the engine's containers and leads to the

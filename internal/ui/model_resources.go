@@ -43,26 +43,32 @@ func (m *Model) LoadImages() {
 	})
 }
 
-// OpenPull shows the pull dialog, with ref filled in.
+// OpenPull shows the pull dialog targeting gvx's image cache, with ref filled in.
 func (m *Model) OpenPull(ref string) {
 	if ggui.Peek(m.Pulling) {
 		m.PullOpen.Set(true)
 		return
 	}
+	m.PullTarget.Set(PullTargetGVX)
 	m.PullRef.Set(ref)
 	m.PullLog.Set("")
 	m.PullOpen.Set(true)
 }
 
-// Pull downloads the image named in the pull dialog.
+// Pull downloads the image named in the pull dialog into gvx's cache or the
+// Docker Engine, according to PullTarget.
 func (m *Model) Pull() {
 	ref := strings.TrimSpace(ggui.Peek(m.PullRef))
 	if ref == "" || ggui.Peek(m.Pulling) {
 		return
 	}
-	c := m.Client()
+	target := ggui.Peek(m.PullTarget)
 	m.Pulling.Set(true)
-	m.PullLog.Set("$ rungv pull " + ref + "\n")
+	if target == PullTargetDocker {
+		m.PullLog.Set("$ docker pull " + ref + "\n")
+	} else {
+		m.PullLog.Set("$ rungv pull " + ref + "\n")
+	}
 	var mu sync.Mutex
 	var pending []string
 	flush := func() {
@@ -80,13 +86,38 @@ func (m *Model) Pull() {
 			})
 		}
 	}
-	m.async(func(ctx context.Context) error {
-		return c.Pull(ctx, ref, func(line string) {
-			mu.Lock()
-			pending = append(pending, line)
-			mu.Unlock()
-			m.post(flush)
+	onLine := func(line string) {
+		mu.Lock()
+		pending = append(pending, line)
+		mu.Unlock()
+		m.post(flush)
+	}
+	if target == PullTargetDocker {
+		host := m.dockerHost()
+		m.async(func(ctx context.Context) error {
+			c, err := dockerapi.New(host)
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+			return c.PullImage(ctx, ref, onLine)
+		}, func(err error) {
+			flush()
+			m.Pulling.Set(false)
+			if err != nil {
+				m.PullLog.Update(func(s string) string { return s + "error: " + err.Error() + "\n" })
+				m.toastError(tr("Pull failed"), err)
+				return
+			}
+			m.PullOpen.Set(false)
+			m.toastOK(tr("Pulled %s", ref), tr("The image is ready in the Docker Engine."))
+			m.LoadDockerImages()
 		})
+		return
+	}
+	c := m.Client()
+	m.async(func(ctx context.Context) error {
+		return c.Pull(ctx, ref, onLine)
 	}, func(err error) {
 		flush()
 		m.Pulling.Set(false)
@@ -102,23 +133,15 @@ func (m *Model) Pull() {
 	})
 }
 
-// InspectImage shows the image's configuration JSON.
+// InspectImage opens the image explorer on the Inspect tab for a gvx image.
 func (m *Model) InspectImage(ref string) {
-	c := m.Client()
-	var body string
-	m.InspectTitle.Set(ref)
-	m.InspectBody.Set(tr("Loading…"))
-	m.InspectOpen.Set(true)
-	m.async(func(ctx context.Context) error {
-		var err error
-		body, err = c.InspectImage(ctx, ref)
-		return err
-	}, func(err error) {
-		if err != nil {
-			body = err.Error()
+	for _, img := range ggui.Peek(m.Images).Items {
+		if img.Ref() == ref {
+			m.ExploreGVXImage(img, ExploreInspect)
+			return
 		}
-		m.InspectBody.Set(body)
-	})
+	}
+	m.ExploreGVXImage(rungv.Image{ID: ref, Repository: ref}, ExploreInspect)
 }
 
 // AskRemoveImage confirms and removes an image.
@@ -421,6 +444,23 @@ func (m *Model) followDocker() {
 			m.LoadContainerLogs()
 		}
 	})
+	imagesEvery := ggui.Derived(func() time.Duration {
+		row, ok := m.RecipeSandbox(m.Rows.Get(), recipes.Docker)
+		if !ok || row.State.Status != sandbox.Running {
+			return 0
+		}
+		switch m.Page.Get() {
+		case PageImages:
+			if m.ImageView.Get() == ImagesDocker {
+				return 3 * time.Second
+			}
+			return 0
+		case PageDocker:
+			return 10 * time.Second
+		}
+		return 0
+	})
+	m.poll(imagesEvery, m.LoadDockerImages, m.LoadDockerImages)
 	id := ggui.Map(m.Container, func(c dockerapi.Container) string { return c.ID })
 	shown := ggui.Combine(logs, id, func(on bool, id string) string {
 		if !on {

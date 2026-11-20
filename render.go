@@ -120,11 +120,21 @@ func renderAll(tmp, out, lang string) error {
 			m.Forwards.Set(demoForwards())
 			m.AskForwardService(demoServices(ggui.Peek(m.Now))[3])
 		}},
-		{"images", func(m *ui.Model) { m.Page.Set(ui.PageImages) }},
+		{"images", func(m *ui.Model) { m.GoImages(ui.ImagesGVX) }},
+		{"images-docker", func(m *ui.Model) { m.GoImages(ui.ImagesDocker) }},
 		{"volumes", func(m *ui.Model) { m.Page.Set(ui.PageVolumes) }},
 		{"docker", func(m *ui.Model) { m.Page.Set(ui.PageDocker) }},
 		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes); m.Forwards.Set(demoForwards()) }},
 		{"settings", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
+		{"settings-source", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) {
+				s.UpdateChannel = ui.ChannelSource
+				s.SourceRepo = "ironpark/gvx"
+				s.SourceBranch = "feat/test"
+			})
+			m.Update.Set(ui.Update{Source: true, Repo: "ironpark/gvx", Branch: "feat/test", Commit: "e410633f24cf", Subject: "feat: test branch", Ahead: 2})
+			m.Page.Set(ui.PageSettings)
+		}},
 		{"editor", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.NewSandbox("postgres:17-alpine") }},
 		{"pull-search", func(m *ui.Model) {
 			m.Page.Set(ui.PageImages)
@@ -285,6 +295,7 @@ func demoState(m *ui.Model, now time.Time) {
 	m.KubeLink.State.Set(ui.CLIContext{Checked: true, CLI: "/opt/homebrew/bin/kubectl", Current: "kind-dev", Contexts: []string{"kind-dev"}})
 	m.DockerVersion.Set(dockerapi.Version{Version: "29.9.3", APIVersion: "1.56", OS: "linux", Arch: "arm64", KernelVersion: "4.19.0-gvisor"})
 	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{Loaded: true, Items: demoContainers()})
+	m.DockerImages.Set(ui.Listing[dockerapi.Image]{Loaded: true, Items: demoDockerImages(now)})
 	m.ContainerLogs.Set(demoContainerLogs(now))
 	m.KubeconfigReady.Set(true)
 	m.Pods.Set(ui.Listing[kubeapi.Pod]{Loaded: true, Items: demoPods(now)})
@@ -506,7 +517,18 @@ func stopEngine(m *ui.Model) {
 	states[demoIDs[1]] = sandbox.State{Status: sandbox.Stopped, ExitedAt: ggui.Peek(m.Now).Add(-time.Minute)}
 	m.States.Set(states)
 	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{})
+	m.DockerImages.Set(ui.Listing[dockerapi.Image]{})
 	m.ContainerLogs.Set(ui.ContainerLogs{})
+}
+
+// demoDockerImages are the images inside the demo Docker Engine sandbox.
+func demoDockerImages(now time.Time) []dockerapi.Image {
+	return []dockerapi.Image{
+		{ID: "sha256:4a3c0f9e2b118a7d6c5e", RepoTags: []string{"nginx:alpine"}, Size: 48 * 1024 * 1024, Created: now.Add(-6 * 24 * time.Hour).Unix()},
+		{ID: "sha256:8b7c6d5e4f3a2b109876", RepoTags: []string{"redis:alpine"}, Size: 42 * 1024 * 1024, Created: now.Add(-10 * 24 * time.Hour).Unix()},
+		{ID: "sha256:1a2b3c4d5e6f708192a3", RepoTags: []string{"app:dev", "app:latest"}, Size: 164 * 1024 * 1024, Created: now.Add(-3 * time.Hour).Unix()},
+		{ID: "sha256:9f8e7d6c5b4a3210fedc", RepoTags: []string{"<none>:<none>"}, Size: 27 * 1024 * 1024, Created: now.Add(-2 * 24 * time.Hour).Unix()},
+	}
 }
 
 // demoContainerLogs is what the demo's shop-web-1 wrote.

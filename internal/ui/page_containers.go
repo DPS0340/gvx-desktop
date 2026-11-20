@@ -263,14 +263,14 @@ func projectQuickAction(m *Model, row containerRow) ggui.Widget {
 func projectMenu(m *Model, row containerRow) ggui.Widget {
 	p, members := row.Project, row.Members
 	running, total := projectCounts(members)
-	return ui.MenuOf(glyph(lucide.Ellipsis, 16),
+	return moreMenu(tr("More actions for %s", p),
 		ui.MenuItem(tr("Start all"), func() { m.ProjectAction("start", p, members) }).Disabled(running == total),
 		ui.MenuItem(tr("Stop all"), func() { m.ProjectAction("stop", p, members) }).Disabled(running == 0),
 		ui.MenuItem(tr("Restart all"), func() { m.ProjectAction("restart", p, members) }),
 		ui.MenuItem(tr("Copy project name"), func() { m.Copy(p, p) }),
 		ui.MenuDivider(),
 		ui.MenuItem(tr("Remove all…"), func() { m.AskRemoveProject(p, members) }).Destructive(),
-	).Name(tr("More actions for %s", p))
+	)
 }
 
 // containerStatus is a container's state as a color, words, and whether it
@@ -366,7 +366,7 @@ func containerMenu(m *Model, c dockerapi.Container) ggui.Widget {
 		ui.MenuDivider(),
 		ui.MenuItem(tr("Remove"), func() { m.AskRemoveContainer(c) }).Destructive(),
 	)
-	return ui.MenuOf(glyph(lucide.Ellipsis, 16), entries...).Name(tr("More actions for %s", name))
+	return moreMenu(tr("More actions for %s", name), entries...)
 }
 
 // ---- Detail -------------------------------------------------------------

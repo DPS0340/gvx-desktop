@@ -72,13 +72,14 @@ func engineAlert(m *Model) ggui.Widget {
 		case len(e.Info.BackendWarnings) > 0:
 			return shown(ui.Alert(tr("Engine warnings"), strings.Join(e.Info.BackendWarnings, " ")).Icon(icons.Info))
 		case u.Available(e):
+			acts := []ggui.Widget{installButton(m, u, updateVerb(u, e)).Size(ui.ButtonExtraSmall)}
+			if u.Page != "" {
+				acts = append(acts, small(updateNotes(u), func() { m.Open(u.Page) }).Outline())
+			}
 			return shown(ui.Alert(updateTitle(u, e),
 				tr("This computer has %s. Sandboxes that are running keep the rungv they started with.", engineVersion(e))).
 				Icon(icons.Info).
-				Action(widget.Row(
-					installButton(m, u, updateVerb(u, e)).Size(ui.ButtonExtraSmall),
-					small(updateNotes(u), func() { m.Open(u.Page) }).Outline(),
-				).Gap(8)))
+				Action(widget.Row(acts...).Gap(8)))
 		}
 		return widget.Box()
 	})
@@ -264,9 +265,15 @@ func recipeCards(m *Model) ggui.Widget {
 func updateTitle(u Update, e Engine) string {
 	switch {
 	case u.Source && u.Ahead > 0:
-		return tr("%d new commits on main: %s", u.Ahead, u.Subject)
+		if u.Subject != "" {
+			return tr("%d new commits on %s: %s", u.Ahead, u.BranchName(), u.Subject)
+		}
+		return tr("%d new commits on %s", u.Ahead, u.BranchName())
 	case u.Source:
-		return tr("main is at %s: %s", u.Name(), u.Subject)
+		if u.Subject != "" {
+			return tr("%s is at %s: %s", u.BranchName(), u.Name(), u.Subject)
+		}
+		return tr("%s is at %s", u.BranchName(), u.Name())
 	case u.Newer(e):
 		return tr("rungv %s is available", u.Name())
 	}

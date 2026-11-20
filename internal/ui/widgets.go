@@ -98,6 +98,15 @@ func iconButton(g *icons.Glyph, name string, onTap func()) *ui.ButtonWidget {
 	return ui.ButtonOf(glyph(g, 16), onTap).Name(name).Size(ui.ButtonIconSmall).Ghost()
 }
 
+// moreMenu is the ellipsis action menu at the trailing edge of a table row or
+// detail header. Its popup aligns its trailing edge with the trigger so it
+// opens inward instead of colliding with the right edge of the window.
+func moreMenu(name string, entries ...ggui.Widget) *ui.MenuWidget {
+	m := ui.MenuOf(glyph(lucide.Ellipsis, 16), entries...).Name(name)
+	m.Popup().Align(widget.PopupEnd)
+	return m
+}
+
 // tip wraps a widget in a tooltip.
 func tip(w ggui.Widget, text string) ggui.Widget { return ui.Tooltip(w, text) }
 

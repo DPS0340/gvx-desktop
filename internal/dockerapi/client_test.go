@@ -150,3 +150,83 @@ func TestExitCode(t *testing.T) {
 		}
 	}
 }
+
+func TestImagesInspectRemovePruneAndPull(t *testing.T) {
+	var calls []string
+	c := engine(t, func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/images/json":
+			_, _ = w.Write([]byte(`[{"Id":"sha256:abcdef1234567890","RepoTags":["ghcr.io/org/app:1.0"],"Size":1048576,"Created":1700000000}]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/images/ghcr.io/org/app:1.0/json":
+			_, _ = w.Write([]byte(`{"Id":"sha256:abcdef1234567890","Architecture":"arm64"}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/images/ghcr.io/org/app:1.0":
+			_, _ = w.Write([]byte(`[{"Untagged":"ghcr.io/org/app:1.0"}]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/images/prune":
+			_, _ = w.Write([]byte(`{"ImagesDeleted":[{"Deleted":"sha256:111"},{"Untagged":"old:tag"}],"SpaceReclaimed":4096}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/images/create":
+			_, _ = w.Write([]byte("{\"status\":\"Pulling from library/nginx\",\"id\":\"alpine\"}\n{\"status\":\"Downloading\",\"id\":\"a1b2\",\"progress\":\"[===>] 1MB/2MB\"}\n{\"status\":\"Status: Downloaded newer image for nginx:alpine\"}\n"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	ctx := context.Background()
+	imgs, err := c.Images(ctx)
+	if err != nil || len(imgs) != 1 || imgs[0].ShortID() != "abcdef123456" {
+		t.Fatalf("Images: %+v, %v", imgs, err)
+	}
+	inspected, err := c.InspectImage(ctx, "ghcr.io/org/app:1.0")
+	if err != nil || !strings.Contains(inspected, `"Architecture": "arm64"`) {
+		t.Fatalf("InspectImage: %q, %v", inspected, err)
+	}
+	if err := c.RemoveImage(ctx, "ghcr.io/org/app:1.0", true); err != nil {
+		t.Fatalf("RemoveImage: %v", err)
+	}
+	pruned, err := c.PruneImages(ctx, false)
+	if err != nil || pruned.Deleted != 1 || pruned.SpaceReclaimed != 4096 {
+		t.Fatalf("PruneImages: %+v, %v", pruned, err)
+	}
+	var lines []string
+	if err := c.PullImage(ctx, "nginx:alpine", func(s string) { lines = append(lines, s) }); err != nil {
+		t.Fatalf("PullImage: %v", err)
+	}
+	if len(lines) != 3 || !strings.Contains(lines[1], "a1b2: Downloading") {
+		t.Errorf("pull lines: %v", lines)
+	}
+	want := []string{
+		"GET /images/json",
+		"GET /images/ghcr.io/org/app:1.0/json",
+		"DELETE /images/ghcr.io/org/app:1.0?force=1",
+		"POST /images/prune",
+		"POST /images/create?fromImage=nginx&tag=alpine",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("requests\n%s\nwant\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestSplitImageRef(t *testing.T) {
+	for _, tc := range []struct {
+		ref, from, tag string
+	}{
+		{"nginx", "nginx", "latest"},
+		{"nginx:alpine", "nginx", "alpine"},
+		{"localhost:5000/app", "localhost:5000/app", "latest"},
+		{"localhost:5000/app:v2", "localhost:5000/app", "v2"},
+		{"nginx@sha256:abc", "nginx@sha256:abc", ""},
+	} {
+		from, tag := splitImageRef(tc.ref)
+		if from != tc.from || tag != tc.tag {
+			t.Errorf("%q -> (%q, %q), want (%q, %q)", tc.ref, from, tag, tc.from, tc.tag)
+		}
+	}
+}
+
+func TestPullImageReportsStreamError(t *testing.T) {
+	c := engine(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"errorDetail":{"message":"pull access denied for private/app"},"error":"pull access denied for private/app"}` + "\n"))
+	})
+	if err := c.PullImage(context.Background(), "private/app", nil); err == nil || !strings.Contains(err.Error(), "pull access denied") {
+		t.Fatalf("err = %v", err)
+	}
+}

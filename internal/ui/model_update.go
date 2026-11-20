@@ -27,20 +27,30 @@ const buildTimeout = 45 * time.Minute
 // Update is what the app knows of the newest gvx on its channel, and of
 // the one it is installing.
 type Update struct {
-	Source bool // the channel: main built from source, not a release
+	Source bool // the channel: built from source, not a release
 
 	Tag  string // the newest release, v0.17.1…; empty until one is known
-	Page string // where its notes are
+	Page string // where its notes or commits are
 
-	Commit  string // the head of main; empty until it is known
+	Repo    string // display name of the source repository
+	Branch  string // branch or tag built from source; empty means rungv.SourceBranch
+	Commit  string // the head of Branch; empty until it is known
 	Subject string // the first line of its message
-	Ahead   int    // commits main is past the rungv in use; -1 when unknown
+	Ahead   int    // commits Branch is past the rungv in use; -1 when unknown
 
 	Checking   bool
 	Err        string // why the last check failed
 	Installing bool
 	Percent    int    // of the download, while installing a release
 	Phase      string // what a build from source is doing
+}
+
+// BranchName is the branch or tag name of a source update.
+func (u Update) BranchName() string {
+	if u.Branch != "" {
+		return u.Branch
+	}
+	return rungv.SourceBranch
 }
 
 // Known reports that the newest gvx of the channel has been looked up.
@@ -54,17 +64,28 @@ func (u Update) Known() bool {
 // Name is what the newest gvx of the channel is called.
 func (u Update) Name() string {
 	if u.Source {
-		return commitName(u.Commit)
+		return commitName(u.BranchName(), u.Commit)
 	}
 	return shortVersion(u.Tag)
 }
 
-// commitName names a build of main by its commit.
-func commitName(sha string) string {
+// commitName names a build from source by its branch and commit.
+func commitName(branch, sha string) string {
 	if len(sha) > 7 {
 		sha = sha[:7]
 	}
-	return rungv.SourceBranch + "@" + sha
+	if branch == "" {
+		branch = rungv.SourceBranch
+	}
+	return branch + "@" + sha
+}
+
+// shortCommit trims a commit hash to seven characters.
+func shortCommit(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 // Available reports that the rungv of e is not the channel's newest: the
@@ -98,6 +119,44 @@ func (m *Model) Channel() string {
 	return ChannelRelease
 }
 
+// Source is the git repository and branch configured for building rungv
+// from source.
+func (m *Model) Source() rungv.Source {
+	s := ggui.Peek(m.Settings)
+	return rungv.Source{Repo: s.SourceRepo, Branch: s.SourceBranch}
+}
+
+// SetSource updates the git repository and branch built from source, forgets
+// what was known of the previous one, and looks the new head up when on the
+// source channel.
+func (m *Model) SetSource(repo, branch string) {
+	if ggui.Peek(m.Update).Installing {
+		return
+	}
+	repo = strings.TrimSpace(repo)
+	if strings.TrimSuffix(repo, ".git") == rungv.SourceURL || repo == "gfire-sigs/gvx" {
+		repo = ""
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == rungv.SourceBranch {
+		branch = ""
+	}
+	cur := ggui.Peek(m.Settings)
+	if repo == cur.SourceRepo && branch == cur.SourceBranch {
+		return
+	}
+	m.UpdateSettings(func(s *storeSettings) {
+		s.SourceRepo = repo
+		s.SourceBranch = branch
+	})
+	if m.Channel() == ChannelSource {
+		src := m.Source()
+		m.Update.Set(Update{Source: true, Repo: src.DisplayRepo(), Branch: src.BranchName()})
+		m.BuildLog.Set("")
+		m.CheckUpdate(true)
+	}
+}
+
 // SetChannel changes the channel, forgets what was known of the other, and
 // looks the new one up.
 func (m *Model) SetChannel(channel string) {
@@ -105,7 +164,8 @@ func (m *Model) SetChannel(channel string) {
 		return
 	}
 	m.UpdateSettings(func(s *storeSettings) { s.UpdateChannel = channel })
-	m.Update.Set(Update{Source: channel == ChannelSource})
+	src := m.Source()
+	m.Update.Set(Update{Source: channel == ChannelSource, Repo: src.DisplayRepo(), Branch: src.BranchName()})
 	m.BuildLog.Set("")
 	m.CheckUpdate(true)
 }
@@ -118,21 +178,25 @@ func (m *Model) CheckUpdate(quiet bool) {
 		return
 	}
 	source := m.Channel() == ChannelSource
+	src := m.Source()
 	installed := ggui.Peek(m.Engine).Version.Commit
-	m.Update.Update(func(u Update) Update { u.Source, u.Checking = source, true; return u })
+	m.Update.Update(func(u Update) Update {
+		u.Source, u.Checking, u.Repo, u.Branch = source, true, src.DisplayRepo(), src.BranchName()
+		return u
+	})
 	var rel rungv.Release
 	var head rungv.Head
 	m.async(func(ctx context.Context) error {
 		var err error
 		if source {
-			head, err = rungv.SourceHead(ctx, installed)
+			head, err = rungv.SourceHead(ctx, src, installed)
 		} else {
 			rel, err = rungv.Latest(ctx)
 		}
 		return err
 	}, func(err error) {
-		if source != (m.Channel() == ChannelSource) {
-			return // the channel changed while this was asked
+		if source != (m.Channel() == ChannelSource) || (source && m.Source() != src) {
+			return // the channel or source changed while this was asked
 		}
 		if err != nil {
 			m.Update.Update(func(u Update) Update { u.Checking, u.Err = false, err.Error(); return u })
@@ -141,9 +205,18 @@ func (m *Model) CheckUpdate(quiet bool) {
 			}
 			return
 		}
-		u := Update{Source: source, Tag: rel.Tag, Page: rel.Page, Commit: head.SHA, Subject: head.Subject, Ahead: head.Ahead}
+		u := Update{
+			Source:  source,
+			Tag:     rel.Tag,
+			Page:    rel.Page,
+			Repo:    src.DisplayRepo(),
+			Branch:  src.BranchName(),
+			Commit:  head.SHA,
+			Subject: head.Subject,
+			Ahead:   head.Ahead,
+		}
 		if source {
-			u.Page = rungv.SourceURL + "/commits/" + rungv.SourceBranch
+			u.Page = src.CommitsURL()
 		} else {
 			m.release = rel
 		}
@@ -163,7 +236,7 @@ func (m *Model) CheckUpdate(quiet bool) {
 }
 
 // InstallRungv installs the newest rungv of the channel — a release
-// downloaded, or main built from source — in place of the one in use, or
+// downloaded, or built from source — in place of the one in use, or
 // in ~/.gvx/bin when there is none or it is not this app's to replace.
 // Sandboxes that are running keep the rungv they started with.
 func (m *Model) InstallRungv() {
@@ -171,8 +244,10 @@ func (m *Model) InstallRungv() {
 		return
 	}
 	source := m.Channel() == ChannelSource
+	src := m.Source()
 	m.Update.Update(func(u Update) Update {
-		u.Source, u.Installing, u.Percent, u.Phase, u.Err = source, true, 0, "", ""
+		u.Source, u.Repo, u.Branch = source, src.DisplayRepo(), src.BranchName()
+		u.Installing, u.Percent, u.Phase, u.Err = true, 0, "", ""
 		return u
 	})
 	current := ggui.Peek(m.Engine).Path
@@ -184,7 +259,7 @@ func (m *Model) InstallRungv() {
 			return err
 		}
 		if source {
-			built, err = m.buildFromSource(ctx, target)
+			built, err = m.buildFromSource(ctx, src, target)
 		} else {
 			if rel.Tag == "" {
 				if rel, err = rungv.Latest(ctx); err != nil {
@@ -218,7 +293,7 @@ func (m *Model) InstallRungv() {
 			u.Installing, u.Percent, u.Phase = false, 0, ""
 			switch {
 			case source && built != "":
-				u.Commit, u.Ahead = built, 0
+				u.Commit, u.Ahead, u.Repo, u.Branch, u.Page = built, 0, src.DisplayRepo(), src.BranchName(), src.CommitsURL()
 			case !source && rel.Tag != "":
 				u.Tag, u.Page = rel.Tag, rel.Page
 			}
@@ -244,7 +319,7 @@ func (m *Model) InstallRungv() {
 		}
 		name := shortVersion(rel.Tag)
 		if source {
-			name = commitName(built)
+			name = commitName(src.BranchName(), built)
 			m.BuildLog.Set("")
 		}
 		m.toastOK(tr("rungv %s installed", name), target)
@@ -258,9 +333,9 @@ func (m *Model) InstallRungv() {
 	}()
 }
 
-// buildFromSource builds main into target, telling the screen what it is
+// buildFromSource builds src into target, telling the screen what it is
 // doing and keeping the end of what git and Go print in BuildLog.
-func (m *Model) buildFromSource(ctx context.Context, target string) (string, error) {
+func (m *Model) buildFromSource(ctx context.Context, src rungv.Source, target string) (string, error) {
 	var tail []string
 	var last time.Time
 	flush := func() {
@@ -293,7 +368,7 @@ func (m *Model) buildFromSource(ctx context.Context, target string) (string, err
 			flush()
 		}
 	}
-	commit, err := rungv.BuildFromSource(ctx, filepath.Join(m.store.Dir, "gvx-src"), target, phase, line)
+	commit, err := rungv.BuildFromSource(ctx, src, filepath.Join(m.store.Dir, "gvx-src"), target, phase, line)
 	if err != nil {
 		tail = append(tail, "error: "+err.Error())
 	}
@@ -313,7 +388,7 @@ func isSourceBuild(version string) bool {
 // release's without its build stamp, a build from source by its commit.
 func engineVersion(e Engine) string {
 	if isSourceBuild(e.Version.Version) && e.Version.Commit != "" {
-		return commitName(e.Version.Commit)
+		return shortCommit(e.Version.Commit)
 	}
 	return shortVersion(e.Version.Version)
 }

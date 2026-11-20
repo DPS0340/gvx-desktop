@@ -31,6 +31,8 @@ type Settings struct {
 	DockerEndpoint string `json:"dockerEndpoint,omitempty"` // how the Docker Engine recipe publishes its API: socket, tcp; empty: the system's default
 	DockerPort     int    `json:"dockerPort,omitempty"`     // the host port of a tcp endpoint; 0: 2375
 	UpdateChannel  string `json:"updateChannel,omitempty"`  // where rungv is updated from: release (default), source
+	SourceRepo     string `json:"sourceRepo,omitempty"`     // git repository for building rungv from source; empty: gfire-sigs/gvx
+	SourceBranch   string `json:"sourceBranch,omitempty"`   // branch or tag for building rungv from source; empty: main
 	NoUpdateCheck  bool   `json:"noUpdateCheck,omitempty"`  // do not ask GitHub for a newer rungv at launch
 	LoginCommand   string `json:"loginCommand,omitempty"`   // what the start at login was registered to run, to register it again when the app moves
 	// Resume names, by ID, the recipe sandboxes the user left running: the

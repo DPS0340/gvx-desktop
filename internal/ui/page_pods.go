@@ -289,7 +289,7 @@ func podStatusLabel(p kubeapi.Pod) ggui.Widget {
 func podMenu(m *Model, p kubeapi.Pod) ggui.Widget {
 	link := ggui.Peek(m.KubeLink.View)
 	ctr := podLogContainer(p, ggui.Peek(m.PodContainer))
-	return ui.MenuOf(glyph(lucide.Ellipsis, 16),
+	return moreMenu(tr("More actions for %s", p.Name()),
 		ui.MenuItem(tr("Logs"), func() { m.ShowPodLogs(p) }),
 		ui.MenuItem(tr("Copy name"), func() { m.Copy(p.Name(), p.Name()) }),
 		ui.MenuItem(tr("Copy kubectl logs command"), func() { m.Copy(kubectlLogs(link, p, ctr), "kubectl logs") }),
@@ -299,7 +299,7 @@ func podMenu(m *Model, p kubeapi.Pod) ggui.Widget {
 		ui.MenuItem(tr("Forward a port…"), func() { m.AskForwardPod(p) }).Disabled(!podForwardable(p)),
 		ui.MenuDivider(),
 		ui.MenuItem(tr("Delete…"), func() { m.AskDeletePod(p) }).Destructive(),
-	).Name(tr("More actions for %s", p.Name()))
+	)
 }
 
 // ---- Detail -------------------------------------------------------------

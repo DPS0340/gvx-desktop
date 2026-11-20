@@ -4,6 +4,7 @@
 package dockerapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -13,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -138,6 +140,7 @@ type Container struct {
 	ID      string   `json:"Id"`
 	Names   []string `json:"Names"`
 	Image   string   `json:"Image"`
+	ImageID string   `json:"ImageID"`
 	Command string   `json:"Command"`
 	Created int64    `json:"Created"`
 	State   string   `json:"State"`
@@ -334,10 +337,37 @@ func logLine(stderr bool, b []byte) LogLine {
 
 // Image is an entry of GET /images/json.
 type Image struct {
-	ID       string   `json:"Id"`
-	RepoTags []string `json:"RepoTags"`
-	Size     int64    `json:"Size"`
-	Created  int64    `json:"Created"`
+	ID          string   `json:"Id"`
+	RepoTags    []string `json:"RepoTags"`
+	RepoDigests []string `json:"RepoDigests"`
+	Size        int64    `json:"Size"`
+	Created     int64    `json:"Created"`
+	Containers  int64    `json:"Containers"`
+}
+
+// ShortID is the first twelve hex characters of the ID, without any
+// algorithm prefix, as docker images shows it.
+func (i Image) ShortID() string {
+	id := strings.TrimPrefix(i.ID, "sha256:")
+	return id[:min(12, len(id))]
+}
+
+// Equal makes Image comparable for signals.
+func (i Image) Equal(o Image) bool {
+	return i.ID == o.ID && i.Size == o.Size && i.Created == o.Created &&
+		i.Containers == o.Containers &&
+		slices.Equal(i.RepoTags, o.RepoTags) &&
+		slices.Equal(i.RepoDigests, o.RepoDigests)
+}
+
+// escapeImagePath escapes each segment of an image reference while keeping
+// the slashes that Docker's /images/{name:.*} route expects.
+func escapeImagePath(name string) string {
+	parts := strings.Split(name, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
 }
 
 // Images lists the engine's images.
@@ -345,4 +375,152 @@ func (c *Client) Images(ctx context.Context) ([]Image, error) {
 	var out []Image
 	err := c.do(ctx, http.MethodGet, "/images/json", &out)
 	return out, err
+}
+
+// InspectImage returns the indented JSON of GET /images/{name}/json.
+func (c *Client) InspectImage(ctx context.Context, name string) (string, error) {
+	body, err := c.send(ctx, http.MethodGet, "/images/"+escapeImagePath(name)+"/json")
+	if err != nil || body == nil {
+		return "", err
+	}
+	defer body.Close()
+	raw, err := io.ReadAll(io.LimitReader(body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	var v any
+	if json.Unmarshal(raw, &v) == nil {
+		if pretty, err := json.MarshalIndent(v, "", "  "); err == nil {
+			return string(pretty), nil
+		}
+	}
+	return string(raw), nil
+}
+
+// RemoveImage untags or deletes an image from the engine.
+func (c *Client) RemoveImage(ctx context.Context, name string, force bool) error {
+	q := ""
+	if force {
+		q = "?force=1"
+	}
+	return c.do(ctx, http.MethodDelete, "/images/"+escapeImagePath(name)+q, nil)
+}
+
+// PruneResult is what POST /images/prune removed.
+type PruneResult struct {
+	Deleted        int
+	SpaceReclaimed int64
+}
+
+// PruneImages deletes dangling images, or every unused image when all is set.
+func (c *Client) PruneImages(ctx context.Context, all bool) (PruneResult, error) {
+	path := "/images/prune"
+	if all {
+		path += "?filters=" + url.QueryEscape(`{"dangling":["false"]}`)
+	}
+	var raw struct {
+		ImagesDeleted []struct {
+			Deleted  string `json:"Deleted"`
+			Untagged string `json:"Untagged"`
+		} `json:"ImagesDeleted"`
+		SpaceReclaimed int64 `json:"SpaceReclaimed"`
+	}
+	if err := c.do(ctx, http.MethodPost, path, &raw); err != nil {
+		return PruneResult{}, err
+	}
+	deleted := 0
+	for _, item := range raw.ImagesDeleted {
+		if item.Deleted != "" {
+			deleted++
+		}
+	}
+	if deleted == 0 {
+		deleted = len(raw.ImagesDeleted)
+	}
+	return PruneResult{Deleted: deleted, SpaceReclaimed: raw.SpaceReclaimed}, nil
+}
+
+// splitImageRef splits a reference into the fromImage and tag query
+// parameters of POST /images/create. When no tag or digest is named, tag is
+// "latest" so the engine pulls one tag rather than every tag of the repository.
+func splitImageRef(ref string) (fromImage, tag string) {
+	ref = strings.TrimSpace(ref)
+	if strings.Contains(ref, "@") {
+		return ref, ""
+	}
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		return ref[:i], ref[i+1:]
+	}
+	return ref, "latest"
+}
+
+// PullImage pulls ref into the engine, handing progress lines to line.
+func (c *Client) PullImage(ctx context.Context, ref string, line func(string)) error {
+	from, tag := splitImageRef(ref)
+	q := url.Values{"fromImage": {from}}
+	if tag != "" {
+		q.Set("tag", tag)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/images/create?"+q.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	// Pulling an image can take minutes; ctx bounds it, not the short API timeout.
+	streamClient := &http.Client{Transport: c.http.Transport}
+	res, err := streamClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		var e apiError
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		if json.Unmarshal(body, &e) == nil && e.Message != "" {
+			return fmt.Errorf("%s", e.Message)
+		}
+		return fmt.Errorf("POST /images/create: %s", res.Status)
+	}
+	sc := bufio.NewScanner(res.Body)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for sc.Scan() {
+		raw := strings.TrimSpace(sc.Text())
+		if raw == "" {
+			continue
+		}
+		var ev struct {
+			Status      string `json:"status"`
+			ID          string `json:"id"`
+			Progress    string `json:"progress"`
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+			continue
+		}
+		if msg := ev.ErrorDetail.Message; msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		if ev.Error != "" {
+			return fmt.Errorf("%s", ev.Error)
+		}
+		if line == nil {
+			continue
+		}
+		var parts []string
+		if ev.ID != "" {
+			parts = append(parts, ev.ID+":")
+		}
+		if ev.Status != "" {
+			parts = append(parts, ev.Status)
+		}
+		if ev.Progress != "" {
+			parts = append(parts, ev.Progress)
+		}
+		if len(parts) > 0 {
+			line(strings.Join(parts, " "))
+		}
+	}
+	return sc.Err()
 }

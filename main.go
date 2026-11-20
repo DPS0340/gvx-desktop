@@ -145,6 +145,7 @@ func run(st store.Store, dir string, hidden bool) error {
 	// connections they carry.
 	m.CloseTerminals()
 	m.CloseForwards()
+	m.CloseExplorer()
 	// Whatever ended the app, no sandbox outlives it: gvx has no daemon to
 	// adopt them.
 	m.Supervisor().StopAll(10 * time.Second)

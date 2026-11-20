@@ -136,7 +136,7 @@ func rowMenu(m *Model, r Row) ggui.Widget {
 		entries = append(entries, ui.MenuItem(tr("Restart"), func() { m.RestartSandbox(id) }))
 	}
 	entries = append(entries, ui.MenuDivider(), ui.MenuItem(tr("Delete"), func() { m.AskDelete(id) }).Destructive())
-	return ui.MenuOf(glyph(lucide.Ellipsis, 16), entries...).Name(tr("More actions for %s", r.Spec.Name))
+	return moreMenu(tr("More actions for %s", r.Spec.Name), entries...)
 }
 
 // ---- Detail -------------------------------------------------------------

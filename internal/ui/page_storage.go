@@ -11,6 +11,8 @@ import (
 	"github.com/ironpark/ggui/ui/icons"
 	"github.com/ironpark/ggui/widget"
 
+	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
@@ -18,6 +20,44 @@ import (
 // ---- Images -------------------------------------------------------------
 
 func imagesPage(m *Model) ggui.Widget {
+	header := ggui.View(m.ImageView, func(view int) ggui.Widget {
+		if view == ImagesDocker {
+			summary := ui.CaptionOf(ggui.Combine(m.ContainersOpen, m.DockerImages, func(open bool, l Listing[dockerapi.Image]) string {
+				if !open || !l.Loaded || l.Err != "" {
+					return tr("Images built or pulled inside the Docker Engine sandbox.")
+				}
+				return tr("%d images · %s. Images built or pulled inside the Docker Engine sandbox.", len(l.Items), humanBytes(dockerImagesTotalSize(l.Items)))
+			}))
+			return pageHeader(tr("Images"), summary,
+				tip(iconButton(lucide.RefreshCw, tr("Refresh Docker images"), m.LoadDockerImages).BindDisabled(ggui.Not(m.ContainersOpen)), tr("Refresh")),
+				ui.Button(tr("Prune"), m.AskPruneDockerImages).Outline().Icon(glyph(lucide.Eraser, 16)).BindDisabled(ggui.Not(m.ContainersOpen)),
+				ui.Button(tr("Pull image"), func() { m.OpenDockerPull("") }).Icon(glyph(lucide.Download, 16)).BindDisabled(ggui.Not(m.ContainersOpen)),
+			)
+		}
+		summary := ui.CaptionOf(ggui.Combine(m.Images, m.Disk, func(l Listing[rungv.Image], d []rungv.DiskUsage) string {
+			var s strings.Builder
+			s.WriteString(fmt.Sprintf(tr("%d cached images"), len(l.Items)))
+			for _, r := range d {
+				if r.Type == "Images" {
+					s.WriteString(fmt.Sprintf(tr(" · %s on disk · %s reclaimable"), r.Size, r.Reclaimable))
+				}
+			}
+			return s.String() + tr(". Layers are compiled to read-only EROFS files, never extracted onto the host.")
+		}))
+		return pageHeader(tr("Images"), summary,
+			tip(iconButton(lucide.RefreshCw, tr("Refresh images"), m.LoadImages), tr("Refresh")),
+			ui.Button(tr("Prune"), m.AskPruneImages).Outline().Icon(glyph(lucide.Eraser, 16)),
+			ui.Button(tr("Pull image"), func() { m.OpenPull("") }).Icon(glyph(lucide.Download, 16)),
+		)
+	})
+	tabs := ui.Tabs(m.ImageView,
+		ui.Tab(tr("gvx Sandboxes"), widget.Padding(gvxImagesView(m), 12, 0, 0, 0)),
+		ui.Tab("Docker Engine", widget.Padding(dockerImagesView(m), 12, 0, 0, 0)),
+	).Name(tr("Image sources"))
+	return page(header, tabs)
+}
+
+func gvxImagesView(m *Model) ggui.Widget {
 	visible := ggui.Combine(m.Images, m.ImageQuery, func(l Listing[rungv.Image], q string) []rungv.Image {
 		q = strings.ToLower(strings.TrimSpace(q))
 		var out []rungv.Image
@@ -28,16 +68,6 @@ func imagesPage(m *Model) ggui.Widget {
 		}
 		return out
 	}).WithEqual(nil)
-	summary := ui.CaptionOf(ggui.Combine(m.Images, m.Disk, func(l Listing[rungv.Image], d []rungv.DiskUsage) string {
-		var s strings.Builder
-		s.WriteString(fmt.Sprintf(tr("%d cached images"), len(l.Items)))
-		for _, r := range d {
-			if r.Type == "Images" {
-				s.WriteString(fmt.Sprintf(tr(" · %s on disk · %s reclaimable"), r.Size, r.Reclaimable))
-			}
-		}
-		return s.String() + tr(". Layers are compiled to read-only EROFS files, never extracted onto the host.")
-	}))
 	used := func(ref string) []string {
 		var names []string
 		for _, r := range ggui.Peek(m.Rows) {
@@ -64,10 +94,12 @@ func imagesPage(m *Model) ggui.Widget {
 			return ggui.View(r, func(img rungv.Image) ggui.Widget {
 				ref := img.Ref()
 				return widget.Row(
+					tip(iconButton(lucide.FolderSearch, tr("Browse files of %s", ref), func() { m.ExploreGVXImage(img, ExploreFiles) }), tr("Browse files")),
 					tip(iconButton(lucide.Play, tr("Run %s", ref), func() { m.NewSandbox(ref) }), tr("Run in a new sandbox")),
-					ui.MenuOf(glyph(lucide.Ellipsis, 16),
+					moreMenu(tr("More actions for %s", ref),
+						ui.MenuItem(tr("Browse files"), func() { m.ExploreGVXImage(img, ExploreFiles) }),
 						ui.MenuItem(tr("Run…"), func() { m.NewSandbox(ref) }),
-						ui.MenuItem(tr("Inspect"), func() { m.InspectImage(ref) }),
+						ui.MenuItem(tr("Inspect"), func() { m.ExploreGVXImage(img, ExploreInspect) }),
 						ui.MenuItem(tr("Pull again"), func() { m.OpenPull(ref); m.Pull() }),
 						ui.MenuItem(tr("Copy reference"), func() { m.Copy(ref, ref) }),
 						ui.MenuDivider(),
@@ -78,13 +110,13 @@ func imagesPage(m *Model) ggui.Widget {
 							}
 							m.AskRemoveImage(img)
 						}).Destructive(),
-					).Name(tr("More actions for %s", ref)),
+					),
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
-		}).W(84).Identified("actions"),
-	).BindSelected(m.SelectedImage).RowName(rungv.Image.Ref).RowHeight(tableRow).OnSelect(func(img rungv.Image) { m.InspectImage(img.Ref()) })
+		}).W(112).Identified("actions"),
+	).BindSelected(m.SelectedImage).RowName(rungv.Image.Ref).RowHeight(tableRow).OnSelect(func(img rungv.Image) { m.ExploreGVXImage(img, ExploreFiles) })
 
-	body := ggui.View(ggui.Map(m.Images, func(l Listing[rungv.Image]) int {
+	return ggui.View(ggui.Map(m.Images, func(l Listing[rungv.Image]) int {
 		switch {
 		case l.Err != "":
 			return 2
@@ -108,14 +140,112 @@ func imagesPage(m *Model) ggui.Widget {
 		count := ggui.Combine(visible, m.Images, func(v []rungv.Image, l Listing[rungv.Image]) string { return showing(len(v), len(l.Items)) })
 		return tableCard(table.Toolbar(filterBar(m.ImageQuery, tr("Filter images"), count)))
 	})
-	return page(
-		pageHeader(tr("Images"), summary,
-			tip(iconButton(lucide.RefreshCw, tr("Refresh images"), m.LoadImages), tr("Refresh")),
-			ui.Button(tr("Prune"), m.AskPruneImages).Outline().Icon(glyph(lucide.Eraser, 16)),
-			ui.Button(tr("Pull image"), func() { m.OpenPull("") }).Icon(glyph(lucide.Download, 16)),
-		),
-		body,
-	)
+}
+
+// dockerImagesGate words the Docker Engine tab of Images while the engine does
+// not run.
+func dockerImagesGate() gateWords {
+	return gateWords{
+		recipe: recipes.Docker, page: PageDocker, icon: lucide.Layers,
+		openPage: tr("Open Docker page"),
+		notSetUp: [2]string{tr("The Docker Engine is not set up"),
+			tr("Set it up to build and pull images with the docker CLI. They show here while it runs.")},
+		starting: [2]string{tr("The Docker Engine is starting"), tr("Its images show here once dockerd is ready.")},
+		stopped:  [2]string{tr("The Docker Engine is not running"), tr("Start it to see and manage its images here.")},
+		start:    tr("Start Docker Engine"),
+	}
+}
+
+func dockerImagesView(m *Model) ggui.Widget {
+	listing := m.DockerImages
+	all := ggui.Map(listing, func(l Listing[dockerapi.Image]) []DockerImageRow {
+		return dockerImageRows(l.Items)
+	}).WithEqual(nil)
+	visible := ggui.Combine(all, m.DockerImageQuery, filterDockerImages).WithEqual(nil)
+
+	table := ui.Table(visible, DockerImageRow.Key,
+		ui.Col(tr("Repository"), func(r ggui.Readable[DockerImageRow]) ggui.Widget {
+			return ggui.View(ggui.Combine(r, m.DockerContainers, func(img DockerImageRow, ctrs Listing[dockerapi.Container]) [2]string {
+				users := dockerImageUsers(ctrs.Items, img)
+				if len(users) > 0 {
+					return [2]string{img.Repository, strings.Join(users, ", ")}
+				}
+				return [2]string{img.Repository, ""}
+			}), func(info [2]string) ggui.Widget {
+				parts := []ggui.Widget{
+					glyph(lucide.Layers, 16).Color(colorGray),
+					widget.Flexible(widget.Text(info[0]).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
+				}
+				if info[1] != "" {
+					parts = append(parts, tip(ui.Badge(tr("In use")).Outline(), tr("Used by %s", info[1])))
+				}
+				return widget.Row(parts...).Gap(8).Align(widget.AlignCenter)
+			})
+		}).Grow(3),
+		ui.TextCol(tr("Tag"), func(i DockerImageRow) string { return i.Tag }).Grow(1),
+		ui.Col(tr("Image ID"), func(r ggui.Readable[DockerImageRow]) ggui.Widget {
+			return ui.MonoOf(ggui.Map(r, func(i DockerImageRow) string { return i.ShortID })).Size(12)
+		}).W(130),
+		ui.Col(tr("Created"), func(r ggui.Readable[DockerImageRow]) ggui.Widget {
+			return ui.CaptionOf(ggui.Combine(r, m.Now, func(i DockerImageRow, now time.Time) string {
+				if i.Created == 0 {
+					return "—"
+				}
+				return since(time.Unix(i.Created, 0), now)
+			})).Size(12).NoWrap()
+		}).W(130),
+		ui.TextCol(tr("Size"), func(i DockerImageRow) string { return humanBytes(i.Size) }).W(90).Right(),
+		ui.Col("", func(r ggui.Readable[DockerImageRow]) ggui.Widget {
+			return ggui.View(r, func(img DockerImageRow) ggui.Widget {
+				ref := img.Ref()
+				return widget.Row(
+					tip(iconButton(lucide.FolderSearch, tr("Browse files of %s", ref), func() { m.ExploreDockerImage(img, ExploreFiles) }), tr("Browse files")),
+					tip(iconButton(lucide.Trash, tr("Remove %s", ref), func() { m.AskRemoveDockerImage(img) }), tr("Remove")),
+					moreMenu(tr("More actions for %s", ref),
+						ui.MenuItem(tr("Browse files"), func() { m.ExploreDockerImage(img, ExploreFiles) }),
+						ui.MenuItem(tr("Inspect"), func() { m.ExploreDockerImage(img, ExploreInspect) }),
+						ui.MenuItem(tr("Pull again"), func() { m.OpenDockerPull(ref); m.Pull() }).Disabled(!img.Pullable()),
+						ui.MenuItem(tr("Copy reference"), func() { m.Copy(ref, ref) }),
+						ui.MenuItem(tr("Copy ID"), func() { m.Copy(img.ID, img.ShortID) }),
+						ui.MenuItem(tr("Copy docker run command"), func() { m.Copy("docker run --rm -it "+ref, "docker run") }),
+						ui.MenuDivider(),
+						ui.MenuItem(tr("Remove"), func() { m.AskRemoveDockerImage(img) }).Destructive(),
+					),
+				).Gap(2).Justify(widget.JustifyEnd)
+			})
+		}).W(112).Identified("actions"),
+	).BindSelected(m.SelectedDockerImage).RowName(DockerImageRow.Ref).RowHeight(tableRow).OnSelect(func(img DockerImageRow) { m.ExploreDockerImage(img, ExploreFiles) })
+
+	state := ggui.Combine(m.ContainersAccess, listing, func(a ContainersAccess, l Listing[dockerapi.Image]) int {
+		switch {
+		case a != ContainersOpen:
+			return 0
+		case l.Err != "":
+			return 2
+		case !l.Loaded:
+			return 3
+		case len(l.Items) == 0:
+			return 1
+		}
+		return 4
+	})
+	return ggui.View(state, func(s int) ggui.Widget {
+		switch s {
+		case 0:
+			stage := ggui.Map(m.ContainersAccess, func(a ContainersAccess) int { return int(a) })
+			return ggui.View(gateOf(m, recipes.Docker, stage), func(g engineGate) ggui.Widget { return engineNotRunning(m, g, dockerImagesGate()) })
+		case 1:
+			return ui.Empty(tr("No Docker images"), tr("Pull an image here, or build one with the docker CLI: docker build -t myapp .")).
+				Media(glyph(lucide.Layers, 32).Color(colorGray)).
+				Action(ui.Button(tr("Pull an image"), func() { m.OpenDockerPull("") }).Icon(glyph(lucide.Download, 16))).Outline()
+		case 2:
+			return ui.Alert(tr("Could not list Docker images"), ggui.Peek(listing).Err).Destructive().Icon(icons.Alert)
+		case 3:
+			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking dockerd…"))).Gap(8)
+		}
+		count := ggui.Combine(visible, all, func(v, a []DockerImageRow) string { return showing(len(v), len(a)) })
+		return tableCard(table.Toolbar(filterBar(m.DockerImageQuery, tr("Filter Docker images"), count)))
+	})
 }
 
 // ---- Volumes ------------------------------------------------------------

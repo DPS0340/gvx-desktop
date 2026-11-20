@@ -1173,7 +1173,7 @@ func (m *Model) Restore(snap sandbox.Snapshot) {
 
 // DeleteSnapshot removes a bundle after confirmation.
 func (m *Model) DeleteSnapshot(snap sandbox.Snapshot) {
-	m.Confirm(tr("Delete snapshot?"), tr("The bundle %s (%s) is removed from disk.", snap.Name, humanBytes(snap.Size)), tr("Delete snapshot"), func() {
+	m.Confirm(tr("Delete snapshot?"), tr("The bundle %s (%s) is removed from disk.", snap.Name, formatBytes(snap.Size)), tr("Delete snapshot"), func() {
 		m.async(func(context.Context) error { return removeAll(snap.Dir) }, func(err error) {
 			if err != nil {
 				m.toastError(tr("Could not delete the snapshot"), err)

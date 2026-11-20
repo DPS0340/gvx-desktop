@@ -78,7 +78,7 @@ func run(st store.Store, dir string, hidden bool) error {
 		hidden = hidden && trayAvailable() && !ggui.Peek(m.Settings).NoTray
 		cfg := ggui.Config{
 			Hidden:         hidden,
-			Title:          "gvx Desktop",
+			Title:          "GVX Desktop",
 			Width:          1280,
 			Height:         840,
 			MinWidth:       880,
@@ -255,7 +255,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 		ui.SetLanguage(ggui.Peek(m.Lang))
 		engine, update := ggui.Peek(m.Engine), ggui.Peek(m.Update)
 		items := []ggui.MenuItem{
-			ggui.MenuAction(ui.T("Open gvx Desktop"), "", show),
+			ggui.MenuAction(ui.T("Open GVX Desktop"), "", show),
 			ggui.MenuAction(ui.EngineLine(engine), "", nil).BindEnabled(ggui.Const(false)),
 		}
 		if update.Available(engine) && !update.Installing {
@@ -292,22 +292,22 @@ func installTray(app *ggui.App, m *ui.Model) {
 			ggui.MenuAction(ui.T("Stop All"), "", m.StopAll).BindEnabled(ggui.Const(running > 0)),
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("Settings…"), "", func() { show(); m.Go(ui.PageSettings) }),
-			ggui.MenuAction(ui.T("Quit gvx Desktop"), "", func() { quit(app, m) }),
+			ggui.MenuAction(ui.T("Quit GVX Desktop"), "", func() { quit(app, m) }),
 		)
 		tray.SetMenu(items...)
 		if running > 0 {
 			tray.SetTitle(fmt.Sprint(running))
-			tray.SetTooltip(fmt.Sprintf(ui.T("gvx Desktop · %d running"), running))
+			tray.SetTooltip(fmt.Sprintf(ui.T("GVX Desktop · %d running"), running))
 		} else {
 			tray.SetTitle("")
-			tray.SetTooltip("gvx Desktop")
+			tray.SetTooltip("GVX Desktop")
 		}
 	}
 	wanted := ggui.Map(m.Settings, func(s store.Settings) bool { return !s.NoTray })
 	ggui.Watch(wanted, func(on bool) {
 		switch {
 		case on && tray == nil:
-			tray = app.AddTray(ggui.TrayConfig{Icon: trayIcon(), Template: true, Tooltip: "gvx Desktop"})
+			tray = app.AddTray(ggui.TrayConfig{Icon: trayIcon(), Template: true, Tooltip: "GVX Desktop"})
 			rebuild()
 		case !on && tray != nil:
 			tray.Remove()

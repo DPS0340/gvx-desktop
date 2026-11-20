@@ -123,7 +123,7 @@ func (c *Client) ReadImageFile(ctx context.Context, image, filePath string, limi
 		if err != nil {
 			return nil, 0, err
 		}
-		if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeRegA {
+		if hdr.Typeflag == tar.TypeReg {
 			data, err := io.ReadAll(io.LimitReader(tr, limit))
 			return data, hdr.Size, err
 		}

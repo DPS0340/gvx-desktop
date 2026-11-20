@@ -48,10 +48,22 @@ func dot(c color.Color, size float64) *widget.BoxWidget {
 
 // statusText is a sandbox's status in words.
 func statusText(st sandbox.State) string {
-	if st.Status == sandbox.Failed {
-		return tr("Failed · exit %d", st.ExitCode)
+	switch st.Status {
+	case sandbox.Starting:
+		return tr("Starting")
+	case sandbox.Running:
+		return tr("Running")
+	case sandbox.Stopping:
+		return tr("Stopping")
+	case sandbox.Exited:
+		return tr("Exited")
+	case sandbox.Failed:
+		if st.ExitCode != 0 {
+			return tr("Failed · exit %d", st.ExitCode)
+		}
+		return tr("Failed")
 	}
-	return tr(st.Status.String())
+	return tr("Stopped")
 }
 
 // statusMark is a sandbox's status as a colored dot, which turns while the

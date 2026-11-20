@@ -220,7 +220,7 @@ func TestTranslateFollowsTheLanguage(t *testing.T) {
 			t.Errorf("Korean: %q, want %q", c.got, c.want)
 		}
 	}
-	if got := quitText(2); got != "샌드박스 2개가 실행 중입니다. gvx에는 데몬이 없어서 샌드박스는 gvx Desktop이 실행되는 동안에만 유지됩니다." {
+	if got := quitText(2); got != "샌드박스 2개가 실행 중입니다. gvx에는 데몬이 없어서 샌드박스는 GVX Desktop이 실행되는 동안에만 유지됩니다." {
 		t.Errorf("a plural: %q", got)
 	}
 	if got := tr("%d of %d sandboxes running", 1, 4); got != "샌드박스 4개 중 1개 실행 중" {

@@ -236,9 +236,9 @@ func (m *Model) InspectDockerImage(img DockerImageRow) {
 func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 	ref := img.Ref()
 	users := dockerImageUsers(ggui.Peek(m.DockerContainers).Items, img)
-	text := tr("The image is removed from the Docker Engine (%s).", humanBytes(img.Size))
+	text := tr("The image is removed from the Docker Engine (%s).", formatBytes(img.Size))
 	if len(users) > 0 {
-		text = tr("Used by %s. Force removing untags or deletes the image from the Docker Engine (%s).", strings.Join(users, ", "), humanBytes(img.Size))
+		text = tr("Used by %s. Force removing untags or deletes the image from the Docker Engine (%s).", strings.Join(users, ", "), formatBytes(img.Size))
 	}
 	m.Confirm(tr("Remove %s?", ref), text, tr("Remove image"), func() {
 		host := m.dockerHost()
@@ -284,7 +284,7 @@ func (m *Model) AskPruneDockerImages() {
 				if err != nil {
 					m.toastError(tr("Prune failed"), err)
 				} else {
-					m.toastOK(tr("Docker images pruned"), tr("Reclaimed %s.", humanBytes(res.SpaceReclaimed)))
+					m.toastOK(tr("Docker images pruned"), tr("Reclaimed %s.", formatBytes(res.SpaceReclaimed)))
 				}
 				m.LoadDockerImages()
 			})

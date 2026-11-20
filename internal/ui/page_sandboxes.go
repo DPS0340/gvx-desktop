@@ -477,7 +477,7 @@ func snapshotList(m *Model, snaps ggui.Readable[[]sandbox.Snapshot], showSandbox
 	return widget.EachKeyed(snaps, func(s sandbox.Snapshot) string { return s.Dir }, func(row widget.EachItem[sandbox.Snapshot]) ggui.Widget {
 		s := row.Item
 		title := s.Time.Format(tr("Jan 2, 15:04:05"))
-		desc := humanBytes(s.Size)
+		desc := formatBytes(s.Size)
 		if showSandbox {
 			if spec, ok := m.spec(s.SandboxID); ok {
 				title = spec.Name + " · " + title

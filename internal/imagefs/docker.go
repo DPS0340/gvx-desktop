@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,8 +37,8 @@ func OpenDocker(ctx context.Context, host, imageID string, progress func(entries
 	var layers []Layer
 	if err == nil {
 		layers = make([]Layer, 0, len(hist))
-		for i := len(hist) - 1; i >= 0; i-- {
-			h := hist[i]
+		for _, h := range slices.Backward(hist) {
+
 			var created time.Time
 			if h.Created > 0 {
 				created = time.Unix(h.Created, 0)
@@ -121,7 +122,7 @@ func OpenDocker(ctx context.Context, host, imageID string, progress func(entries
 			case tar.TypeSymlink:
 				kind = KindSymlink
 				mode |= 0o120000
-			case tar.TypeReg, tar.TypeRegA, tar.TypeLink:
+			case tar.TypeReg, tar.TypeLink:
 				kind = KindFile
 				mode |= 0o100000
 			case tar.TypeChar:

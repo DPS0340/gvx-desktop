@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -236,7 +237,7 @@ func (m *Model) CreateVolume() {
 // AskRemoveVolume confirms and deletes a volume.
 func (m *Model) AskRemoveVolume(v rungv.Volume) {
 	users := VolumeUsers(ggui.Peek(m.Rows), v.Name)
-	text := tr("All data in %s (%s) is deleted. This cannot be undone.", v.Name, v.Size)
+	text := tr("All data in %s (%s) is deleted. This cannot be undone.", v.Name, formatSize(v.Size))
 	if len(users) > 0 {
 		text += tr(" Used by: %s.", strings.Join(users, ", "))
 	}
@@ -827,6 +828,97 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// formatBytes formats a storage byte count (images, volumes, snapshots, files)
+// with SI decimal units: integer B, up to 1 decimal for KB/MB, and up to 2
+// decimals for GB and larger.
+func formatBytes(n int64) string {
+	if n < 0 {
+		return "-" + formatBytes(-n)
+	}
+	const unit = 1000
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	units := []string{"KB", "MB", "GB", "TB", "PB", "EB"}
+	val := float64(n) / unit
+	idx := 0
+	for val >= unit && idx < len(units)-1 {
+		val /= unit
+		idx++
+	}
+	prec := 1
+	if idx >= 2 { // GB and larger
+		prec = 2
+	}
+	return trimFloat(val, prec) + " " + units[idx]
+}
+
+// formatSize normalizes a human-readable size string reported by rungv (such as
+// "1.711GB", "419.4MB", "9.155MB", "0B", or "113.4MB (32%)") into consistent
+// spacing and precision: integer B, up to 1 decimal for KB/MB, and up to 2
+// decimals for GB and larger.
+func formatSize(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	suffix := ""
+	if i := strings.IndexByte(s, '('); i >= 0 {
+		suffix = " " + strings.TrimSpace(s[i:])
+		s = strings.TrimSpace(s[:i])
+	}
+	i := 0
+	for i < len(s) && (s[i] >= '0' && s[i] <= '9' || s[i] == '.' || s[i] == '-' || s[i] == '+') {
+		i++
+	}
+	if i == 0 {
+		return s + suffix
+	}
+	val, err := strconv.ParseFloat(s[:i], 64)
+	if err != nil {
+		return s + suffix
+	}
+	unit := strings.TrimSpace(s[i:])
+	var norm string
+	var prec int
+	switch strings.ToLower(unit) {
+	case "b", "bytes":
+		norm, prec = "B", 0
+	case "kb":
+		norm, prec = "KB", 1
+	case "kib":
+		norm, prec = "KiB", 1
+	case "mb":
+		norm, prec = "MB", 1
+	case "mib":
+		norm, prec = "MiB", 1
+	case "gb":
+		norm, prec = "GB", 2
+	case "gib":
+		norm, prec = "GiB", 2
+	case "tb":
+		norm, prec = "TB", 2
+	case "tib":
+		norm, prec = "TiB", 2
+	case "pb":
+		norm, prec = "PB", 2
+	case "pib":
+		norm, prec = "PiB", 2
+	default:
+		return s + suffix
+	}
+	return trimFloat(val, prec) + " " + norm + suffix
+}
+
+func trimFloat(v float64, prec int) string {
+	s := strconv.FormatFloat(v, 'f', prec, 64)
+	if prec > 0 && strings.ContainsRune(s, '.') {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimRight(s, ".")
+	}
+	return s
 }
 
 func ago(t, now time.Time) string {

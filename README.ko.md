@@ -2,11 +2,11 @@
   <img src="assets/gvx-desktop-icon.svg" width="128" height="128" alt="우주 헬멧을 쓴 Go 고퍼">
 </p>
 
-<h1 align="center">gvx Desktop</h1>
+<h1 align="center">GVX Desktop</h1>
 
 <p align="center"><a href="README.md">English</a> · <b>한국어</b></p>
 
-gvx Desktop은 Linux 컨테이너를 별도의 Linux VM, 백그라운드 데몬, root 권한 없이 [gvx](https://github.com/gfire-sigs/gvx) 샌드박스에서 실행합니다. [ggui](https://github.com/ironpark/ggui)로 만든 데스크톱 인터페이스에서 샌드박스, 이미지, 볼륨, 스냅샷을 관리할 수 있습니다.
+GVX Desktop은 Linux 컨테이너를 별도의 Linux VM, 백그라운드 데몬, root 권한 없이 [gvx](https://github.com/gfire-sigs/gvx) 샌드박스에서 실행합니다. [ggui](https://github.com/ironpark/ggui)로 만든 데스크톱 인터페이스에서 샌드박스, 이미지, 볼륨, 스냅샷을 관리할 수 있습니다.
 
 <p align="center">
   <img src="assets/tour.gif" width="960" alt="대시보드, 샌드박스 편집 및 상세 화면, 이미지 검색, Docker Engine과 Kubernetes 레시피, 설정, 명령 팔레트 시연">
@@ -67,7 +67,7 @@ sudo dnf install ./gvx-desktop-*.x86_64.rpm     # Fedora, RHEL
 
 ## 첫 샌드박스 실행
 
-1. gvx Desktop을 엽니다. 대시보드에 엔진 설치 안내가 표시되면 **rungv 설치**를 선택합니다. 이미 설치된 바이너리는 **설정 → 엔진 → rungv 경로**에서 지정할 수 있습니다.
+1. GVX Desktop을 엽니다. 대시보드에 엔진 설치 안내가 표시되면 **rungv 설치**를 선택합니다. 이미 설치된 바이너리는 **설정 → 엔진 → rungv 경로**에서 지정할 수 있습니다.
 2. 대시보드에서 **새 샌드박스**를 선택합니다. **이미지**에 `nginx:alpine`을, **이름**에 `web`을 입력합니다.
 3. 호스트에서 nginx에 접속하려면 **게시 포트**에 `127.0.0.1:8080:80`을 입력합니다.
 4. **저장하고 시작**을 선택합니다. 샌드박스 상세 화면에서 **로그**를 확인할 수 있습니다. 포트를 게시했다면 브라우저에서 `http://127.0.0.1:8080`을 엽니다.

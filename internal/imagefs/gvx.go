@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -259,8 +260,8 @@ func (f *gvxFS) ReadDir(_ context.Context, dir string, layer int) ([]Entry, erro
 	whiteouts := map[string]bool{}
 	var out []Entry
 
-	for i := len(f.layers) - 1; i >= 0; i-- {
-		l := f.layers[i]
+	for _, l := range slices.Backward(f.layers) {
+
 		img := f.byLayerIndex[l.Index]
 		if img == nil {
 			continue
@@ -383,8 +384,8 @@ func (f *gvxFS) ReadFile(_ context.Context, filePath string, layer int, limit in
 		return fc, nil
 	}
 
-	for i := len(f.layers) - 1; i >= 0; i-- {
-		img := f.byLayerIndex[f.layers[i].Index]
+	for _, v := range slices.Backward(f.layers) {
+		img := f.byLayerIndex[v.Index]
 		if img == nil {
 			continue
 		}

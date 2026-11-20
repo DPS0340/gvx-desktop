@@ -26,7 +26,7 @@ func imagesPage(m *Model) ggui.Widget {
 				if !open || !l.Loaded || l.Err != "" {
 					return tr("Images built or pulled inside the Docker Engine sandbox.")
 				}
-				return tr("%d images · %s. Images built or pulled inside the Docker Engine sandbox.", len(l.Items), humanBytes(dockerImagesTotalSize(l.Items)))
+				return tr("%d images · %s. Images built or pulled inside the Docker Engine sandbox.", len(l.Items), formatBytes(dockerImagesTotalSize(l.Items)))
 			}))
 			return pageHeader(tr("Images"), summary,
 				tip(iconButton(lucide.RefreshCw, tr("Refresh Docker images"), m.LoadDockerImages).BindDisabled(ggui.Not(m.ContainersOpen)), tr("Refresh")),
@@ -39,7 +39,7 @@ func imagesPage(m *Model) ggui.Widget {
 			s.WriteString(fmt.Sprintf(tr("%d cached images"), len(l.Items)))
 			for _, r := range d {
 				if r.Type == "Images" {
-					s.WriteString(fmt.Sprintf(tr(" · %s on disk · %s reclaimable"), r.Size, r.Reclaimable))
+					s.WriteString(fmt.Sprintf(tr(" · %s on disk · %s reclaimable"), formatSize(r.Size), formatSize(r.Reclaimable)))
 				}
 			}
 			return s.String() + tr(". Layers are compiled to read-only EROFS files, never extracted onto the host.")
@@ -51,10 +51,16 @@ func imagesPage(m *Model) ggui.Widget {
 		)
 	})
 	tabs := ui.Tabs(m.ImageView,
-		ui.Tab(tr("gvx Sandboxes"), widget.Padding(gvxImagesView(m), 12, 0, 0, 0)),
-		ui.Tab("Docker Engine", widget.Padding(dockerImagesView(m), 12, 0, 0, 0)),
+		ui.Tab(tr("GVX Sandboxes"), widget.Padding(gvxImagesView(m), 12, 0, 0, 0)).
+			Header(tabHeader(lucide.Box, tr("GVX Sandboxes"))),
+		ui.Tab("Docker Engine", widget.Padding(dockerImagesView(m), 12, 0, 0, 0)).
+			Header(tabHeader(lucide.Container, "Docker Engine")),
 	).Name(tr("Image sources"))
 	return page(header, tabs)
+}
+
+func tabHeader(icon *icons.Glyph, label string) ggui.Widget {
+	return widget.Row(glyph(icon, 14), widget.Text(label).NoWrap()).Gap(6).Align(widget.AlignCenter)
 }
 
 func gvxImagesView(m *Model) ggui.Widget {
@@ -89,7 +95,7 @@ func gvxImagesView(m *Model) ggui.Widget {
 			return ui.MonoOf(ggui.Map(r, func(i rungv.Image) string { return i.ID })).Size(12)
 		}).W(130),
 		ui.TextCol(tr("Created"), imageAge).W(130),
-		ui.TextCol(tr("Size"), func(i rungv.Image) string { return i.Size }).W(90).Right(),
+		ui.TextCol(tr("Size"), func(i rungv.Image) string { return formatSize(i.Size) }).W(96).Right(),
 		ui.Col("", func(r ggui.Readable[rungv.Image]) ggui.Widget {
 			return ggui.View(r, func(img rungv.Image) ggui.Widget {
 				ref := img.Ref()
@@ -194,7 +200,7 @@ func dockerImagesView(m *Model) ggui.Widget {
 				return since(time.Unix(i.Created, 0), now)
 			})).Size(12).NoWrap()
 		}).W(130),
-		ui.TextCol(tr("Size"), func(i DockerImageRow) string { return humanBytes(i.Size) }).W(90).Right(),
+		ui.TextCol(tr("Size"), func(i DockerImageRow) string { return formatBytes(i.Size) }).W(96).Right(),
 		ui.Col("", func(r ggui.Readable[DockerImageRow]) ggui.Widget {
 			return ggui.View(r, func(img DockerImageRow) ggui.Widget {
 				ref := img.Ref()
@@ -256,7 +262,7 @@ func volumesPage(m *Model) ggui.Widget {
 		s.WriteString(fmt.Sprintf(tr("%d volumes"), len(l.Items)))
 		for _, r := range d {
 			if r.Type == "Local Volumes" {
-				s.WriteString(tr(" · %s on disk", r.Size))
+				s.WriteString(tr(" · %s on disk", formatSize(r.Size)))
 			}
 		}
 		return s.String() + tr(". Each ext4lite volume is one journaled ext4 image file that grows on demand.")
@@ -290,7 +296,7 @@ func volumesPage(m *Model) ggui.Widget {
 				return ui.Caption(tr("unused")).Size(12)
 			})
 		}).Grow(2),
-		ui.TextCol(tr("Size"), func(v rungv.Volume) string { return v.Size }).W(90).Right(),
+		ui.TextCol(tr("Size"), func(v rungv.Volume) string { return formatSize(v.Size) }).W(96).Right(),
 		ui.TextCol(tr("Created"), func(v rungv.Volume) string { return shortDate(v.CreatedAt) }).W(140),
 		ui.Col("", func(r ggui.Readable[rungv.Volume]) ggui.Widget {
 			return ggui.View(r, func(v rungv.Volume) ggui.Widget {
@@ -354,7 +360,7 @@ func snapshotsPage(m *Model) ggui.Widget {
 		for _, x := range s {
 			total += x.Size
 		}
-		return fmt.Sprintf(tr("%d snapshots · %s. Checkpoint a running sandbox and resume it later, in milliseconds."), len(s), humanBytes(total))
+		return fmt.Sprintf(tr("%d snapshots · %s. Checkpoint a running sandbox and resume it later, in milliseconds."), len(s), formatBytes(total))
 	}))
 	enabled := ggui.Map(m.Specs, func(specs []sandbox.Spec) []sandbox.Spec {
 		var out []sandbox.Spec

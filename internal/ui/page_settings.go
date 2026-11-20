@@ -101,7 +101,7 @@ func settingsPage(m *Model) ggui.Widget {
 	}
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
 		groups = append(groups, settingsGroup(lucide.PanelTop, tr("Tray"),
-			settingRow(tr("Show gvx Desktop in the %s", trayPlace()),
+			settingRow(tr("Show GVX Desktop in the %s", trayPlace()),
 				tr("An icon with the sandboxes and what they are doing, to start and stop them without the window."),
 				ui.Switch(tray, "")),
 			settingRow(tr("Keep running when the window closes"),
@@ -188,7 +188,7 @@ func aboutCard(m *Model) ggui.Widget {
 	return ui.Card(widget.Row(
 		widget.Image(brandMark()).Size(56, 56),
 		widget.Expanded(widget.Column(
-			widget.Row(ui.Heading("gvx Desktop").Size(16), ui.Badge(AppVersion).Outline()).Gap(8).Align(widget.AlignCenter),
+			widget.Row(ui.Heading("GVX Desktop").Size(16), ui.Badge(AppVersion).Outline()).Gap(8).Align(widget.AlignCenter),
 			ui.Caption(tr("gvx runs unmodified Linux containers on gVisor's user-space kernel, ported to macOS, Windows and Linux.")),
 			widget.Padding(widget.Row(
 				ui.Button(tr("gvx on GitHub"), func() { m.Open("https://github.com/gfire-sigs/gvx") }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.ExternalLink, 14)),

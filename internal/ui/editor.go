@@ -154,7 +154,7 @@ func editorSheet(m *Model) ggui.Widget {
 
 	lifecycle := widget.Column(
 		ui.Switch(flag(func(x *Draft) *bool { return &x.Checkpoint }), tr("Allow snapshots (checkpoint and restore)")),
-		ui.Switch(flag(func(x *Draft) *bool { return &x.AutoStart }), tr("Start when gvx Desktop starts")),
+		ui.Switch(flag(func(x *Draft) *bool { return &x.AutoStart }), tr("Start when GVX Desktop starts")),
 	).Gap(10).Stretch()
 
 	section := func(icon *icons.Glyph, title string, body ggui.Widget) ggui.Widget {

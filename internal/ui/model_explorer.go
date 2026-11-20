@@ -160,7 +160,7 @@ func (m *Model) beginExplore(title, source string, tab int) (int, context.Contex
 // ExploreGVXImage opens the image explorer for a cached gvx sandbox image on tab.
 func (m *Model) ExploreGVXImage(img rungv.Image, tab int) {
 	ref := img.Ref()
-	gen, ctx := m.beginExplore(ref, "gvx", tab)
+	gen, ctx := m.beginExplore(ref, "GVX", tab)
 	if m.Offline {
 		m.ExploreLoading.Set(false)
 		return

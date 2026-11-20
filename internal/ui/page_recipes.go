@@ -111,7 +111,7 @@ func dockerImagesSummary(m *Model) ggui.Widget {
 		case !l.Loaded:
 			return [2]string{tr("Asking dockerd…"), ""}
 		}
-		return [2]string{tr("%d images · %s", len(l.Items), humanBytes(dockerImagesTotalSize(l.Items))), tr("Built or pulled inside the Docker Engine sandbox.")}
+		return [2]string{tr("%d images · %s", len(l.Items), formatBytes(dockerImagesTotalSize(l.Items))), tr("Built or pulled inside the Docker Engine sandbox.")}
 	})
 	text := ggui.View(line, func(t [2]string) ggui.Widget {
 		col := []ggui.Widget{widget.Text(t[0]).Size(13).Weight(ggui.WeightMedium)}

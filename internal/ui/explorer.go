@@ -96,10 +96,10 @@ func explorerNavBar(m *Model) ggui.Widget {
 		items := []ui.BreadcrumbEntry{ui.Crumb("/", func() { m.ExploreOpenDir("/") })}
 		if p != "/" {
 			parts := strings.Split(strings.Trim(p, "/"), "/")
-			cur := ""
+			var cur strings.Builder
 			for i, seg := range parts {
-				cur += "/" + seg
-				target := cur
+				cur.WriteString("/" + seg)
+				target := cur.String()
 				var onTap func()
 				if i < len(parts)-1 {
 					onTap = func() { m.ExploreOpenDir(target) }
@@ -196,7 +196,7 @@ func explorerEntryRow(m *Model, e imagefs.Entry, showLayer bool) ggui.Widget {
 	}
 	sizeStr := "—"
 	if e.Kind == imagefs.KindFile {
-		sizeStr = humanBytes(e.Size)
+		sizeStr = formatBytes(e.Size)
 	}
 	parts := []ggui.Widget{
 		icon,
@@ -240,7 +240,7 @@ func explorerPreviewPane(m *Model) ggui.Widget {
 		e := p.Entry
 		meta := fmt.Sprintf("%s · %d:%d", imagefs.FormatMode(e.Mode, e.Kind), e.UID, e.GID)
 		if e.Kind == imagefs.KindFile {
-			meta += " · " + humanBytes(e.Size)
+			meta += " · " + formatBytes(e.Size)
 		}
 		if !e.ModTime.IsZero() {
 			meta += " · " + e.ModTime.Local().Format("2006-01-02 15:04")
@@ -298,7 +298,7 @@ func explorerPreviewPane(m *Model) ggui.Widget {
 				if p.Binary {
 					shown = hexPreviewBytes
 				}
-				notices = append(notices, ui.Caption(tr("Showing first %s of %s.", humanBytes(shown), humanBytes(p.TotalSize))).Size(11))
+				notices = append(notices, ui.Caption(tr("Showing first %s of %s.", formatBytes(shown), formatBytes(p.TotalSize))).Size(11))
 			}
 			parts = append(parts, widget.Row(notices...).Gap(8).Align(widget.AlignCenter))
 		}
@@ -346,7 +346,7 @@ func explorerLayersView(m *Model) ggui.Widget {
 				}
 				sizeText := "0 B"
 				if layer.Size > 0 {
-					sizeText = humanBytes(layer.Size)
+					sizeText = formatBytes(layer.Size)
 				}
 				var act ggui.Widget = widget.Box().Width(74)
 				if layer.HasFiles {

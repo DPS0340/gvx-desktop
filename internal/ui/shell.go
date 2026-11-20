@@ -141,7 +141,7 @@ func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 	brand := dragRegion(widget.Padding(widget.Row(
 		widget.Image(brandMark()).Size(40, 40),
 		widget.Column(
-			widget.Text("gvx Desktop").Size(15).Weight(ggui.WeightSemibold).NoWrap(),
+			widget.Text("GVX Desktop").Size(15).Weight(ggui.WeightSemibold).NoWrap(),
 			ui.CaptionOf(ggui.Map(m.Engine, engineShort)).Size(11).NoWrap(),
 		).Gap(1),
 	).Gap(10), brandTop, 12, 8, 12))
@@ -296,6 +296,18 @@ func modKey() string {
 	return "Ctrl"
 }
 
+func diskTypeLabel(kind string) string {
+	switch kind {
+	case "Images":
+		return tr("Images")
+	case "Local Volumes":
+		return tr("Volumes")
+	case "Build Cache":
+		return tr("Build Cache")
+	}
+	return kind
+}
+
 func engineTooltip(e Engine) string {
 	if e.Err != "" {
 		return e.Err
@@ -319,11 +331,7 @@ func statusBar(m *Model) ggui.Widget {
 	disk := ui.CaptionOf(ggui.Map(m.Disk, func(rows []rungv.DiskUsage) string {
 		var parts []string
 		for _, r := range rows {
-			name := r.Type
-			if name == "Local Volumes" {
-				name = tr("Volumes")
-			}
-			parts = append(parts, tr(name)+" "+r.Size)
+			parts = append(parts, diskTypeLabel(r.Type)+" "+formatSize(r.Size))
 		}
 		return strings.Join(parts, " · ")
 	})).Size(11).NoWrap()
@@ -555,8 +563,8 @@ func volumeDialog(m *Model) ggui.Widget {
 
 // quitText says what quitting with n sandboxes running does to them.
 func quitText(n int) string {
-	return trn(n, "%d sandbox is running. gvx has no daemon: sandboxes live only while gvx Desktop runs.",
-		"%d sandboxes are running. gvx has no daemon: sandboxes live only while gvx Desktop runs.")
+	return trn(n, "%d sandbox is running. gvx has no daemon: sandboxes live only while GVX Desktop runs.",
+		"%d sandboxes are running. gvx has no daemon: sandboxes live only while GVX Desktop runs.")
 }
 
 func quitDialog(m *Model) ggui.Widget {

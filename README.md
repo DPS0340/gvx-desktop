@@ -2,11 +2,11 @@
   <img src="assets/gvx-desktop-icon.svg" width="128" height="128" alt="A Go gopher in a space helmet">
 </p>
 
-<h1 align="center">gvx Desktop</h1>
+<h1 align="center">GVX Desktop</h1>
 
 <p align="center"><b>English</b> · <a href="README.ko.md">한국어</a></p>
 
-gvx Desktop runs Linux containers as unprivileged [gvx](https://github.com/gfire-sigs/gvx) sandboxes without a separate Linux VM, a background daemon, or root privileges. Use it to manage sandboxes, images, volumes, and snapshots from a desktop interface built with [ggui](https://github.com/ironpark/ggui).
+GVX Desktop runs Linux containers as unprivileged [gvx](https://github.com/gfire-sigs/gvx) sandboxes without a separate Linux VM, a background daemon, or root privileges. Use it to manage sandboxes, images, volumes, and snapshots from a desktop interface built with [ggui](https://github.com/ironpark/ggui).
 
 <p align="center">
   <img src="assets/tour.gif" width="960" alt="Demo of the dashboard, sandbox editor and details, image search, Docker Engine and Kubernetes recipes, settings, and command palette">
@@ -67,7 +67,7 @@ For other platforms, see [Build and run](#build-and-run).
 
 ## Run your first sandbox
 
-1. Open gvx Desktop. If the dashboard prompts you to set up the engine, select **Install rungv**. You can also point the app to an existing binary under **Settings → Engine → rungv path**.
+1. Open GVX Desktop. If the dashboard prompts you to set up the engine, select **Install rungv**. You can also point the app to an existing binary under **Settings → Engine → rungv path**.
 2. On the dashboard, select **New sandbox**. Set **Image** to `nginx:alpine` and **Name** to `web`.
 3. To open nginx from the host, enter `127.0.0.1:8080:80` under **Published ports**.
 4. Select **Save and start**. Open the sandbox details to view **Logs**. If you published the port, open `http://127.0.0.1:8080` in your browser.

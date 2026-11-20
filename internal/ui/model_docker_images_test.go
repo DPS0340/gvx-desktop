@@ -200,7 +200,7 @@ func TestImageExplorerDialog(t *testing.T) {
 	}
 
 	m.ExploreTitle.Set("nginx:alpine")
-	m.ExploreSource.Set("gvx")
+	m.ExploreSource.Set("GVX")
 	m.ExploreTab.Set(ExploreFiles)
 	m.ExplorePath.Set("/etc/nginx")
 	m.ExploreLayers.Set([]imagefs.Layer{
@@ -269,5 +269,46 @@ func TestRowActionMenuOpensInwardWithoutSquishing(t *testing.T) {
 	}
 	if item.Rect.Origin.X+item.Rect.Size.W > 1000 {
 		t.Errorf("menu item overflows right window edge: %+v", item.Rect)
+	}
+}
+
+func TestFormatSizeAndBytes(t *testing.T) {
+	sizeCases := []struct{ in, want string }{
+		{"", ""},
+		{"0B", "0 B"},
+		{"512B", "512 B"},
+		{"12.34KB", "12.3 KB"},
+		{"12KB", "12 KB"},
+		{"9.155MB", "9.2 MB"},
+		{"419.4MB", "419.4 MB"},
+		{"322MB", "322 MB"},
+		{"1.711GB", "1.71 GB"},
+		{"2.114GB", "2.11 GB"},
+		{"1.82GB", "1.82 GB"},
+		{"2.30GB", "2.3 GB"},
+		{"2.00GB", "2 GB"},
+		{"113.45MB (32%)", "113.5 MB (32%)"},
+		{"—", "—"},
+	}
+	for _, c := range sizeCases {
+		if got := formatSize(c.in); got != c.want {
+			t.Errorf("formatSize(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	byteCases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0 B"},
+		{642, "642 B"},
+		{1500, "1.5 KB"},
+		{64_000_000, "64 MB"},
+		{1_711_276_032, "1.71 GB"},
+		{2_000_000_000, "2 GB"},
+	}
+	for _, c := range byteCases {
+		if got := formatBytes(c.in); got != c.want {
+			t.Errorf("formatBytes(%d) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

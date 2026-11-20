@@ -163,3 +163,27 @@ func TestLogBuffer(t *testing.T) {
 		t.Errorf("tail %q", tail)
 	}
 }
+
+func TestAutoPublish(t *testing.T) {
+	s := Spec{ExtraArgs: "--tune a=b"}
+	if HasAutoPublish(s) || AutoPublishSet(s) {
+		t.Fatal("a spec without the flag has it")
+	}
+	on := WithAutoPublish(s, true)
+	if !HasAutoPublish(on) || on.ExtraArgs != "--tune a=b -auto-publish" {
+		t.Fatalf("on: %q", on.ExtraArgs)
+	}
+	if again := WithAutoPublish(on, true); again.ExtraArgs != on.ExtraArgs {
+		t.Fatalf("twice: %q", again.ExtraArgs)
+	}
+	if off := WithAutoPublish(on, false); HasAutoPublish(off) || off.ExtraArgs != "--tune a=b" {
+		t.Fatalf("off: %q", off.ExtraArgs)
+	}
+	no := Spec{ExtraArgs: "--auto-publish=false"}
+	if HasAutoPublish(no) || !AutoPublishSet(no) {
+		t.Fatal("-auto-publish=false is set, and off")
+	}
+	if !HasAutoPublish(Spec{ExtraArgs: "--auto-publish"}) {
+		t.Fatal("two dashes")
+	}
+}

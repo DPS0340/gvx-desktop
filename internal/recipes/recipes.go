@@ -1,9 +1,11 @@
 // Package recipes holds presets for the workloads gvx documents: a Docker
-// Engine (docker:dind) and a Kubernetes node (rancher/k3s).
+// Engine (docker:dind), a Kubernetes node (rancher/k3s), and an image
+// registry (registry:2) between the two.
 package recipes
 
 import (
 	"fmt"
+	"net"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -19,18 +21,37 @@ const (
 	Kubernetes = "k3s"
 )
 
-// DockerSocket is the host socket the Docker Engine recipe publishes.
+// DockerSocket is the host socket the app serves the Docker API on.
 func DockerSocket() string { return rungv.ExpandHome("~/.gvx/docker.sock") }
+
+// dockerBackendSocketPath is the unexpanded path of the app-private Unix
+// socket the Docker Engine sandbox publishes dockerd on.
+const dockerBackendSocketPath = "~/.gvx/engine/dockerd.sock"
 
 // dockerGuestPort is where dockerd listens inside the sandbox.
 const dockerGuestPort = 2375
 
-// DefaultDockerPort is the host port the engine's API takes over TCP.
+// DockerBackendPublish is the sandbox port publish carrying dockerd's API to
+// the app-private Unix socket on every OS.
+const DockerBackendPublish = "unix:" + dockerBackendSocketPath + ":2375"
+
+// DockerBackendSocket is the app-private Unix socket the Docker Engine sandbox
+// publishes dockerd on. Only the app connects to it.
+// Note: Unix domain socket paths are subject to OS sun_path limits (~104 bytes
+// on macOS, ~108 bytes on Linux and Windows), so very long home directory paths
+// may exceed that limit.
+func DockerBackendSocket() string { return rungv.ExpandHome(dockerBackendSocketPath) }
+
+// DockerBackendHost is the DOCKER_HOST value the app's own client uses to
+// reach dockerd directly, bypassing the proxy.
+func DockerBackendHost() string { return "unix://" + filepath.ToSlash(DockerBackendSocket()) }
+
+// DefaultDockerPort is the host port the app's proxy takes over TCP.
 const DefaultDockerPort = 2375
 
-// DockerAPI is how the recipe's engine is reached from the host: through
-// the Unix socket ~/.gvx/docker.sock, or over TCP on a port of the
-// loopback address. A Docker CLI on Windows reaches a Unix socket only
+// DockerAPI is how docker reaches the engine from this computer through the
+// app's proxy: on the Unix socket ~/.gvx/docker.sock, or over TCP on a port
+// of the loopback address. A Docker CLI on Windows reaches a Unix socket only
 // from version 29 on; TCP works with any, on every system.
 type DockerAPI struct {
 	TCP  bool
@@ -50,12 +71,12 @@ func (a DockerAPI) port() int {
 	return a.Port
 }
 
-// Publish is the sandbox's published port that carries the API.
-func (a DockerAPI) Publish() string {
+// ListenAddr returns the network and address the app's proxy listens on.
+func (a DockerAPI) ListenAddr() (network, address string) {
 	if a.TCP {
-		return fmt.Sprintf("127.0.0.1:%d:%d", a.port(), dockerGuestPort)
+		return "tcp", fmt.Sprintf("127.0.0.1:%d", a.port())
 	}
-	return fmt.Sprintf("unix:~/.gvx/docker.sock:%d", dockerGuestPort)
+	return "unix", DockerSocket()
 }
 
 // Host is the DOCKER_HOST value that reaches the engine.
@@ -66,77 +87,114 @@ func (a DockerAPI) Host() string {
 	return "unix://" + filepath.ToSlash(DockerSocket())
 }
 
-// DockerHost is the DOCKER_HOST value that reaches an engine made with the
+// DockerHost is the DOCKER_HOST value that reaches an engine with the
 // defaults.
 func DockerHost() string { return DefaultDockerAPI().Host() }
 
-// isDockerAPI reports whether a published port carries the engine's API,
-// and how.
-func isDockerAPI(port string) (DockerAPI, bool) {
-	parts := strings.Split(port, ":")
-	if len(parts) < 2 || parts[len(parts)-1] != strconv.Itoa(dockerGuestPort) {
-		return DockerAPI{}, false
-	}
-	if parts[0] == "unix" {
+// parseDockerAPIPort reports whether a published port carries the engine's API
+// on guest port 2375, and how it was published (Unix socket or TCP with its
+// host port). It accepts rungv's -p syntax: [ip:][hostPort:]guestPort[/proto]
+// (ignoring /udp and port ranges) as well as unix:PATH:2375.
+func parseDockerAPIPort(port string) (DockerAPI, bool) {
+	p := strings.TrimSpace(port)
+	if rest, ok := strings.CutPrefix(p, "unix:"); ok {
+		i := strings.LastIndexByte(rest, ':')
+		if i <= 0 {
+			return DockerAPI{}, false
+		}
+		guest := rest[i+1:]
+		if base, proto, hasProto := strings.Cut(guest, "/"); hasProto {
+			if !strings.EqualFold(proto, "tcp") {
+				return DockerAPI{}, false
+			}
+			guest = base
+		}
+		if guest != strconv.Itoa(dockerGuestPort) {
+			return DockerAPI{}, false
+		}
 		return DockerAPI{Port: DefaultDockerPort}, true
 	}
-	host, err := strconv.Atoi(parts[len(parts)-2])
-	if err != nil {
+	if base, proto, hasProto := strings.Cut(p, "/"); hasProto {
+		if !strings.EqualFold(proto, "tcp") {
+			return DockerAPI{}, false
+		}
+		p = base
+	}
+	lastColon := strings.LastIndexByte(p, ':')
+	if lastColon < 0 {
+		if p == strconv.Itoa(dockerGuestPort) {
+			return DockerAPI{TCP: true, Port: DefaultDockerPort}, true
+		}
 		return DockerAPI{}, false
 	}
-	return DockerAPI{TCP: true, Port: host}, true
+	before, guest := p[:lastColon], p[lastColon+1:]
+	if guest != strconv.Itoa(dockerGuestPort) {
+		return DockerAPI{}, false
+	}
+	// hostPort:guestPort
+	if hostPort, err := strconv.Atoi(before); err == nil && hostPort >= 1 && hostPort <= 65535 {
+		return DockerAPI{TCP: true, Port: hostPort}, true
+	}
+	// ip:guestPort (e.g. 127.0.0.1:2375 or [::1]:2375)
+	if isBindIP(before) {
+		return DockerAPI{TCP: true, Port: DefaultDockerPort}, true
+	}
+	// ip:hostPort:guestPort (e.g. 127.0.0.1:23750:2375 or [::1]:23750:2375)
+	if i := strings.LastIndexByte(before, ':'); i > 0 {
+		ipPart, hostPart := before[:i], before[i+1:]
+		if isBindIP(ipPart) {
+			if hostPort, err := strconv.Atoi(hostPart); err == nil && hostPort >= 1 && hostPort <= 65535 {
+				return DockerAPI{TCP: true, Port: hostPort}, true
+			}
+		}
+	}
+	return DockerAPI{}, false
 }
 
-// DockerAPIOf reads from an engine's sandbox how its API is published,
-// which is what counts once the sandbox exists: its ports are its own.
-func DockerAPIOf(spec sandbox.Spec) (DockerAPI, bool) {
+func isBindIP(s string) bool {
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		s = s[1 : len(s)-1]
+	}
+	return net.ParseIP(s) != nil
+}
+
+// isDockerAPI reports whether a published port carries the engine's API.
+func isDockerAPI(port string) bool {
+	_, ok := parseDockerAPIPort(port)
+	return ok
+}
+
+// LegacyDockerAPI returns the DockerAPI endpoint a pre-migration Docker Engine
+// spec published directly (TCP or Unix), if any.
+func LegacyDockerAPI(spec sandbox.Spec) (DockerAPI, bool) {
 	for _, p := range spec.Ports {
-		if api, ok := isDockerAPI(p); ok {
+		if api, ok := parseDockerAPIPort(p); ok {
 			return api, true
 		}
 	}
 	return DockerAPI{}, false
 }
 
-// WithDockerAPI returns the engine's sandbox publishing its API as api
-// says, its other ports untouched. The change takes a restart: a sandbox's
-// ports are fixed when it starts.
-func WithDockerAPI(spec sandbox.Spec, api DockerAPI) sandbox.Spec {
-	ports := make([]string, 0, len(spec.Ports)+1)
-	placed := false
-	for _, p := range spec.Ports {
-		if _, ok := isDockerAPI(p); ok {
-			if !placed {
-				ports = append(ports, api.Publish())
-				placed = true
-			}
-			continue
-		}
-		ports = append(ports, p)
-	}
-	if !placed {
-		ports = append([]string{api.Publish()}, ports...)
-	}
-	spec.Ports = ports
-	return spec
+// DockerEngine runs an unmodified dockerd in a sandbox with its data in the
+// ext4lite volume gvx-docker, its API published on the app-private Unix socket
+// ~/.gvx/engine/dockerd.sock, the ports its containers publish reaching this
+// computer under the same numbers (rungv's -auto-publish; 9000-9019 are
+// published besides, for a rungv that has no such flag) and the user's home
+// folder shared at its own path (docs/recipes/docker-engine.md).
+func DockerEngine() sandbox.Spec {
+	return WithSharedFolders(dockerEngine(), DefaultSharedFolders())
 }
 
-// DockerEngine runs an unmodified dockerd in a sandbox with its data in the
-// ext4lite volume gvx-docker, its API on ~/.gvx/docker.sock (TCP on
-// Windows) and the host ports 9000-9019 published for the containers it
-// runs (docs/recipes/docker-engine.md).
-func DockerEngine() sandbox.Spec { return DockerEngineWith(DefaultDockerAPI()) }
-
-// DockerEngineWith is DockerEngine with its API published as api says.
-func DockerEngineWith(api DockerAPI) sandbox.Spec {
+func dockerEngine() sandbox.Spec {
 	return sandbox.Spec{
 		ID:           sandbox.NewID(),
 		Name:         "docker-engine",
 		Image:        "docker:dind",
-		Command:      "--tls=false",
+		Command:      "--tls=false " + insecureRegistry(),
 		Env:          []string{"DOCKER_TLS_CERTDIR="},
-		Ports:        []string{api.Publish(), "127.0.0.1:9000-9019:9000-9019"},
+		Ports:        []string{DockerBackendPublish, "127.0.0.1:9000-9019:9000-9019"},
 		Mounts:       []sandbox.Mount{{Type: sandbox.MountVolume, Source: "gvx-docker", Target: "/var/lib/docker"}},
+		ExtraArgs:    "-auto-publish",
 		Recipe:       Docker,
 		ReadyPattern: "API listen on",
 		CreatedAt:    time.Now(),
@@ -154,15 +212,19 @@ const K3sImage = "rancher/k3s:v1.31.4-k3s1"
 
 // KubernetesNode runs a single-node k3s server with its API on 6443, the
 // NodePorts 30000-30019 published and its state in the volume k3s
-// (docs/recipes/kubernetes.md).
-func KubernetesNode() sandbox.Spec {
-	return sandbox.Spec{
+// (docs/recipes/kubernetes.md). Its load balancer, ServiceLB, is off.
+func KubernetesNode() sandbox.Spec { return KubernetesNodeWith(false) }
+
+// KubernetesNodeWith is KubernetesNode with ServiceLB on when serviceLB is
+// set, and the node's ports 80 and 443 published for it.
+func KubernetesNodeWith(serviceLB bool) sandbox.Spec {
+	spec := sandbox.Spec{
 		ID:      sandbox.NewID(),
 		Name:    "k3s",
 		Image:   K3sImage,
-		Command: "server --disable=traefik,servicelb --write-kubeconfig=/output/kubeconfig.yaml --write-kubeconfig-mode=644",
+		Command: k3sCommand(false),
 		Env:     []string{"IPTABLES_MODE=legacy"},
-		Ports:   []string{"127.0.0.1:6443:6443", "127.0.0.1:30000-30019:30000-30019"},
+		Ports:   []string{fmt.Sprintf("127.0.0.1:%d:%d", k3sAPIPort, k3sAPIPort), "127.0.0.1:30000-30019:30000-30019"},
 		Mounts: []sandbox.Mount{
 			{Type: sandbox.MountVolume, Source: "k3s", Target: "/var/lib/rancher"},
 			{Type: sandbox.MountBind, Source: "~/.gvx/k3s", Target: "/output"},
@@ -171,6 +233,10 @@ func KubernetesNode() sandbox.Spec {
 		ReadyPattern: "k3s is up and running",
 		CreatedAt:    time.Now(),
 	}
+	if serviceLB {
+		spec = WithServiceLB(spec, true)
+	}
+	return spec
 }
 
 // Recipe describes a preset for the UI.
@@ -194,7 +260,8 @@ func All() []Recipe {
 			Highlights: []string{
 				"Images and containers persist in the gvx-docker volume",
 				"API on ~/.gvx/docker.sock (docker context \"gvx\")",
-				"Host ports 9000–9019 reach published containers",
+				"Published container ports reach this computer under the same number",
+				"Your home folder is shared, so compose bind mounts work",
 			},
 			New: DockerEngine,
 		},
@@ -206,9 +273,22 @@ func All() []Recipe {
 			Highlights: []string{
 				"API server on 127.0.0.1:6443",
 				"NodePorts 30000–30019 reachable from the host",
+				"Optional load balancer on 127.0.0.1:8080 and :8443",
 				"Cluster state persists in the k3s volume",
 			},
 			New: KubernetesNode,
+		},
+		{
+			Key:     Registry,
+			Title:   "Image registry",
+			Summary: "A registry on this computer: push images from the Docker Engine, and run them in the cluster.",
+			Image:   RegistryImage,
+			Highlights: []string{
+				"Push to host.docker.internal:5001 from the Docker Engine",
+				"Pods pull localhost:5001/NAME:TAG and host.docker.internal:5001/NAME:TAG",
+				"Images persist in the gvx-registry volume",
+			},
+			New: ImageRegistry,
 		},
 	}
 }

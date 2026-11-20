@@ -28,13 +28,18 @@ type Settings struct {
 	NoTray         bool   `json:"noTray,omitempty"`         // keep out of the menu bar or notification area
 	SearchRegistry string `json:"searchRegistry,omitempty"` // the registry the pull dialog searches: hub (default), quay
 	DockerPath     string `json:"dockerPath,omitempty"`     // the docker command; empty: find it
-	DockerEndpoint string `json:"dockerEndpoint,omitempty"` // how the Docker Engine recipe publishes its API: socket, tcp; empty: the system's default
+	DockerEndpoint string `json:"dockerEndpoint,omitempty"` // how the app serves the Docker API: socket, tcp; empty: the system's default
 	DockerPort     int    `json:"dockerPort,omitempty"`     // the host port of a tcp endpoint; 0: 2375
+	K3sServiceLB   bool   `json:"k3sServiceLB,omitempty"`   // the Kubernetes recipe runs k3s's load balancer, ServiceLB
 	UpdateChannel  string `json:"updateChannel,omitempty"`  // where rungv is updated from: release (default), source
 	SourceRepo     string `json:"sourceRepo,omitempty"`     // git repository for building rungv from source; empty: gfire-sigs/gvx
 	SourceBranch   string `json:"sourceBranch,omitempty"`   // branch or tag for building rungv from source; empty: main
 	NoUpdateCheck  bool   `json:"noUpdateCheck,omitempty"`  // do not ask GitHub for a newer rungv at launch
 	LoginCommand   string `json:"loginCommand,omitempty"`   // what the start at login was registered to run, to register it again when the app moves
+	// DockerSharedFolders are the host folders the Docker Engine recipe
+	// shares at their own paths: nil for the default, the home folder, and
+	// empty for none.
+	DockerSharedFolders []string `json:"dockerSharedFolders"`
 	// Resume names, by ID, the recipe sandboxes the user left running: the
 	// app starts them again when it next starts. Quitting, which stops every
 	// sandbox, leaves it as it is; the user stopping one takes it out.
@@ -54,7 +59,7 @@ func (s Settings) Equal(o Settings) bool {
 		return false
 	}
 	s.Resume, o.Resume = nil, nil
-	return reflect.DeepEqual(s, o)
+	return reflect.DeepEqual(s, o) // which tells a nil list of shared folders from an empty one
 }
 
 // DefaultSettings are the settings of a first launch.

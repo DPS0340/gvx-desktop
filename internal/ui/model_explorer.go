@@ -229,7 +229,7 @@ func (m *Model) ExploreDockerImage(img DockerImageRow, tab int) {
 		m.ExploreLoading.Set(false)
 		return
 	}
-	host := m.dockerHost()
+	host := m.dockerBackendHost()
 
 	// Load inspect JSON in parallel.
 	go func() {

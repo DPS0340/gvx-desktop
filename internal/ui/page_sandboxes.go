@@ -72,7 +72,7 @@ func sandboxesPage(m *Model) ggui.Widget {
 			return ggui.View(r, func(r Row) ggui.Widget {
 				return widget.Row(sandboxQuickActions(m, r), rowMenu(m, r)).Gap(2).Justify(widget.JustifyEnd)
 			})
-		}).W(84).Identified("actions"),
+		}).W(120).Identified("actions"),
 	).BindSelected(selected).RowName(func(r Row) string { return r.Spec.Name }).RowHeight(48).MaxRows(6).
 		Toolbar(filterBar(m.Query, tr("Filter by name or image"), count))
 
@@ -298,6 +298,8 @@ func connectView(m *Model, r Row) ggui.Widget {
 		parts = append(parts, dockerConnect(m, r))
 	case recipes.Kubernetes:
 		parts = append(parts, kubeConnect(m, r))
+	case recipes.Registry:
+		parts = append(parts, registryConnect(m, r))
 	}
 	parts = append(parts, sectionTitle(tr("Published ports"), tr("Bound on the host before the guest starts. A guest port outside these is reachable only inside the sandbox.")))
 	if r.State.Status.Active() && len(r.State.Ports) > 0 {
@@ -358,6 +360,25 @@ func kubeConnect(m *Model, r Row) ggui.Widget {
 		widget.Row(
 			ui.Button(tr("Reveal kubeconfig"), func() { m.Open(cfg) }).Outline().Size(ui.ButtonSmall),
 			ui.Button(tr("Open Kubernetes page"), func() { m.Go(PageKubernetes) }).Outline().Size(ui.ButtonSmall),
+		).Gap(8),
+		ui.Divider(),
+	).Gap(10).Stretch()
+}
+
+// registryConnect tells how images go through the image registry: pushed
+// from the Docker Engine, and pulled by the cluster's pods.
+func registryConnect(m *Model, r Row) ggui.Widget {
+	host, local := recipes.RegistryHost(), recipes.RegistryLocal()
+	catalog := "http://127.0.0.1:" + itoa(recipes.RegistryPort) + "/v2/_catalog"
+	return widget.Column(
+		sectionTitle(tr("Push from the Docker Engine"), tr("Images built with docker go to the registry as %s, the name the engine's sandbox reaches this computer by. Images → Docker Engine → Push to cluster registry does the same.", host)),
+		copyable(m, "docker tag app:dev "+host+"/app:dev", "docker tag"),
+		copyable(m, "docker push "+host+"/app:dev", "docker push"),
+		sectionTitle(tr("Run it in the cluster"), tr("Pods of the Kubernetes recipe's cluster pull images named %s/… or %s/… from the registry.", host, local)),
+		copyable(m, "kubectl create deployment app --image="+host+"/app:dev", tr("example deployment")),
+		sectionTitle(tr("From tools on this computer"), tr("Tools that run here, not in a sandbox, reach the registry as %s.", local)),
+		widget.Row(
+			ui.Button(tr("List images"), func() { m.Open(catalog) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.ExternalLink, 14)).Disabled(r.State.Status != sandbox.Running),
 		).Gap(8),
 		ui.Divider(),
 	).Gap(10).Stretch()

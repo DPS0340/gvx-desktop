@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ErrNotFound reports that no rungv binary could be located.
@@ -183,6 +184,38 @@ func (c *Client) output(ctx context.Context, args ...string) ([]byte, error) {
 		return stdout.Bytes(), e
 	}
 	return stdout.Bytes(), nil
+}
+
+// runFlags holds, by the path of a rungv, the usage text of its run command.
+var runFlags sync.Map
+
+// HasRunFlag reports whether this rungv's run command takes the flag name,
+// written without its dash: an older rungv refuses a run with a flag it
+// does not know. The usage text is read once for each binary.
+func (c *Client) HasRunFlag(ctx context.Context, name string) bool {
+	if c == nil || c.Path == "" {
+		return false
+	}
+	usage, ok := runFlags.Load(c.Path)
+	if !ok {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, c.Path, "run", "-help")
+		cmd.WaitDelay = time.Second // a rungv that does not print its usage and leave
+		hideWindow(cmd)
+		out, _ := cmd.CombinedOutput() // the usage comes with a failing exit
+		if len(out) == 0 {
+			return false
+		}
+		usage = string(out)
+		runFlags.Store(c.Path, usage)
+	}
+	for line := range strings.SplitSeq(usage.(string), "\n") {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == "-"+name && strings.HasPrefix(line, "  -") {
+			return true
+		}
+	}
+	return false
 }
 
 // Stream runs a command and hands every line of stdout and stderr to line,

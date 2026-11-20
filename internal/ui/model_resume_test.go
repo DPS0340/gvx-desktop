@@ -24,7 +24,7 @@ func fakeRungv(t *testing.T) (path string, fail func(bool)) {
 	t.Helper()
 	dir := t.TempDir()
 	path = filepath.Join(dir, "rungv")
-	script := "#!/bin/sh\n[ -f '" + filepath.Join(dir, "fail") + "' ] && { echo 'rungv: boom' >&2; exit 3; }\n" +
+	script := "#!/bin/sh\ncase \"$*\" in *-help*) exit 2 ;; esac\n[ -f '" + filepath.Join(dir, "fail") + "' ] && { echo 'rungv: boom' >&2; exit 3; }\n" +
 		"echo 'API listen on /var/run/docker.sock'\nexec sleep 60\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

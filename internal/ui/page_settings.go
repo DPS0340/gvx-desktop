@@ -2,6 +2,7 @@ package ui
 
 import (
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/ironpark/ggui/ui/icons"
 	"github.com/ironpark/ggui/widget"
 
+	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
 
@@ -119,6 +121,7 @@ func settingsPage(m *Model) ggui.Widget {
 				widget.Box(ui.NumberInput(timeout).Name(tr("Stop timeout"))).Width(120)),
 		),
 		dockerSettings(m),
+		kubeSettings(m),
 		settingsGroup(lucide.Cpu, tr("Engine"),
 			settingField(tr("rungv path"), tr("Leave empty to search $GVX_RUNGV, PATH, ~/.gvx/bin and the app's own folder."), widget.Row(
 				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, ~/.gvx/bin, next to the app)")).Name(tr("rungv path")).
@@ -328,8 +331,8 @@ func themeIcon(theme string) *icons.Widget {
 	return glyph(lucide.Monitor, 14)
 }
 
-// dockerSettings chooses the docker command the app runs and how the
-// Docker Engine recipe publishes its API.
+// dockerSettings chooses the docker command the app runs and the endpoint the
+// app's Docker API proxy listens on.
 func dockerSettings(m *Model) ggui.Widget {
 	path := ggui.State(ggui.Peek(m.Settings).DockerPath)
 	setPath := func(v string) { m.UpdateSettings(func(s *storeSettings) { s.DockerPath = strings.TrimSpace(v) }) }
@@ -345,8 +348,7 @@ func dockerSettings(m *Model) ggui.Widget {
 	}))
 
 	endpoint := ggui.Bind(func() string {
-		m.Settings.Get() // follows the setting; the sandbox's own port is what counts
-		m.Rows.Get()
+		m.Settings.Get()
 		if m.DockerAPI().TCP {
 			return DockerTCPEndpoint
 		}
@@ -368,7 +370,16 @@ func dockerSettings(m *Model) ggui.Widget {
 		m.SetDockerAPI(api)
 	}
 	overTCP := ggui.Map(endpoint, func(v string) bool { return v == DockerTCPEndpoint })
-	host := ui.CaptionOf(ggui.Map(endpoint, func(string) string { return tr("DOCKER_HOST is %s.", m.DockerHost()) }))
+	host := ui.CaptionOf(ggui.Map(m.DockerEndpoint, func(h string) string { return tr("DOCKER_HOST is %s.", h) }))
+	proxyErr := ggui.View(ggui.Combine(m.DockerEndpoint, m.DockerProxyErr, func(h, err string) [2]string { return [2]string{h, err} }), func(v [2]string) ggui.Widget {
+		if v[1] == "" {
+			return widget.Box()
+		}
+		return widget.Row(
+			glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber),
+			widget.Expanded(ui.Caption(tr("Could not listen on %s: %s", v[0], v[1]))),
+		).Gap(8).Align(widget.AlignStart)
+	})
 
 	return settingsGroup(lucide.Container, "Docker",
 		settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Column(
@@ -380,7 +391,7 @@ func dockerSettings(m *Model) ggui.Widget {
 		).Gap(6).Stretch()),
 		widget.Column(
 			settingRow(tr("Engine API"),
-				tr("How the Docker Engine recipe is reached. A running engine moves when it is restarted."),
+				tr("How the Docker Engine is reached. Changes take effect immediately."),
 				widget.Row(
 					ggui.If(overTCP, func() ggui.Widget {
 						return widget.Box(ui.TextField(port).Name(tr("Docker API port")).OnCommit(setPort)).Width(84)
@@ -389,7 +400,63 @@ func dockerSettings(m *Model) ggui.Widget {
 				).Gap(8).Align(widget.AlignCenter)),
 			ui.Caption(tr("A Docker CLI on Windows reaches a Unix socket only from version 29 on. TCP on this computer's loopback address works with any version, on every system.")),
 			host,
+			proxyErr,
 		).Gap(6).Stretch(),
+		sharedFoldersField(m),
+	)
+}
+
+// sharedFoldersField lists the folders the Docker Engine shares at their
+// own paths, with a button that removes each and one that adds another.
+func sharedFoldersField(m *Model) ggui.Widget {
+	folders := ggui.Combine(m.Rows, m.Settings, m.sharedFoldersOf).WithEqual(slices.Equal[[]string])
+	pick := ggui.State("")
+	list := ggui.View(folders, func(list []string) ggui.Widget {
+		add := ui.Button(tr("Add folder…"), func() { browseFolder(m, pick, m.ShareFolder) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.FolderPlus, 14))
+		if len(list) == 0 {
+			home := rungv.ExpandHome("~")
+			return widget.Column(
+				widget.Row(glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber),
+					widget.Expanded(ui.Caption(tr("No folder is shared: bind mounts of folders on this computer are rejected."))),
+				).Gap(8).Align(widget.AlignStart),
+				widget.Row(ui.Button(tr("Share your home folder"), func() { m.ShareFolder(home) }).Size(ui.ButtonSmall), add).Gap(8),
+			).Gap(8).Stretch()
+		}
+		rows := make([]ggui.Widget, 0, len(list)+1)
+		for _, f := range list {
+			rows = append(rows, widget.Row(
+				glyph(lucide.Folder, 14).Color(colorGray),
+				widget.Expanded(ui.Mono(tildePath(f)).Size(12).NoWrap().Ellipsis()),
+				tip(iconButton(lucide.X, tr("Stop sharing %s", f), func() { m.UnshareFolder(f) }), tr("Stop sharing")),
+			).Gap(8).Align(widget.AlignCenter))
+		}
+		rows = append(rows, widget.Row(add))
+		return widget.Column(rows...).Gap(6).Stretch()
+	})
+	help := []ggui.Widget{list, ui.Caption(tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. The engine sees a change when it is restarted."))}
+	if runtime.GOOS == "windows" {
+		help = append(help, widget.Row(glyph(lucide.Info, 14).Color(colorBlue),
+			widget.Expanded(ui.Caption(tr("A folder such as C:\\Users\\me is at /c/Users/me in the engine. Set COMPOSE_CONVERT_WINDOWS_PATHS=1 so that compose writes its paths that way, and use them in docker run -v."))),
+		).Gap(8).Align(widget.AlignStart))
+	}
+	return widget.Column(
+		widget.Text(tr("Shared folders")).Size(14).Weight(ggui.WeightMedium),
+		widget.Column(help...).Gap(6).Stretch(),
+	).Gap(6).Stretch()
+}
+
+// kubeSettings chooses what the Kubernetes recipe's cluster runs.
+func kubeSettings(m *Model) ggui.Widget {
+	serviceLB := ggui.Bind(func() bool {
+		m.Settings.Get() // follows the setting; the sandbox's own command is what counts
+		m.Rows.Get()
+		return m.ServiceLB()
+	}, m.SetServiceLB)
+	return settingsGroup(lucide.ShipWheel, "Kubernetes",
+		settingRow(tr("Service load balancer"),
+			tr("Runs k3s's ServiceLB, so a LoadBalancer service gets an address instead of staying pending. The node's ports 80 and 443 reach this computer at 127.0.0.1:%d and :%d. A running cluster changes when it is restarted.",
+				recipes.ServiceLBHTTPPort, recipes.ServiceLBHTTPSPort),
+			ui.Switch(serviceLB, "")),
 	)
 }
 

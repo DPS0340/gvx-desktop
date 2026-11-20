@@ -16,6 +16,7 @@ import (
 	"github.com/ironpark/ggui/ui"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/dockerproxy"
 	"github.com/ironpark/gvx-desktop/internal/imagefs"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
@@ -200,6 +201,9 @@ type Model struct {
 	// DockerEndpoint is the DOCKER_HOST value that reaches the Docker
 	// Engine, as DockerHost says it.
 	DockerEndpoint *ggui.DerivedValue[string]
+	// DockerProxyErr is the last listener error from the app's Docker API
+	// proxy, or empty when listening normally.
+	DockerProxyErr *ggui.StateValue[string]
 	// DockerLink and KubeLink are the contexts docker and kubectl on this
 	// machine reach the recipes' engines through.
 	DockerLink, KubeLink *Link
@@ -219,6 +223,7 @@ type Model struct {
 	ConfirmTitle  *ggui.StateValue[string]
 	ConfirmText   *ggui.StateValue[string]
 	ConfirmLabel  *ggui.StateValue[string]
+	ConfirmSafe   *ggui.StateValue[bool] // the action destroys nothing: its button is not red
 	confirmAction func()
 	PullOpen      *ggui.StateValue[bool]
 	PullTarget    *ggui.StateValue[int]
@@ -285,6 +290,10 @@ type Model struct {
 	terms                                  liveTerminals
 	forwards                               liveForwards
 	forwarder                              forwarder // carries port forwards; tests replace it
+	dockerProxy                            *dockerproxy.Proxy
+	dockerProxyStarted                     bool
+	dockerBackend                          string // overrides recipes.DockerBackendHost() in tests
+	engineSpec                             atomic.Pointer[sandbox.Spec]
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -292,6 +301,24 @@ func NewModel(st store.Store, dataDir string) *Model {
 	settings, _ := st.Settings()
 	SetLanguage(ResolveLanguage(settings.Language))
 	specs, _ := st.Sandboxes()
+	if settings.DockerEndpoint == "" && settings.DockerPort == 0 {
+		for _, s := range specs {
+			if s.Recipe != recipes.Docker {
+				continue
+			}
+			if api, ok := recipes.LegacyDockerAPI(s); ok && api.TCP {
+				settings.DockerEndpoint = DockerTCPEndpoint
+				settings.DockerPort = api.Port
+				_ = st.SaveSettings(settings)
+			}
+			break
+		}
+	}
+	if up, changed := upgradeRecipes(specs); changed {
+		if err := st.SaveSandboxes(up); err == nil {
+			specs = up
+		}
+	}
 	m := &Model{
 		store:  st,
 		Toasts: ui.NewToaster().Limit(3),
@@ -322,6 +349,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 
 		DockerContainers:  ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
 		DockerVersion:     ggui.State(dockerapi.Version{}),
+		DockerProxyErr:    ggui.State(""),
 		ContainerQuery:    ggui.State(""),
 		SelectedContainer: ggui.State(""),
 		ContainerDetail:   ggui.State(0),
@@ -363,6 +391,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		ConfirmTitle:    ggui.State(""),
 		ConfirmText:     ggui.State(""),
 		ConfirmLabel:    ggui.State(tr("Confirm")),
+		ConfirmSafe:     ggui.State(false),
 		PullOpen:        ggui.State(false),
 		PullTarget:      ggui.State(PullTargetGVX),
 		PullRef:         ggui.State(""),
@@ -408,6 +437,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Client:  m.Client,
 		DataDir: dataDir,
 		Notify:  m.onEvent,
+		Prepare: recipes.Prepare,
 	}
 	m.Lang = ggui.Map(m.Settings, func(s store.Settings) string { return ResolveLanguage(s.Language) })
 	m.Rows = ggui.Combine(m.Specs, m.States, func(specs []sandbox.Spec, states map[string]sandbox.State) []Row {
@@ -417,8 +447,9 @@ func NewModel(st store.Store, dataDir string) *Model {
 		}
 		return rows
 	}).WithEqual(func(a, b []Row) bool { return slices.EqualFunc(a, b, Row.Equal) })
-	m.DockerEndpoint = ggui.Combine(m.Rows, m.Settings, func(rows []Row, set store.Settings) string {
-		return m.dockerAPIOf(rows, set).Host()
+	m.initDockerProxy()
+	m.DockerEndpoint = ggui.Map(m.Settings, func(set store.Settings) string {
+		return dockerSettingOf(set).Host()
 	})
 	m.newLinks()
 	m.ContainersAccess = ggui.Map(m.Rows, containersAccess)
@@ -514,7 +545,7 @@ func wrapCommand(args []string) string {
 
 func takesValue(flag string) bool {
 	switch flag {
-	case "-ro", "-isolate-lan", "--host-ca-certs", "--privileged=false":
+	case "-ro", "-isolate-lan", "--host-ca-certs", "--privileged=false", "-auto-publish", "--auto-publish":
 		return false
 	}
 	return true
@@ -571,7 +602,15 @@ func (m *Model) Confirm(title, text, label string, action func()) {
 	m.ConfirmText.Set(text)
 	m.ConfirmLabel.Set(label)
 	m.confirmAction = action
+	m.ConfirmSafe.Set(false)
 	m.ConfirmOpen.Set(true)
+}
+
+// Offer asks before running an action that destroys nothing, such as
+// starting what another action needs.
+func (m *Model) Offer(title, text, label string, action func()) {
+	m.Confirm(title, text, label, action)
+	m.ConfirmSafe.Set(true)
 }
 
 // RunConfirmed runs the pending confirmation.
@@ -631,6 +670,7 @@ func (m *Model) Start() {
 			m.startWithApp()
 		}
 	})
+	m.startDockerProxy()
 	m.followDocker()
 	m.followPods()
 	m.followForwards()
@@ -752,7 +792,7 @@ func (m *Model) announce(e sandbox.Event) {
 	st := m.sup.State(e.ID)
 	switch e.Kind {
 	case sandbox.EventReady:
-		m.toastOK(tr("%s is ready", spec.Name), readyText(spec))
+		m.toastOK(tr("%s is ready", spec.Name), m.readyText(spec))
 		if spec.Recipe == recipes.Kubernetes {
 			m.CheckKubeconfig()
 			m.CheckLink(m.KubeLink) // it has written its kubeconfig now
@@ -781,16 +821,14 @@ func (m *Model) announce(e sandbox.Event) {
 	}
 }
 
-func readyText(s sandbox.Spec) string {
+func (m *Model) readyText(s sandbox.Spec) string {
 	switch s.Recipe {
 	case recipes.Docker:
-		api, ok := recipes.DockerAPIOf(s)
-		if !ok {
-			api = recipes.DefaultDockerAPI()
-		}
-		return tr("The Docker Engine accepts connections on %s.", api.Host())
+		return tr("The Docker Engine accepts connections on %s.", m.DockerHost())
 	case recipes.Kubernetes:
 		return tr("kubectl can reach the cluster with KUBECONFIG=%s.", recipes.Kubeconfig())
+	case recipes.Registry:
+		return tr("Push images to %s from the Docker Engine; pods pull them from there.", recipes.RegistryHost())
 	}
 	return tr("The sandbox is running.")
 }
@@ -1025,6 +1063,9 @@ func (m *Model) OpenEditor(spec sandbox.Spec) {
 func (m *Model) SaveDraft(start bool) bool {
 	d := ggui.Peek(m.Draft)
 	spec, err := d.Spec()
+	if err == nil && spec.Recipe == recipes.Docker {
+		spec = recipes.EnsureDockerBackendPort(spec)
+	}
 	if err == nil {
 		err = spec.Validate()
 	}
@@ -1079,9 +1120,11 @@ func (m *Model) CreateFromRecipe(key string) {
 	var spec sandbox.Spec
 	switch key {
 	case recipes.Docker:
-		spec = recipes.DockerEngineWith(m.dockerSetting())
+		spec = recipes.WithSharedFolders(recipes.DockerEngine(), sharedSetting(ggui.Peek(m.Settings)))
 	case recipes.Kubernetes:
-		spec = recipes.KubernetesNode()
+		spec = recipes.KubernetesNodeWith(ggui.Peek(m.Settings).K3sServiceLB)
+	case recipes.Registry:
+		spec = recipes.ImageRegistry()
 	default:
 		return
 	}
@@ -1089,6 +1132,55 @@ func (m *Model) CreateFromRecipe(key string) {
 	m.saveSpecs(append(slices.Clone(ggui.Peek(m.Specs)), spec))
 	m.Select(spec.ID)
 	m.StartSandbox(spec.ID)
+}
+
+// upgradeRecipes brings the recipe sandboxes an earlier version of the app
+// saved to what the recipes make now, as recipes.Upgrade does: they start
+// so the next time, with what the user changed of them.
+func upgradeRecipes(specs []sandbox.Spec) ([]sandbox.Spec, bool) {
+	out := slices.Clone(specs)
+	upgraded := false
+	for i, s := range out {
+		if up, changed := recipes.Upgrade(s); changed {
+			out[i], upgraded = up, true
+		}
+	}
+	return out, upgraded
+}
+
+// OpenRecipe shows what a preset's sandbox runs: the Docker and Kubernetes
+// pages, and for the image registry, which has no page, its sandbox's
+// Connect tab.
+func (m *Model) OpenRecipe(key string) {
+	switch key {
+	case recipes.Docker:
+		m.Go(PageDocker)
+	case recipes.Kubernetes:
+		m.Go(PageKubernetes)
+	default:
+		if r, ok := m.RecipeSandbox(ggui.Peek(m.Rows), key); ok {
+			m.ShowSandbox(r.Spec.ID, connectTab)
+		}
+	}
+}
+
+// navRegistry is the sidebar entry of the image registry, which is not a
+// page.
+const navRegistry = "registry"
+
+// OpenRegistry shows the image registry's sandbox, and offers to set it up
+// when there is none.
+func (m *Model) OpenRegistry() {
+	if _, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Registry); ok {
+		m.OpenRecipe(recipes.Registry)
+		return
+	}
+	m.Offer(tr("Set up the image registry?"),
+		tr("A registry on this computer: push images from the Docker Engine, and run them in the cluster."),
+		tr("Set up and start"), func() {
+			m.CreateFromRecipe(recipes.Registry)
+			m.OpenRecipe(recipes.Registry)
+		})
 }
 
 // RecipeSandbox returns the sandbox made from a preset.

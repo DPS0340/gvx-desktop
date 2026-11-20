@@ -87,13 +87,14 @@ func portRange(s string) (lo, n int, ok bool) {
 	return lo, hi - lo + 1, true
 }
 
-// NodePortAddress is the host:port of this computer that reaches a
-// NodePort of the cluster spec runs, through the ports the sandbox
-// publishes, or false when none carries it. A port published on every
-// address is reached on the loopback one.
-func NodePortAddress(spec sandbox.Spec, nodePort int) (string, bool) {
+// HostAddress is the host:port of this computer that reaches a TCP port of
+// the sandbox, through the ports it publishes, or false when none carries
+// it. A port published on every address is reached on the loopback one.
+// For the k3s recipe, whose node is the sandbox, the port is a NodePort,
+// or one ServiceLB takes for a LoadBalancer service.
+func HostAddress(spec sandbox.Spec, guestPort int) (string, bool) {
 	for _, r := range publishedTCP(spec) {
-		if nodePort < r.Guest || nodePort >= r.Guest+r.Len {
+		if guestPort < r.Guest || guestPort >= r.Guest+r.Len {
 			continue
 		}
 		ip := r.IP
@@ -102,7 +103,7 @@ func NodePortAddress(spec sandbox.Spec, nodePort int) (string, bool) {
 		} else if ip == "[::]" {
 			ip = "[::1]"
 		}
-		return ip + ":" + strconv.Itoa(r.Host+nodePort-r.Guest), true
+		return ip + ":" + strconv.Itoa(r.Host+guestPort-r.Guest), true
 	}
 	return "", false
 }

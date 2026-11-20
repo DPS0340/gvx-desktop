@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"image/color"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
+	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
 // The states of the Containers page, past the engine's: dockerd did not
@@ -132,6 +134,7 @@ func containersTable(m *Model) ggui.Widget {
 			return ctr(ggui.Map(r, func(row containerRow) dockerapi.Container { return row.C }).WithEqual(dockerapi.Container.Equal))
 		}
 	}
+	engine := engineSpecOf(m)
 	// As tall as its rows up to six, as the sandboxes' table is.
 	return ui.Table(rows, containerRow.key,
 		ui.Col(tr("Status"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
@@ -140,10 +143,14 @@ func containersTable(m *Model) ggui.Widget {
 			return ggui.View(ggui.Map(r, func(row containerRow) []dockerapi.Container { return row.Members }).WithEqual(nil), projectStatusLabel)
 		})).W(150),
 		ui.Col(tr("Name"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
-			name := widget.Column(
-				widget.TextOf(ggui.Map(r, dockerapi.Container.Name)).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
-				ui.CaptionOf(ggui.Map(r, dockerapi.Container.ShortID)).Size(11).NoWrap(),
-			).Gap(1)
+			unshared := ggui.Combine(r, engine, unsharedBinds).WithEqual(slices.Equal[[]dockerapi.Mount])
+			name := widget.Row(
+				widget.Flexible(widget.Column(
+					widget.TextOf(ggui.Map(r, dockerapi.Container.Name)).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
+					ui.CaptionOf(ggui.Map(r, dockerapi.Container.ShortID)).Size(11).NoWrap(),
+				).Gap(1)),
+				ggui.View(unshared, unsharedMark),
+			).Gap(6).Align(widget.AlignCenter)
 			if ggui.Peek(r).Project() == "" {
 				return name
 			}
@@ -431,10 +438,72 @@ func containerTerminal(m *Model) ggui.Widget {
 		tip(iconButton(lucide.Copy, tr("Copy docker exec command"), func() { m.Copy("docker exec -it "+name+" sh", "docker exec") }), tr("Copy")))
 }
 
+// engineSpecOf follows the spec of the Docker Engine's sandbox.
+func engineSpecOf(m *Model) ggui.Readable[sandbox.Spec] {
+	return ggui.Map(m.Rows, func(rows []Row) sandbox.Spec {
+		r, _ := m.RecipeSandbox(rows, recipes.Docker)
+		return r.Spec
+	}).WithEqual(sandbox.Spec.Equal)
+}
+
+// unsharedBinds are a container's bind mounts that look like folders of
+// this computer the engine does not share, which dockerd made empty
+// folders in the sandbox.
+func unsharedBinds(c dockerapi.Container, engine sandbox.Spec) []dockerapi.Mount {
+	var out []dockerapi.Mount
+	for _, b := range c.Binds() {
+		if recipes.UnsharedBind(b.Source, engine) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// unsharedWhy says what a bind mount of a folder the engine does not share
+// does, and what to do.
+func unsharedWhy(src string) string {
+	return tr("%s is not in a folder shared with the Docker Engine, so the container sees an empty folder there. Share it in Settings → Docker, restart the engine, and create the container again.", src)
+}
+
+// unsharedMark warns of a container's bind mounts of folders the engine
+// does not share, or is nothing.
+func unsharedMark(binds []dockerapi.Mount) ggui.Widget {
+	if len(binds) == 0 {
+		return widget.Box()
+	}
+	return tip(glyph(lucide.TriangleExclamationPoint, 13).Color(colorAmber), unsharedWhy(binds[0].Source))
+}
+
+// containerBinds lists a container's bind mounts, warning of those of
+// folders the engine does not share.
+func containerBinds(c dockerapi.Container, engine sandbox.Spec) []ggui.Widget {
+	binds := c.Binds()
+	if len(binds) == 0 {
+		return nil
+	}
+	unshared := unsharedBinds(c, engine)
+	parts := []ggui.Widget{sectionTitle(tr("Bind mounts"), tr("Paths in the Docker Engine's sandbox, mounted into the container."))}
+	for _, b := range binds {
+		label := b.Source + " → " + b.Destination
+		if !b.RW {
+			label += " (ro)"
+		}
+		mark := glyph(lucide.Folder, 14).Color(colorGray)
+		row := []ggui.Widget{mark, widget.Expanded(ui.Mono(label).Size(12).NoWrap().Ellipsis())}
+		if slices.Contains(unshared, b) {
+			row[0] = glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber)
+			parts = append(parts, widget.Row(row...).Gap(10).Align(widget.AlignCenter), ui.Caption(unsharedWhy(b.Source)))
+			continue
+		}
+		parts = append(parts, widget.Row(row...).Gap(10).Align(widget.AlignCenter))
+	}
+	return parts
+}
+
 // containerConnect tells how to reach what the container serves, and the
 // commands that reach the container itself.
 func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
-	parts := []ggui.Widget{sectionTitle(tr("Published ports"), tr("Published container ports must be inside 9000–9019, the range the sandbox opened at start."))}
+	parts := []ggui.Widget{sectionTitle(tr("Published ports"), publishedPortsNote(m))}
 	ports := containerPorts(c)
 	inside := false
 	for _, p := range ports {
@@ -469,6 +538,8 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 	if len(ports) == 0 {
 		parts = append(parts, ui.Caption(tr("No ports are published. Publish one with docker run -p 9000:80.")))
 	}
+	engine, _ := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
+	parts = append(parts, containerBinds(c, engine.Spec)...)
 	name := c.Name()
 	parts = append(parts,
 		sectionTitle(tr("Commands"), tr("For a terminal where docker uses the gvx context.")),
@@ -477,4 +548,14 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 		copyable(m, "docker inspect "+name, "docker inspect"),
 	)
 	return widget.Padding(widget.Column(parts...).Gap(10).Stretch(), 8, 0)
+}
+
+// publishedPortsNote tells where a container's published port is reached:
+// under its own number when the engine's sandbox publishes ports as they
+// come, and inside the range it opened at start otherwise.
+func publishedPortsNote(m *Model) string {
+	if engine, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker); ok && !sandbox.HasAutoPublish(engine.Spec) {
+		return tr("Published container ports must be inside 9000–9019, the range the sandbox opened at start.")
+	}
+	return tr("A published container port reaches this computer at 127.0.0.1 under the same number, unless something here has that port already.")
 }

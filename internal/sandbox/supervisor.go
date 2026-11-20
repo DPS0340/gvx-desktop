@@ -131,6 +131,9 @@ type Supervisor struct {
 	DataDir string
 	// Notify receives events from the supervisor's goroutines.
 	Notify func(Event)
+	// Prepare, when set, writes what a spec reads from this computer as it
+	// starts, before rungv runs: the files a recipe gives its guest.
+	Prepare func(Spec) error
 
 	mu    sync.Mutex
 	procs map[string]*proc
@@ -184,6 +187,17 @@ func (s *Supervisor) State(id string) State {
 		return st
 	}
 	return State{LogSeq: s.logsLocked(id).Seq()}
+}
+
+// ActiveSpec returns a copy of the spec the active process for id started with,
+// and false when no process for id is active.
+func (s *Supervisor) ActiveSpec(id string) (Spec, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.procs[id]; p != nil && p.state.Status.Active() {
+		return p.spec.Clone(), true
+	}
+	return Spec{}, false
 }
 
 // Running lists the IDs of sandboxes with a live process.
@@ -269,9 +283,19 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 	if err := spec.Prepare(); err != nil {
 		return err
 	}
+	if s.Prepare != nil {
+		if err := s.Prepare(spec); err != nil {
+			return err
+		}
+	}
 	paths, err := s.pathsFor(spec)
 	if err != nil {
 		return err
+	}
+	if HasAutoPublish(spec) && !client.HasRunFlag(context.Background(), "auto-publish") {
+		// An older rungv would refuse the run: it starts without, and
+		// reaches this computer through the ports it publishes.
+		spec = WithAutoPublish(spec, false)
 	}
 	var args []string
 	if restoreDir != "" {
@@ -322,7 +346,7 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 
 	p := &proc{
 		cmd:   cmd,
-		spec:  spec,
+		spec:  spec.Clone(),
 		paths: paths,
 		done:  make(chan struct{}),
 		state: State{Status: Starting, PID: cmd.Process.Pid, StartedAt: time.Now(), Restored: restoreDir},

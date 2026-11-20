@@ -85,8 +85,9 @@ sudo dnf install ./gvx-desktop-*.x86_64.rpm     # Fedora, RHEL
 | 스냅샷 | 샌드박스에서 체크포인트를 활성화하면 실행 상태를 저장할 수 있습니다. 저장 후 샌드박스를 계속 실행할지 선택하고, 스냅샷 목록을 보거나 복원 및 삭제할 수 있습니다. |
 | 컨테이너 | Docker Engine이 실행 중일 때 컨테이너의 상태, 이미지, 포트, CPU와 메모리를 Compose 프로젝트별로 묶어 확인합니다. 컨테이너를 필터링하고 하나씩 또는 프로젝트 전체를 한 번에 시작, 중지, 재시작, 제거하며, 로그를 읽고 실행 중인 컨테이너의 셸을 앱 안의 터미널에서 열며, 게시 포트를 열거나 `docker logs`, `docker exec` 명령을 복사할 수 있습니다. |
 | 파드 | k3s 클러스터가 실행 중일 때 `kubectl get pods`처럼 파드의 상태, 준비 상태, 재시작 횟수를 확인하고, metrics-server가 응답하면 `kubectl top pods`처럼 CPU와 메모리도 확인합니다. 파드를 필터링하고 시스템 파드를 보이거나 숨기며, 컨테이너별 로그를 읽고 실행 중인 컨테이너의 셸을 앱 안의 터미널에서 열며(`kubectl` 필요), 파드의 컨테이너, 노드, 소유자를 확인하고, 파드를 삭제하거나 `kubectl logs`, `kubectl exec`, `kubectl describe` 명령을 복사할 수 있습니다. 워크로드 보기에서는 Deployment, StatefulSet, DaemonSet, Job의 복제본 수를 바꾸거나 재시작, 삭제하고 그 파드를 확인하며, 서비스 보기에서는 클러스터가 게시한 NodePort를 엽니다. 파드나 서비스의 포트를 `kubectl` 없이 이 컴퓨터로 전달할 수 있으며, 전달은 대상이나 클러스터가 멈추거나 앱을 끄면 함께 멈춥니다. |
-| Docker Engine | `docker:dind`를 시작하고, `docker`가 `gvx` 컨텍스트를 쓰는지 확인해 설정하거나 전환하며, 컨테이너를 Docker 메뉴와 트레이에서도 관리합니다. |
-| Kubernetes | 단일 노드 k3s 클러스터를 시작하고 kubeconfig를 감지하며, `kubectl`이 클러스터를 쓰는지 확인해 `~/.kube/config`에 `gvx-k3s` 컨텍스트로 추가합니다. 파드와 포트 전달을 Kubernetes 메뉴와 트레이에서도 관리합니다. 실행 중이던 Docker Engine이나 클러스터는 앱을 다시 켜면 다시 시작됩니다. |
+| Docker Engine | `docker:dind`를 시작하고, `docker`가 `gvx` 컨텍스트를 쓰는지 확인해 설정하거나 전환하며, 컨테이너를 Docker 메뉴와 트레이에서도 관리합니다. 이 컴퓨터의 폴더를 같은 경로로 엔진과 공유하므로(기본은 홈 폴더, 설정 → Docker에서 목록 편집) 그 폴더를 쓰는 `docker run -v`와 Compose 바인드 마운트가 동작하며, 공유되지 않은 폴더를 바인드 마운트한 컨테이너는 컨테이너 화면에 표시됩니다. Windows에서는 `C:\Users\me`가 `/c/Users/me`에 있으니 `COMPOSE_CONVERT_WINDOWS_PATHS=1`을 설정하세요. |
+| Kubernetes | 단일 노드 k3s 클러스터를 시작하고 kubeconfig를 감지하며, `kubectl`이 클러스터를 쓰는지 확인해 `~/.kube/config`에 `gvx-k3s` 컨텍스트로 추가합니다. 파드와 포트 전달을 Kubernetes 메뉴와 트레이에서도 관리합니다. 실행 중이던 Docker Engine이나 클러스터는 앱을 다시 켜면 다시 시작됩니다. 서비스 로드 밸런서(설정 → Kubernetes)를 켜면 LoadBalancer 서비스가 주소를 받고, 노드의 포트 80과 443이 `127.0.0.1:8080`과 `:8443`에 닿습니다. |
+| 이미지 레지스트리 | `127.0.0.1:5001`에서 `registry:2`를 실행해 Docker Engine에서 빌드한 이미지를 클러스터로 가져갑니다. 이미지 → Docker Engine → **클러스터 레지스트리로 푸시**(또는 `docker push host.docker.internal:5001/app:dev`)로 올리고, 파드에서 `host.docker.internal:5001/app:dev`로 실행합니다. 이 컴퓨터의 도구는 `localhost:5001`로 접속하며, 파드도 이 이름으로 가져올 수 있습니다. |
 | 데스크톱 | 네이티브 메뉴, 로그인 시 자동 시작, 라이트·다크·시스템 화면 모드를 지원합니다. macOS와 Windows에서는 창을 닫아도 트레이에서 앱을 계속 실행할 수 있습니다. 앱은 한 번에 하나만 실행됩니다. |
 
 macOS에서는 **⌘K**로 명령 팔레트를 열고 **⌘1**부터 **⌘9**까지의 단축키로 사이드바 순서대로 화면을 전환합니다. 앱이 메뉴 막대로 숨겨지면 Dock에서도 아이콘이 사라집니다.
@@ -184,7 +185,7 @@ gvx의 Go SDK는 자신을 호출한 프로세스의 동작을 제한합니다. 
 | [internal/sandbox](internal/sandbox) | 샌드박스 설정을 CLI 인자로 변환하고 프로세스, 로그, 포트, 준비 상태, 스냅샷을 관리합니다. |
 | [internal/registry](internal/registry) | Docker Hub와 Quay에서 이미지를 검색하고 태그 목록을 가져옵니다. |
 | [internal/dockerapi](internal/dockerapi) | `docker:dind`의 Unix 소켓으로 Docker Engine API를 호출합니다. |
-| [internal/recipes](internal/recipes) | Docker Engine과 Kubernetes 프리셋을 정의합니다. |
+| [internal/recipes](internal/recipes) | Docker Engine, Kubernetes, 이미지 레지스트리 프리셋을 정의합니다. |
 | [internal/store](internal/store) | 사용자 설정 디렉터리에 `sandboxes.json`과 `settings.json`을 저장합니다. |
 | [internal/ui](internal/ui) | ggui 화면을 구현합니다. |
 

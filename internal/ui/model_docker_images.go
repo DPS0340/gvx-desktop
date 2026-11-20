@@ -3,9 +3,11 @@ package ui
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/ui"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
@@ -184,7 +186,7 @@ func (m *Model) LoadDockerImages() {
 		return
 	}
 	m.dockerImagesLoading = true
-	host := m.dockerHost()
+	host := m.dockerBackendHost()
 	var items []dockerapi.Image
 	m.DockerImages.Update(func(l Listing[dockerapi.Image]) Listing[dockerapi.Image] { l.Loading = true; return l })
 	m.async(func(ctx context.Context) error {
@@ -241,7 +243,7 @@ func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 		text = tr("Used by %s. Force removing untags or deletes the image from the Docker Engine (%s).", strings.Join(users, ", "), formatBytes(img.Size))
 	}
 	m.Confirm(tr("Remove %s?", ref), text, tr("Remove image"), func() {
-		host := m.dockerHost()
+		host := m.dockerBackendHost()
 		m.async(func(ctx context.Context) error {
 			c, err := dockerapi.New(host)
 			if err != nil {
@@ -268,7 +270,7 @@ func (m *Model) AskPruneDockerImages() {
 	m.Confirm(tr("Remove unused Docker images?"),
 		tr("Dangling images in the Docker Engine are deleted."),
 		tr("Prune images"), func() {
-			host := m.dockerHost()
+			host := m.dockerBackendHost()
 			var res dockerapi.PruneResult
 			m.async(func(ctx context.Context) error {
 				c, err := dockerapi.New(host)
@@ -289,4 +291,91 @@ func (m *Model) AskPruneDockerImages() {
 				m.LoadDockerImages()
 			})
 		})
+}
+
+// registryPath is an image's repository without the registry it names, if
+// it names one: the first part of a path names a registry when it has a
+// dot or a port in it, or is localhost, as docker reads references.
+func registryPath(repo string) string {
+	first, rest, ok := strings.Cut(repo, "/")
+	if ok && (strings.ContainsAny(first, ".:") || first == "localhost") {
+		return rest
+	}
+	return repo
+}
+
+// RegistryRef is the reference an image is pushed to the image registry
+// recipe as, which the cluster's pods pull it by: its repository and tag
+// under the registry as sandboxes name it.
+func RegistryRef(img DockerImageRow) string {
+	return recipes.RegistryHost() + "/" + registryPath(img.Repository) + ":" + img.Tag
+}
+
+// PushToRegistry tags an image of the Docker Engine for the image registry
+// recipe and pushes it there, for the cluster to run. While the registry is
+// not running it offers to start it instead.
+func (m *Model) PushToRegistry(img DockerImageRow) {
+	if !img.Pullable() {
+		return
+	}
+	row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Registry)
+	switch {
+	case !ok:
+		m.Offer(tr("Set up the image registry?"),
+			tr("Images reach the cluster through a registry on this computer, which runs in a sandbox of its own. Set it up and start it, then push again once it is ready."),
+			tr("Set up and start"), func() { m.CreateFromRecipe(recipes.Registry) })
+		return
+	case row.State.Status == sandbox.Starting:
+		m.Toasts.Push(ui.Toast(tr("The image registry is starting"), tr("Push again once it is ready.")).Info())
+		return
+	case row.State.Status != sandbox.Running:
+		m.Offer(tr("Start the image registry?"),
+			tr("Images reach the cluster through the registry, which is not running. Start it, then push again once it is ready."),
+			tr("Start"), func() { m.StartSandbox(row.Spec.ID) })
+		return
+	}
+	ref := RegistryRef(img)
+	repo, tag := splitRepoTag(ref)
+	title := tr("Pushing %s", img.Ref())
+	toast := m.Toasts.Push(ui.Toast(title, tr("To %s, through the Docker Engine…", recipes.RegistryHost())).Loading())
+	// The last line of the push's progress shows in its toast.
+	var mu sync.Mutex
+	var last string
+	posted := false
+	show := func() {
+		mu.Lock()
+		line := last
+		posted = false
+		mu.Unlock()
+		m.Toasts.Update(toast, ui.Toast(title, line).Loading())
+	}
+	host := m.dockerBackendHost()
+	m.async(func(ctx context.Context) error {
+		c, err := dockerapi.New(host)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		if err := c.Tag(ctx, img.Target(), repo, tag); err != nil {
+			return err
+		}
+		return c.PushImage(ctx, ref, func(line string) {
+			mu.Lock()
+			last = line
+			again := !posted
+			posted = true
+			mu.Unlock()
+			if again {
+				m.post(show)
+			}
+		})
+	}, func(err error) {
+		if err != nil {
+			m.Toasts.Update(toast, ui.Toast(tr("Could not push %s", img.Ref()), err.Error()).Error().Duration(10*time.Second))
+		} else {
+			m.Toasts.Update(toast, ui.Toast(tr("Pushed %s", img.Ref()), tr("Pods run it as %s.", ref)).Success().Duration(12*time.Second).
+				Action(tr("Copy reference"), func() { m.Copy(ref, ref) }))
+		}
+		m.LoadDockerImages()
+	})
 }

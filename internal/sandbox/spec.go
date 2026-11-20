@@ -498,3 +498,64 @@ func (s Spec) Equal(o Spec) bool {
 	b, errB := json.Marshal(o)
 	return errA == nil && errB == nil && bytes.Equal(a, b)
 }
+
+// autoPublish is the rungv flag that publishes on 127.0.0.1, under the same
+// number, every TCP port the guest comes to listen on or forward, and
+// takes it back when the guest stops: what a sandbox whose ports are not
+// known when it starts needs, such as a Docker Engine.
+const autoPublish = "-auto-publish"
+
+// isAutoPublish reports whether arg is the flag, however it is written, and
+// what it is set to.
+func isAutoPublish(arg string) (on, ok bool) {
+	name, value, valued := strings.Cut(strings.TrimPrefix(arg, "-"), "=")
+	if name != autoPublish && name != autoPublish[1:] || !strings.HasPrefix(arg, "-") {
+		return false, false
+	}
+	return !valued || value != "false" && value != "0", true
+}
+
+// AutoPublishSet reports whether the spec's extra flags say anything about
+// auto-publishing, on or off.
+func AutoPublishSet(s Spec) bool {
+	extra, _ := rungv.SplitArgs(s.ExtraArgs)
+	for _, a := range extra {
+		if _, ok := isAutoPublish(a); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAutoPublish reports whether the spec runs with -auto-publish.
+func HasAutoPublish(s Spec) bool {
+	extra, _ := rungv.SplitArgs(s.ExtraArgs)
+	on := false
+	for _, a := range extra {
+		if v, ok := isAutoPublish(a); ok {
+			on = v
+		}
+	}
+	return on
+}
+
+// WithAutoPublish returns the spec with -auto-publish among its extra
+// flags, or without it.
+func WithAutoPublish(s Spec, on bool) Spec {
+	extra, err := rungv.SplitArgs(s.ExtraArgs)
+	if err != nil {
+		return s
+	}
+	out := make([]string, 0, len(extra)+1)
+	for _, a := range extra {
+		if _, ok := isAutoPublish(a); !ok {
+			out = append(out, a)
+		}
+	}
+	if on {
+		out = append(out, autoPublish)
+	}
+	s = s.Clone()
+	s.ExtraArgs = rungv.FormatArgs(out)
+	return s
+}

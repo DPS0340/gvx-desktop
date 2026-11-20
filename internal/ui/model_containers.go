@@ -192,7 +192,7 @@ func (m *Model) ProjectAction(action, project string, members []dockerapi.Contai
 	if len(targets) == 0 || m.Offline {
 		return
 	}
-	host := m.dockerHost()
+	host := m.dockerBackendHost()
 	m.async(func(ctx context.Context) error {
 		c, err := dockerapi.New(host)
 		if err != nil {
@@ -319,7 +319,7 @@ func (m *Model) LoadContainerLogs() {
 	if ggui.Peek(m.ContainerLogs).ID != ctr.ID {
 		m.ContainerLogs.Set(ContainerLogs{ID: ctr.ID})
 	}
-	host := m.dockerHost()
+	host := m.dockerBackendHost()
 	var lines []dockerapi.LogLine
 	m.async(func(ctx context.Context) error {
 		c, err := dockerapi.New(host)

@@ -209,11 +209,12 @@ func sandboxUsageBrief(m *Model, id string) ggui.Widget {
 	})
 }
 
-// sandboxQuickActions are the start/stop buttons of a row.
+// sandboxQuickActions are the start, restart and stop buttons of a row.
 func sandboxQuickActions(m *Model, r Row) ggui.Widget {
 	id := r.Spec.ID
 	if r.State.Status.Active() {
 		return widget.Row(
+			tip(iconButton(lucide.RotateCcw, tr("Restart %s", r.Spec.Name), func() { m.RestartSandbox(id) }).BindDisabled(ggui.Const(r.State.Status != sandbox.Running)), tr("Restart")),
 			tip(iconButton(lucide.Square, tr("Stop %s", r.Spec.Name), func() { m.StopSandbox(id) }).BindDisabled(ggui.Const(r.State.Status == sandbox.Stopping)), tr("Stop")),
 		).Gap(2)
 	}
@@ -256,11 +257,8 @@ func engineCard(m *Model) ggui.Widget {
 func recipeCards(m *Model) ggui.Widget {
 	var cards []ggui.Widget
 	for _, r := range recipes.All() {
-		icon := lucide.Container
-		page := PageDocker
-		if r.Key == recipes.Kubernetes {
-			icon, page = lucide.ShipWheel, PageKubernetes
-		}
+		icon := recipeIcon(r.Key)
+		open := func() { m.OpenRecipe(r.Key) }
 		summary, highlights := recipeCopy(r)
 		var points []ggui.Widget
 		for _, h := range highlights {
@@ -276,24 +274,44 @@ func recipeCards(m *Model) ggui.Widget {
 			switch {
 			case s.Active():
 				return widget.Row(statusLabel(sandbox.State{Status: s}), widget.Spacer(),
-					ui.Button(tr("Open"), func() { m.Go(page) }).Outline().Size(ui.ButtonSmall)).Align(widget.AlignCenter)
+					ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall)).Align(widget.AlignCenter)
 			case s >= 0:
-				return widget.Row(ui.Button(tr("Start"), func() { m.CreateFromRecipe(r.Key); m.Go(page) }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14)),
-					ui.Button(tr("Details"), func() { m.Go(page) }).Ghost().Size(ui.ButtonSmall)).Gap(8)
+				return widget.Row(ui.Button(tr("Start"), func() { m.CreateFromRecipe(r.Key); open() }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14)),
+					ui.Button(tr("Details"), open).Ghost().Size(ui.ButtonSmall)).Gap(8)
 			}
-			return ui.Button(tr("Set up %s", r.Title), func() { m.CreateFromRecipe(r.Key); m.Go(page) }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14))
+			return ui.Button(tr("Set up %s", recipeTitle(r)), func() { m.CreateFromRecipe(r.Key); open() }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14))
 		})
 		cards = append(cards, ui.Card(widget.Column(
 			widget.Row(
 				widget.Box(glyph(icon, 20).Color(colorBlue)).Pad(8).Radius(10).Fill(rgbA(0x3b82f6, 0x22)),
-				widget.Column(ui.Heading(r.Title).Size(15), ui.Mono(r.Image).Size(11)).Gap(2),
+				widget.Column(ui.Heading(recipeTitle(r)).Size(15), ui.Mono(r.Image).Size(11)).Gap(2),
 			).Gap(12),
 			ui.Caption(summary),
 			widget.Column(points...).Gap(6),
 			action,
 		).Gap(12).Stretch()))
 	}
-	return widget.Responsive(760, widget.Grid(2, cards...).Gap(12), widget.Column(cards...).Gap(12).Stretch())
+	return widget.Responsive(1100, widget.Grid(3, cards...).Gap(12),
+		widget.Responsive(760, widget.Grid(2, cards...).Gap(12), widget.Column(cards...).Gap(12).Stretch()))
+}
+
+// recipeIcon pictures a recipe.
+func recipeIcon(key string) *icons.Glyph {
+	switch key {
+	case recipes.Kubernetes:
+		return lucide.ShipWheel
+	case recipes.Registry:
+		return lucide.Warehouse
+	}
+	return lucide.Container
+}
+
+// recipeTitle is a recipe's name, in the app's words where it has some.
+func recipeTitle(r recipes.Recipe) string {
+	if r.Key == recipes.Registry {
+		return tr("Image registry")
+	}
+	return r.Title
 }
 
 func recipeCopy(r recipes.Recipe) (summary string, highlights []string) {
@@ -302,13 +320,21 @@ func recipeCopy(r recipes.Recipe) (summary string, highlights []string) {
 		return tr("Run dockerd without a VM or root, and drive it with the docker CLI on this machine."), []string{
 			tr("API on ~/.gvx/docker.sock (docker context \"gvx\")"),
 			tr("Images and containers persist in the gvx-docker volume"),
-			tr("Host ports 9000–9019 reach published containers"),
+			tr("Published container ports reach this computer under the same number"),
+			tr("Your home folder is shared, so compose bind mounts work"),
 		}
 	case recipes.Kubernetes:
 		return tr("A single-node k3s cluster with a kubeconfig written to ~/.gvx/k3s."), []string{
 			tr("API server on 127.0.0.1:6443"),
 			tr("NodePorts 30000–30019 reachable from the host"),
+			tr("Optional load balancer on 127.0.0.1:8080 and :8443"),
 			tr("Cluster state persists in the k3s volume"),
+		}
+	case recipes.Registry:
+		return tr("A registry on this computer: push images from the Docker Engine, and run them in the cluster."), []string{
+			tr("Push to host.docker.internal:5001 from the Docker Engine"),
+			tr("Pods pull localhost:5001/NAME:TAG and host.docker.internal:5001/NAME:TAG"),
+			tr("Images persist in the gvx-registry volume"),
 		}
 	}
 	return r.Summary, r.Highlights

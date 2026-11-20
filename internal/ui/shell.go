@@ -126,7 +126,15 @@ func sidebar(m *Model) ggui.Widget {
 // sidebarFor is the sidebar with the Containers and Pods items greyed out
 // for the reasons given, or not for none.
 func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
-	nav := ggui.Bind(m.Page.Get, m.Go)
+	// The image registry has no page of its own: its entry opens its
+	// sandbox, or offers to set it up.
+	nav := ggui.Bind(m.Page.Get, func(key string) {
+		if key == navRegistry {
+			m.OpenRegistry()
+			return
+		}
+		m.Go(key)
+	})
 	item := func(key, label string, g *icons.Glyph) ui.SidebarEntry {
 		return ui.SidebarItem(key, label).Leading(glyph(g, 16)).Tooltip(label)
 	}
@@ -157,6 +165,7 @@ func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 		ui.SidebarSection(tr("Recipes")),
 		item(PageDocker, "Docker Engine", lucide.Container),
 		item(PageKubernetes, "Kubernetes", lucide.ShipWheel),
+		item(navRegistry, tr("Image registry"), recipeIcon(recipes.Registry)),
 	).Header(brand).
 		FooterItems(item(PageSettings, tr("Settings"), lucide.Settings)).
 		Width(232).
@@ -359,10 +368,16 @@ func confirmDialog(m *Model) ggui.Widget {
 		ui.CaptionOf(m.ConfirmText),
 		widget.Row(
 			ui.Button(tr("Cancel"), func() { m.ConfirmOpen.Set(false) }).Outline(),
-			ui.ButtonOf(widget.TextOf(m.ConfirmLabel), func() {
-				m.ConfirmOpen.Set(false)
-				m.RunConfirmed()
-			}).Destructive().BindName(m.ConfirmLabel),
+			ggui.View(m.ConfirmSafe, func(safe bool) ggui.Widget {
+				b := ui.ButtonOf(widget.TextOf(m.ConfirmLabel), func() {
+					m.ConfirmOpen.Set(false)
+					m.RunConfirmed()
+				}).BindName(m.ConfirmLabel)
+				if !safe {
+					b = b.Destructive()
+				}
+				return b
+			}),
 		).Gap(8).Justify(widget.JustifyEnd),
 	).Gap(14).Stretch()).Width(440).Name(tr("Confirm"))
 }
@@ -598,6 +613,7 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Pull image"), close(func() { m.OpenPull("") })).Group(tr("Images")).Keywords("download"),
 			ui.CommandItem(tr("Start Docker Engine"), close(func() { m.CreateFromRecipe(recipes.Docker); m.Go(PageDocker) })).Group(tr("Recipes")).Keywords("dind dockerd"),
 			ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
+			ui.CommandItem(tr("Start the image registry"), close(func() { m.CreateFromRecipe(recipes.Registry); m.OpenRecipe(recipes.Registry) })).Group(tr("Recipes")).Keywords("registry push images cluster"),
 			ui.CommandItem(tr("Create volume"), close(func() { m.VolumeOpen.Set(true) })).Group(tr("Volumes")),
 			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Group(tr("Go to")).Shortcut("cmd+1"),
 			ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Group(tr("Go to")).Shortcut("cmd+2"),

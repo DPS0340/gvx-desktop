@@ -294,30 +294,65 @@ func portText(p kubeapi.ServicePort) string {
 	return fmt.Sprintf("%d→%s/%s", p.Port, target, proto)
 }
 
-// NodePortReach is whether a NodePort reaches this computer, and where.
+// NodePortReach is whether a port a service takes on the node reaches this
+// computer, and where: a NodePort, or the port of a LoadBalancer service,
+// which ServiceLB takes on the node.
 type NodePortReach struct {
 	Port    int
+	LB      bool   // Port is the load balancer's, not a NodePort
 	Address string // host:port on this computer, when it reaches it
 	Why     string // why it does not, when it does not
 }
 
-// nodePortReach tells of each NodePort of a service whether the cluster's
-// sandbox publishes it, and so whether this computer reaches it.
+// nodePortReach tells of each port a service takes on the node whether the
+// cluster's sandbox publishes it, and so whether this computer reaches it.
+// A LoadBalancer service is reached on its own port while ServiceLB runs
+// and the sandbox publishes that port, and on its NodePort otherwise.
 func nodePortReach(s kubeapi.Service, spec sandbox.Spec) []NodePortReach {
+	lb := s.Spec.Type == "LoadBalancer" && recipes.ServiceLBOf(spec)
 	var out []NodePortReach
 	for _, p := range s.Spec.Ports {
-		if p.NodePort == 0 || p.Protocol != "" && p.Protocol != "TCP" {
+		if p.Protocol != "" && p.Protocol != "TCP" {
+			continue
+		}
+		if lb {
+			if addr, ok := recipes.HostAddress(spec, p.Port); ok {
+				out = append(out, NodePortReach{Port: p.Port, LB: true, Address: addr})
+				continue
+			}
+		}
+		if p.NodePort == 0 {
+			if lb {
+				out = append(out, NodePortReach{Port: p.Port, LB: true, Why: loadBalancerWhy(p.Port)})
+			}
 			continue
 		}
 		r := NodePortReach{Port: p.NodePort}
-		if addr, ok := recipes.NodePortAddress(spec, p.NodePort); ok {
+		if addr, ok := recipes.HostAddress(spec, p.NodePort); ok {
 			r.Address = addr
+		} else if lb {
+			r.Port, r.LB, r.Why = p.Port, true, loadBalancerWhy(p.Port)
 		} else {
 			r.Why = nodePortWhy(p.NodePort, recipes.NodePortRanges(spec))
 		}
 		out = append(out, r)
 	}
 	return out
+}
+
+// URL is what a browser opens the port at: https for a load balancer's
+// 443, http otherwise.
+func (r NodePortReach) URL() string {
+	if r.LB && r.Port == 443 {
+		return "https://" + r.Address
+	}
+	return "http://" + r.Address
+}
+
+// loadBalancerWhy says why the port of a LoadBalancer service does not
+// reach this computer.
+func loadBalancerWhy(port int) string {
+	return tr("ServiceLB takes port %d on the node, and the Kubernetes sandbox does not publish it. Add it to the sandbox's ports in its settings, or forward a port.", port)
 }
 
 // nodePortWhy says why a NodePort does not reach this computer.

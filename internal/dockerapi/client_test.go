@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,115 @@ func frame(stream byte, s string) []byte {
 	return append(h, s...)
 }
 
+func TestParseHost(t *testing.T) {
+	unixFromSlash := func(s string) string { return s }
+	winFromSlash := func(s string) string { return strings.ReplaceAll(s, "/", `\`) }
+
+	for _, tc := range []struct {
+		name      string
+		host      string
+		fromSlash func(string) string
+		wantNet   string
+		wantAddr  string
+		wantBase  string
+		wantErr   bool
+	}{
+		{
+			name:      "unix posix socket",
+			host:      "unix:///var/run/docker.sock",
+			fromSlash: unixFromSlash,
+			wantNet:   "unix",
+			wantAddr:  "/var/run/docker.sock",
+			wantBase:  "http://docker",
+		},
+		{
+			name:      "unix macOS home socket",
+			host:      "unix:///Users/me/.gvx/engine/dockerd.sock",
+			fromSlash: unixFromSlash,
+			wantNet:   "unix",
+			wantAddr:  "/Users/me/.gvx/engine/dockerd.sock",
+			wantBase:  "http://docker",
+		},
+		{
+			name:      "unix windows drive two slashes",
+			host:      "unix://C:/Users/a/.gvx/engine/dockerd.sock",
+			fromSlash: winFromSlash,
+			wantNet:   "unix",
+			wantAddr:  `C:\Users\a\.gvx\engine\dockerd.sock`,
+			wantBase:  "http://docker",
+		},
+		{
+			name:      "unix windows drive three slashes",
+			host:      "unix:///C:/Users/a/.gvx/engine/dockerd.sock",
+			fromSlash: winFromSlash,
+			wantNet:   "unix",
+			wantAddr:  `C:\Users\a\.gvx\engine\dockerd.sock`,
+			wantBase:  "http://docker",
+		},
+		{
+			name:      "unix windows lowercase drive",
+			host:      "unix://d:/gvx/dockerd.sock",
+			fromSlash: winFromSlash,
+			wantNet:   "unix",
+			wantAddr:  `d:\gvx\dockerd.sock`,
+			wantBase:  "http://docker",
+		},
+		{
+			name:      "unix opaque form",
+			host:      "unix:/var/run/docker.sock",
+			fromSlash: unixFromSlash,
+			wantNet:   "unix",
+			wantAddr:  "/var/run/docker.sock",
+			wantBase:  "http://docker",
+		},
+		{
+			name:      "tcp loopback",
+			host:      "tcp://127.0.0.1:2375",
+			fromSlash: unixFromSlash,
+			wantNet:   "tcp",
+			wantAddr:  "127.0.0.1:2375",
+			wantBase:  "http://127.0.0.1:2375",
+		},
+		{
+			name:      "http loopback",
+			host:      "http://127.0.0.1:23750",
+			fromSlash: unixFromSlash,
+			wantNet:   "tcp",
+			wantAddr:  "127.0.0.1:23750",
+			wantBase:  "http://127.0.0.1:23750",
+		},
+		{
+			name:      "empty unix path",
+			host:      "unix://",
+			fromSlash: unixFromSlash,
+			wantErr:   true,
+		},
+		{
+			name:      "unsupported scheme",
+			host:      "ssh://user@host",
+			fromSlash: unixFromSlash,
+			wantErr:   true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			netw, addr, base, err := parseHostFor(tc.host, tc.fromSlash)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q, got (%q, %q, %q)", tc.host, netw, addr, base)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", tc.host, err)
+			}
+			if netw != tc.wantNet || addr != tc.wantAddr || base != tc.wantBase {
+				t.Fatalf("parseHostFor(%q) = (%q, %q, %q), want (%q, %q, %q)",
+					tc.host, netw, addr, base, tc.wantNet, tc.wantAddr, tc.wantBase)
+			}
+		})
+	}
+}
+
 func TestContainersAndActions(t *testing.T) {
 	var calls []string
 	c := engine(t, func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +148,9 @@ func TestContainersAndActions(t *testing.T) {
 		switch {
 		case r.URL.Path == "/containers/json":
 			_, _ = w.Write([]byte(`[{"Id":"3f2a9c1b7d4e5f60aa","Names":["/web"],"Image":"nginx","State":"running","Status":"Up 2 hours",
-				"Ports":[{"PrivatePort":80,"PublicPort":9000,"Type":"tcp"},{"PrivatePort":80,"PublicPort":9000,"Type":"tcp"}]}]`))
+				"Ports":[{"PrivatePort":80,"PublicPort":9000,"Type":"tcp"},{"PrivatePort":80,"PublicPort":9000,"Type":"tcp"}],
+				"Mounts":[{"Type":"bind","Source":"/Users/me/site","Destination":"/usr/share/nginx/html","Mode":"","RW":true,"Propagation":"rprivate"},
+					{"Type":"volume","Name":"cache","Source":"/var/lib/docker/volumes/cache/_data","Destination":"/cache","Driver":"local","RW":true}]}]`))
 		case r.URL.Path == "/containers/gone/start":
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"message":"No such container: gone"}`))
@@ -55,6 +167,9 @@ func TestContainersAndActions(t *testing.T) {
 	}
 	if ctr := list[0]; ctr.Name() != "web" || ctr.ShortID() != "3f2a9c1b7d4e" || ctr.PortsText() != "9000→80/tcp" {
 		t.Errorf("container %q %q %q", ctr.Name(), ctr.ShortID(), ctr.PortsText())
+	}
+	if b := list[0].Binds(); len(b) != 1 || b[0] != (Mount{Type: "bind", Source: "/Users/me/site", Destination: "/usr/share/nginx/html", RW: true}) {
+		t.Errorf("binds %+v", b)
 	}
 	if err := c.Stop(ctx, "web"); err != nil {
 		t.Errorf("a 304 is no error: %v", err)
@@ -228,5 +343,85 @@ func TestPullImageReportsStreamError(t *testing.T) {
 	})
 	if err := c.PullImage(context.Background(), "private/app", nil); err == nil || !strings.Contains(err.Error(), "pull access denied") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A tag and a push go where the API has them, the push with the empty
+// credentials dockerd wants, and its progress and its error come back.
+func TestTagAndPush(t *testing.T) {
+	var calls []string
+	var auth string
+	c := engine(t, func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/tag"):
+			w.WriteHeader(http.StatusCreated)
+		case strings.Contains(r.URL.Path, "/gone/"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"No such image: host.docker.internal:5001/gone:1"}`))
+		case strings.Contains(r.URL.Path, "/denied/"):
+			_, _ = w.Write([]byte(`{"status":"The push refers to repository [host.docker.internal:5001/denied]"}` + "\n" +
+				`{"errorDetail":{"message":"Get \"https://host.docker.internal:5001/v2/\": http: server gave HTTP response to HTTPS client"},"error":"x"}` + "\n"))
+		default:
+			auth = r.Header.Get("X-Registry-Auth")
+			_, _ = w.Write([]byte(`{"status":"The push refers to repository [host.docker.internal:5001/acme/app]"}` + "\n" +
+				`{"status":"Pushed","progressDetail":{},"id":"3f26bc2dec0b"}` + "\n" +
+				`{"status":"dev: digest: sha256:45e0 size: 1026"}` + "\n"))
+		}
+	})
+	ctx := context.Background()
+	if err := c.Tag(ctx, "ghcr.io/acme/app:dev", "host.docker.internal:5001/acme/app", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	if err := c.PushImage(ctx, "host.docker.internal:5001/acme/app:dev", func(l string) { lines = append(lines, l) }); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "e30=" {
+		t.Errorf("X-Registry-Auth %q", auth)
+	}
+	if len(lines) != 3 || lines[1] != "3f26bc2dec0b: Pushed" {
+		t.Errorf("progress %q", lines)
+	}
+	if err := c.PushImage(ctx, "host.docker.internal:5001/denied:1", nil); err == nil || !strings.Contains(err.Error(), "HTTP response to HTTPS client") {
+		t.Errorf("the stream's error: %v", err)
+	}
+	if err := c.PushImage(ctx, "host.docker.internal:5001/gone:1", nil); err == nil || err.Error() != "No such image: host.docker.internal:5001/gone:1" {
+		t.Errorf("the engine's message: %v", err)
+	}
+	want := []string{
+		"POST /images/ghcr.io/acme/app:dev/tag?repo=host.docker.internal%3A5001%2Facme%2Fapp&tag=dev",
+		"POST /images/host.docker.internal:5001/acme/app/push?tag=dev",
+		"POST /images/host.docker.internal:5001/denied/push?tag=1",
+		"POST /images/host.docker.internal:5001/gone/push?tag=1",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("requests\n%s\nwant\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestPushToARegistry pushes through a real dockerd to a real registry, as
+// the Images page does: set GVXD_PUSH_DOCKER to the engine's DOCKER_HOST
+// and GVXD_PUSH_REGISTRY to the registry as the engine reaches it, such as
+// host.docker.internal:15001. The engine must have alpine:3.20.
+func TestPushToARegistry(t *testing.T) {
+	host, registry := os.Getenv("GVXD_PUSH_DOCKER"), os.Getenv("GVXD_PUSH_REGISTRY")
+	if testing.Short() || host == "" || registry == "" {
+		t.Skip("set GVXD_PUSH_DOCKER and GVXD_PUSH_REGISTRY")
+	}
+	c, err := New(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	repo := registry + "/gvxd-test/pushed"
+	if err := c.Tag(ctx, "alpine:3.20", repo, "api"); err != nil {
+		t.Fatal(err)
+	}
+	defer c.RemoveImage(context.Background(), repo+":api", false)
+	if err := c.PushImage(ctx, repo+":api", func(l string) { t.Log(l) }); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -184,7 +184,7 @@ func usageModel(t *testing.T, dockerd http.HandlerFunc) (*Model, *ggui.Probe, sa
 	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
 	dir := t.TempDir()
 	st := store.Store{Dir: dir}
-	engine := recipes.DockerEngineWith(recipes.DockerAPI{TCP: true, Port: atoi(port)})
+	engine := recipes.DockerEngine()
 	web := sandbox.Spec{ID: "w1", Name: "web", Image: "nginx:alpine", Memory: "512m"}
 	if err := st.SaveSandboxes([]sandbox.Spec{engine, web}); err != nil {
 		t.Fatal(err)
@@ -196,6 +196,7 @@ func usageModel(t *testing.T, dockerd http.HandlerFunc) (*Model, *ggui.Probe, sa
 	p := ggui.ProbeBuilder(func() ggui.Widget { return ggui.Provide(ggui.ReducedMotionKey, true, Build(m)) }, ggui.Sz(1200, 800))
 	p.Setup(func() {
 		m = NewModel(st, dir)
+		m.dockerBackend = "tcp://127.0.0.1:" + port
 		m.Attach(p)
 		m.States.Set(map[string]sandbox.State{engine.ID: {Status: sandbox.Running}})
 	})

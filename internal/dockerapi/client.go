@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,34 +34,65 @@ type Client struct {
 // New connects to host, a unix:// socket or tcp:// address as DOCKER_HOST
 // writes them.
 func New(host string) (*Client, error) {
-	u, err := url.Parse(host)
+	network, addr, base, err := parseHost(host)
 	if err != nil {
 		return nil, err
 	}
 	tr := &http.Transport{MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second}
-	base := "http://docker"
-	var network, addr string
-	switch u.Scheme {
-	case "unix":
-		network, addr = "unix", u.Path
-		if addr == "" {
-			addr = u.Opaque
-		}
+	if network == "unix" {
 		tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, network, addr)
 		}
-	case "tcp", "http":
-		network, addr = "tcp", u.Host
-		base = "http://" + u.Host
-	default:
-		return nil, fmt.Errorf("unsupported docker host %q", host)
 	}
 	dial := func(ctx context.Context) (net.Conn, error) {
 		var d net.Dialer
 		return d.DialContext(ctx, network, addr)
 	}
 	return &Client{http: &http.Client{Transport: tr, Timeout: 15 * time.Second}, base: base, dial: dial}, nil
+}
+
+func parseHost(host string) (network, addr, base string, err error) {
+	return parseHostFor(host, filepath.FromSlash)
+}
+
+// parseHostFor parses a DOCKER_HOST string into (network, dialAddr, httpBase).
+// Unix hosts are parsed by cutting the "unix://" prefix rather than url.Parse
+// so Windows drive letters such as "unix://C:/Users/..." or "unix:///C:/..."
+// are preserved instead of being split into url.Host.
+func parseHostFor(host string, fromSlash func(string) string) (network, addr, base string, err error) {
+	if rest, ok := strings.CutPrefix(host, "unix://"); ok {
+		if len(rest) >= 3 && rest[0] == '/' && isASCIIAlpha(rest[1]) && rest[2] == ':' {
+			rest = rest[1:]
+		}
+		if rest == "" {
+			return "", "", "", fmt.Errorf("unsupported docker host %q", host)
+		}
+		return "unix", fromSlash(rest), "http://docker", nil
+	}
+	if rest, ok := strings.CutPrefix(host, "unix:"); ok {
+		if rest == "" {
+			return "", "", "", fmt.Errorf("unsupported docker host %q", host)
+		}
+		return "unix", fromSlash(rest), "http://docker", nil
+	}
+	u, err := url.Parse(host)
+	if err != nil {
+		return "", "", "", err
+	}
+	switch u.Scheme {
+	case "tcp", "http":
+		if u.Host == "" {
+			return "", "", "", fmt.Errorf("unsupported docker host %q", host)
+		}
+		return "tcp", u.Host, "http://" + u.Host, nil
+	default:
+		return "", "", "", fmt.Errorf("unsupported docker host %q", host)
+	}
+}
+
+func isASCIIAlpha(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
 // Close releases idle connections.
@@ -147,6 +180,27 @@ type Container struct {
 	Status  string   `json:"Status"`
 	Ports   []Port   `json:"Ports"`
 	Labels  map[string]string
+	Mounts  []Mount `json:"Mounts"`
+}
+
+// Mount is a mount of a container: a bind mount of a path where dockerd
+// runs, or a volume.
+type Mount struct {
+	Type        string `json:"Type"` // bind, volume, tmpfs
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	RW          bool   `json:"RW"`
+}
+
+// Binds are the container's bind mounts.
+func (c Container) Binds() []Mount {
+	var out []Mount
+	for _, m := range c.Mounts {
+		if m.Type == "bind" {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // Name is the container's first name without the leading slash.
@@ -186,7 +240,7 @@ func (c Container) PortsText() string {
 // Equal makes Container comparable for signals.
 func (c Container) Equal(o Container) bool {
 	return c.ID == o.ID && c.State == o.State && c.Status == o.Status && c.Image == o.Image &&
-		c.Name() == o.Name() && c.PortsText() == o.PortsText()
+		c.Name() == o.Name() && c.PortsText() == o.PortsText() && slices.Equal(c.Mounts, o.Mounts)
 }
 
 // Containers lists containers, stopped ones too when all is set.
@@ -461,11 +515,42 @@ func (c *Client) PullImage(ctx context.Context, ref string, line func(string)) e
 	if tag != "" {
 		q.Set("tag", tag)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/images/create?"+q.Encode(), nil)
+	return c.stream(ctx, "/images/create?"+q.Encode(), line)
+}
+
+// Tag names the image source repo:tag as well.
+func (c *Client) Tag(ctx context.Context, source, repo, tag string) error {
+	q := url.Values{"repo": {repo}, "tag": {tag}}
+	return c.do(ctx, http.MethodPost, "/images/"+escapeImagePath(source)+"/tag?"+q.Encode(), nil)
+}
+
+// PushImage pushes ref, which names its registry, from the engine, handing
+// progress lines to line. It needs no credentials: the registries the app
+// pushes to take none.
+func (c *Client) PushImage(ctx context.Context, ref string, line func(string)) error {
+	name, tag := splitImageRef(ref)
+	path := "/images/" + escapeImagePath(name) + "/push"
+	if tag != "" {
+		path += "?" + url.Values{"tag": {tag}}.Encode()
+	}
+	// dockerd refuses a push without an X-Registry-Auth header; an empty
+	// configuration is no credentials.
+	return c.stream(ctx, path, line, "X-Registry-Auth", base64.URLEncoding.EncodeToString([]byte("{}")))
+}
+
+// stream posts to path and reads the progress dockerd answers with, a JSON
+// object a line, as pulls and pushes do, handing what each says to line.
+// An object that carries an error ends it with that error. header is
+// pairs of a header and its value.
+func (c *Client) stream(ctx context.Context, path string, line func(string), header ...string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, nil)
 	if err != nil {
 		return err
 	}
-	// Pulling an image can take minutes; ctx bounds it, not the short API timeout.
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
+	// A pull or push can take minutes; ctx bounds it, not the short API timeout.
 	streamClient := &http.Client{Transport: c.http.Transport}
 	res, err := streamClient.Do(req)
 	if err != nil {
@@ -478,7 +563,8 @@ func (c *Client) PullImage(ctx context.Context, ref string, line func(string)) e
 		if json.Unmarshal(body, &e) == nil && e.Message != "" {
 			return fmt.Errorf("%s", e.Message)
 		}
-		return fmt.Errorf("POST /images/create: %s", res.Status)
+		op, _, _ := strings.Cut(path, "?")
+		return fmt.Errorf("POST %s: %s", op, res.Status)
 	}
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)

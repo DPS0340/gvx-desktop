@@ -232,7 +232,7 @@ func (m *Model) LoadContainerUsage() {
 		}
 	}
 	prev := m.containerStats
-	host := m.dockerHost()
+	host := m.dockerBackendHost()
 	m.containerUsageLoading = true
 	got := map[string]dockerapi.Stats{}
 	m.async(func(ctx context.Context) error {

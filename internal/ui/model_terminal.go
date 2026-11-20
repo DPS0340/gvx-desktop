@@ -37,7 +37,7 @@ func (m *Model) containerShell() ggui.Readable[shellTarget] {
 		if c.State != "running" {
 			return shellTarget{Why: tr("The container is not running"), WhyText: tr("Start it to open a shell in it.")}
 		}
-		id, host := c.ID, m.DockerEndpoint.Get()
+		id, host := c.ID, m.dockerBackendHost()
 		t := shellTarget{Key: id}
 		if m.Offline {
 			t.Start = cannedShell(containerTranscript(c.Name()))

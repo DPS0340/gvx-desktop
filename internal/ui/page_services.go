@@ -98,7 +98,7 @@ func servicesTable(m *Model) ggui.Widget {
 				return tip(ui.Mono(s).Size(12).NoWrap().Ellipsis(), s)
 			})
 		}).Grow(2),
-		ui.Col(tr("NodePort"), func(r ggui.Readable[kubeapi.Service]) ggui.Widget {
+		ui.Col(tr("On this computer"), func(r ggui.Readable[kubeapi.Service]) ggui.Widget {
 			reach := ggui.Combine(r, spec, nodePortReach).WithEqual(nil)
 			return ggui.View(reach, func(list []NodePortReach) ggui.Widget { return nodePortCell(m, list) })
 		}).W(176),
@@ -131,9 +131,9 @@ func servicesTable(m *Model) ggui.Widget {
 	).RowName(kubeapi.Service.Name).RowHeight(48).MaxRows(8).Toolbar(toolbar)
 }
 
-// nodePortCell tells of a service's NodePorts: the first, as a link that
-// opens it when this computer reaches it, or why it does not, and how
-// many more there are.
+// nodePortCell tells of the ports a service takes on the node: the first,
+// as a link that opens it when this computer reaches it, or why it does
+// not, and how many more there are.
 func nodePortCell(m *Model, list []NodePortReach) ggui.Widget {
 	if len(list) == 0 {
 		return ui.Caption("—").Size(12)
@@ -141,7 +141,7 @@ func nodePortCell(m *Model, list []NodePortReach) ggui.Widget {
 	r := list[0]
 	var first ggui.Widget
 	if r.Address != "" {
-		url := "http://" + r.Address
+		url := r.URL()
 		first = tip(ui.Button(r.Address, func() { m.Open(url) }).Link().Size(ui.ButtonExtraSmall).Pad(0).
 			TrailingIcon(glyph(lucide.ExternalLink, 12)).Name(tr("Open %s", url)), tr("Open %s", url))
 	} else {
@@ -166,7 +166,7 @@ func serviceMenu(m *Model, s kubeapi.Service, spec sandbox.Spec) ggui.Widget {
 		if r.Address == "" {
 			continue
 		}
-		url, addr := "http://"+r.Address, r.Address
+		url, addr := r.URL(), r.Address
 		items = append(items,
 			ui.MenuItem(tr("Open %s", url), func() { m.Open(url) }),
 			ui.MenuItem(tr("Copy address %s", addr), func() { m.Copy(addr, addr) }),

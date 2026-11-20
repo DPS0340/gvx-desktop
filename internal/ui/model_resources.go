@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -94,7 +95,7 @@ func (m *Model) Pull() {
 		m.post(flush)
 	}
 	if target == PullTargetDocker {
-		host := m.dockerHost()
+		host := m.dockerBackendHost()
 		m.async(func(ctx context.Context) error {
 			c, err := dockerapi.New(host)
 			if err != nil {
@@ -296,17 +297,23 @@ func (m *Model) LoadDisk() {
 
 // ---- Docker and Kubernetes ----------------------------------------------
 
+// dockerHost is the user-facing DOCKER_HOST served by the app's proxy.
 func (m *Model) dockerHost() string { return m.DockerAPI().Host() }
+
+// dockerBackendHost is the app-private backend socket dockerd publishes inside
+// the sandbox, used directly by the app's own dockerapi client.
+func (m *Model) dockerBackendHost() string {
+	if m.dockerBackend != "" {
+		return m.dockerBackend
+	}
+	return recipes.DockerBackendHost()
+}
 
 // Docker endpoints, as the settings name them.
 const (
 	DockerSocketEndpoint = "socket"
 	DockerTCPEndpoint    = "tcp"
 )
-
-// dockerSetting is how the settings ask the Docker Engine recipe to
-// publish its API: a new engine is made so.
-func (m *Model) dockerSetting() recipes.DockerAPI { return dockerSettingOf(ggui.Peek(m.Settings)) }
 
 func dockerSettingOf(set store.Settings) recipes.DockerAPI {
 	api := recipes.DefaultDockerAPI()
@@ -322,29 +329,17 @@ func dockerSettingOf(set store.Settings) recipes.DockerAPI {
 	return api
 }
 
-// DockerAPI is how the Docker Engine is reached: as its sandbox publishes
-// the API when there is one, whose ports are its own, and else as the
-// settings would make one.
+// DockerAPI is the user-facing Docker endpoint the app's proxy listens on,
+// configured by settings.
 func (m *Model) DockerAPI() recipes.DockerAPI {
-	return m.dockerAPIOf(ggui.Peek(m.Rows), ggui.Peek(m.Settings))
-}
-
-func (m *Model) dockerAPIOf(rows []Row, set store.Settings) recipes.DockerAPI {
-	if row, ok := m.RecipeSandbox(rows, recipes.Docker); ok {
-		if api, ok := recipes.DockerAPIOf(row.Spec); ok {
-			return api
-		}
-	}
-	return dockerSettingOf(set)
+	return dockerSettingOf(ggui.Peek(m.Settings))
 }
 
 // DockerHost is the DOCKER_HOST value that reaches the Docker Engine.
 func (m *Model) DockerHost() string { return m.dockerHost() }
 
-// SetDockerAPI changes how the engine's API is published, in the settings
-// and in the engine's sandbox when there is one. A sandbox's ports are
-// fixed when it starts, so a running engine keeps its endpoint until it is
-// restarted, and is told so.
+// SetDockerAPI changes the endpoint the app's Docker API proxy listens on and
+// saves the setting. The listener re-binds immediately with no engine restart.
 func (m *Model) SetDockerAPI(api recipes.DockerAPI) {
 	if api.Port <= 0 || api.Port > 65535 {
 		api.Port = recipes.DefaultDockerPort
@@ -356,23 +351,125 @@ func (m *Model) SetDockerAPI(api recipes.DockerAPI) {
 		}
 		s.DockerPort = api.Port
 	})
+	if m.dockerProxyStarted {
+		m.bindDockerProxy(api)
+	}
+}
+
+// ServiceLB reports whether the cluster runs k3s's load balancer: as its
+// sandbox's command has it when there is one, which is what counts, and
+// else as the settings would make one.
+func (m *Model) ServiceLB() bool {
+	if row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Kubernetes); ok {
+		return recipes.ServiceLBOf(row.Spec)
+	}
+	return ggui.Peek(m.Settings).K3sServiceLB
+}
+
+// SetServiceLB turns the cluster's load balancer on or off, in the settings
+// and in the cluster's sandbox when there is one, with the node's ports 80
+// and 443 published for it. A running cluster keeps what it started with
+// until it is restarted, and is told so.
+func (m *Model) SetServiceLB(on bool) {
+	m.UpdateSettings(func(s *store.Settings) { s.K3sServiceLB = on })
+	specs := slices.Clone(ggui.Peek(m.Specs))
+	for i, spec := range specs {
+		if spec.Recipe != recipes.Kubernetes {
+			continue
+		}
+		if recipes.ServiceLBOf(spec) == on {
+			return
+		}
+		specs[i] = recipes.WithServiceLB(spec, on)
+		m.saveSpecs(specs)
+		if m.sup.State(spec.ID).Status.Active() {
+			m.Toasts.Push(ui.Toast(tr("Restart the cluster to apply the change"),
+				tr("It keeps running as it started until then.")).Duration(8 * time.Second))
+		}
+		return
+	}
+}
+
+// sharedSetting is the folders the settings ask a new engine to share.
+func sharedSetting(set store.Settings) []string {
+	if set.DockerSharedFolders == nil {
+		return recipes.DefaultSharedFolders()
+	}
+	return set.DockerSharedFolders
+}
+
+// sharedFoldersOf is the folders the Docker Engine shares: as its sandbox
+// mounts them when there is one, whose mounts are its own, and else as the
+// settings would make one.
+func (m *Model) sharedFoldersOf(rows []Row, set store.Settings) []string {
+	if row, ok := m.RecipeSandbox(rows, recipes.Docker); ok {
+		return recipes.SharedFoldersOf(row.Spec)
+	}
+	return sharedSetting(set)
+}
+
+// SharedFolders are the folders of this computer the Docker Engine sees at
+// their own paths.
+func (m *Model) SharedFolders() []string {
+	return m.sharedFoldersOf(ggui.Peek(m.Rows), ggui.Peek(m.Settings))
+}
+
+// SetSharedFolders changes the folders the Docker Engine shares, in the
+// settings and in the engine's sandbox when there is one. A sandbox's
+// mounts are fixed when it starts, so a running engine keeps what it
+// shares until it is restarted, and is told so.
+func (m *Model) SetSharedFolders(folders []string) {
+	folders = append([]string{}, folders...) // empty, not nil: none, not the default
+	m.UpdateSettings(func(s *store.Settings) { s.DockerSharedFolders = folders })
 	specs := slices.Clone(ggui.Peek(m.Specs))
 	for i, spec := range specs {
 		if spec.Recipe != recipes.Docker {
 			continue
 		}
-		if was, ok := recipes.DockerAPIOf(spec); ok && was.Host() == api.Host() {
+		if slices.Equal(recipes.SharedFoldersOf(spec), folders) {
 			return
 		}
-		specs[i] = recipes.WithDockerAPI(spec, api)
+		specs[i] = recipes.WithSharedFolders(spec, folders)
 		m.saveSpecs(specs)
 		if m.sup.State(spec.ID).Status.Active() {
-			m.Toasts.Push(ui.Toast(tr("Restart the Docker Engine to move its API"),
-				tr("It keeps answering on its old endpoint until then; after the restart it is %s.", api.Host())).Duration(8 * time.Second))
+			m.Toasts.Push(ui.Toast(tr("Restart the Docker Engine to share the change"),
+				tr("It sees the folders it started with until then.")).Duration(8 * time.Second))
 		}
-		m.LoadDocker()
 		return
 	}
+}
+
+// ShareFolder adds a folder to those the Docker Engine shares, or says why
+// it cannot.
+func (m *Model) ShareFolder(dir string) {
+	folders, err := recipes.AddSharedFolder(m.SharedFolders(), dir)
+	if err != nil {
+		m.toastError(tr("Could not share %s", tildePath(dir)), errors.New(shareProblem(err)))
+		return
+	}
+	m.SetSharedFolders(folders)
+}
+
+// UnshareFolder stops sharing a folder with the Docker Engine.
+func (m *Model) UnshareFolder(dir string) {
+	m.SetSharedFolders(slices.DeleteFunc(m.SharedFolders(), func(f string) bool { return f == dir }))
+}
+
+// shareProblem words why a folder cannot be shared.
+func shareProblem(err error) string {
+	var se *recipes.ShareError
+	errors.As(err, &se)
+	switch {
+	case errors.Is(err, recipes.ErrAlreadyShared) && se != nil:
+		return tr("It is shared already, through %s.", tildePath(se.Folder))
+	case errors.Is(err, recipes.ErrNotFolder):
+		return tr("No folder is at that path.")
+	case errors.Is(err, recipes.ErrReserved):
+		return tr("The sandbox's own system is at that path, or inside it. Share a folder of your own.")
+	case errors.Is(err, recipes.ErrNoGuestPath):
+		return tr("Choose a folder by its full path, on a drive of this computer.")
+	}
+	return err.Error()
 }
 
 // LoadDocker lists the containers of the Docker Engine recipe. Asked for
@@ -391,7 +488,7 @@ func (m *Model) LoadDocker() {
 		return
 	}
 	m.dockerLoading = true
-	host := m.dockerHost()
+	host := m.dockerBackendHost()
 	var items []dockerapi.Container
 	var version dockerapi.Version
 	m.DockerContainers.Update(func(l Listing[dockerapi.Container]) Listing[dockerapi.Container] { l.Loading = true; return l })
@@ -515,7 +612,7 @@ func (m *Model) followLinks() {
 
 // DockerAction runs start, stop, restart or remove on a container.
 func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
-	host := m.dockerHost()
+	host := m.dockerBackendHost()
 	m.async(func(ctx context.Context) error {
 		c, err := dockerapi.New(host)
 		if err != nil {

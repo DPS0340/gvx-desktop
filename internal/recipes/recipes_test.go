@@ -81,16 +81,16 @@ func TestDockerEngine(t *testing.T) {
 	t.Logf("dockerd %s (API %s) on %s/%s kernel %s", v.Version, v.APIVersion, v.OS, v.Arch, v.KernelVersion)
 }
 
-// The engine's API is published as asked, read back from the sandbox, and
-// moved without touching the ports beside it.
+// DockerAPI configures the app's proxy listener and DOCKER_HOST, while the
+// engine sandbox always publishes dockerd on its app-private backend socket.
 func TestDockerAPI(t *testing.T) {
 	socket := DockerAPI{Port: DefaultDockerPort}
 	tcp := DockerAPI{TCP: true, Port: 23750}
-	if got := socket.Publish(); got != "unix:~/.gvx/docker.sock:2375" {
-		t.Errorf("socket publishes %q", got)
+	if netw, addr := socket.ListenAddr(); netw != "unix" || addr != DockerSocket() {
+		t.Errorf("socket listens on %q %q", netw, addr)
 	}
-	if got := tcp.Publish(); got != "127.0.0.1:23750:2375" {
-		t.Errorf("tcp publishes %q", got)
+	if netw, addr := tcp.ListenAddr(); netw != "tcp" || addr != "127.0.0.1:23750" {
+		t.Errorf("tcp listens on %q %q", netw, addr)
 	}
 	if got := tcp.Host(); got != "tcp://127.0.0.1:23750" {
 		t.Errorf("tcp host %q", got)
@@ -98,36 +98,85 @@ func TestDockerAPI(t *testing.T) {
 	if got := (DockerAPI{TCP: true}).Host(); got != "tcp://127.0.0.1:2375" {
 		t.Errorf("a port left out: %q", got)
 	}
+	if got := DockerBackendPublish; got != "unix:~/.gvx/engine/dockerd.sock:2375" {
+		t.Errorf("backend publish %q", got)
+	}
+	spec := DockerEngine()
+	if len(spec.Ports) != 2 || spec.Ports[0] != DockerBackendPublish || spec.Ports[1] != "127.0.0.1:9000-9019:9000-9019" {
+		t.Errorf("engine ports %v", spec.Ports)
+	}
+}
 
-	spec := DockerEngineWith(socket)
-	if api, ok := DockerAPIOf(spec); !ok || api.TCP {
-		t.Errorf("read back %+v, %v", api, ok)
+// ServiceLB is off in a new cluster, turned on and off again without
+// touching what is beside it, and read back from the command.
+func TestServiceLB(t *testing.T) {
+	k3s := KubernetesNode()
+	if ServiceLBOf(k3s) || len(LoadBalancerPorts(k3s)) != 0 {
+		t.Fatalf("a new cluster has ServiceLB: %q", k3s.Command)
 	}
-	moved := WithDockerAPI(spec, tcp)
-	if api, ok := DockerAPIOf(moved); !ok || api != tcp {
-		t.Errorf("after the move: %+v, %v", api, ok)
+	if !strings.Contains(k3s.Command, "--disable=traefik,servicelb") {
+		t.Errorf("command %q", k3s.Command)
 	}
-	if len(moved.Ports) != len(spec.Ports) || moved.Ports[1] != spec.Ports[1] {
-		t.Errorf("the other ports changed: %v", moved.Ports)
+	on := WithServiceLB(k3s, true)
+	if !ServiceLBOf(on) {
+		t.Errorf("not on: %q", on.Command)
 	}
-	if spec.Ports[0] != socket.Publish() {
-		t.Errorf("the sandbox given was changed: %v", spec.Ports)
+	if !strings.Contains(on.Command, "--disable=traefik ") || strings.Contains(on.Command, "servicelb") {
+		t.Errorf("traefik left on, or servicelb still named: %q", on.Command)
 	}
-	// A sandbox whose API port someone removed gets it back.
-	bare := spec
-	bare.Ports = []string{"127.0.0.1:9000-9019:9000-9019"}
-	if got := WithDockerAPI(bare, tcp).Ports; len(got) != 2 || got[0] != tcp.Publish() {
-		t.Errorf("a sandbox without the port: %v", got)
+	if got := strings.Join(on.Ports, " "); got != "127.0.0.1:6443:6443 127.0.0.1:30000-30019:30000-30019 127.0.0.1:8080:80 127.0.0.1:8443:443" {
+		t.Errorf("ports %s", got)
 	}
-	if _, ok := DockerAPIOf(bare); ok {
-		t.Error("an API was read from a sandbox that publishes none")
+	if got := LoadBalancerPorts(on); len(got) != 2 || got[0] != 80 || got[1] != 443 {
+		t.Errorf("load balancer ports %v", got)
+	}
+	if addr, ok := HostAddress(on, 443); !ok || addr != "127.0.0.1:8443" {
+		t.Errorf("443 at %q %v", addr, ok)
+	}
+	if len(k3s.Ports) != 2 {
+		t.Errorf("the sandbox given was changed: %v", k3s.Ports)
+	}
+	// Twice on adds nothing; a port moved by hand is kept as it is.
+	moved := on
+	moved.Ports = []string{"127.0.0.1:6443:6443", "127.0.0.1:9080:80"}
+	if got := WithServiceLB(moved, true).Ports; len(got) != 3 || got[1] != "127.0.0.1:9080:80" || got[2] != "127.0.0.1:8443:443" {
+		t.Errorf("on again %v", got)
+	}
+	off := WithServiceLB(on, false)
+	if ServiceLBOf(off) || off.Command != k3s.Command || len(off.Ports) != 2 {
+		t.Errorf("off again: %q %v", off.Command, off.Ports)
+	}
+	if made := KubernetesNodeWith(true); !ServiceLBOf(made) || made.Command != on.Command || len(made.Ports) != 4 {
+		t.Errorf("made with ServiceLB: %q %v", made.Command, made.Ports)
+	}
+
+	// Other forms of --disable, and none at all.
+	for cmd, want := range map[string]bool{
+		"server --disable traefik --disable servicelb": false,
+		"server --disable=servicelb,traefik":           false,
+		"server --disable=traefik":                     true,
+		"server":                                       true,
+	} {
+		spec := sandbox.Spec{Command: cmd}
+		if got := ServiceLBOf(spec); got != want {
+			t.Errorf("%q: %v", cmd, got)
+		}
+		if got := ServiceLBOf(WithServiceLB(spec, !want)); got != !want {
+			t.Errorf("%q turned %v: %q", cmd, !want, WithServiceLB(spec, !want).Command)
+		}
+	}
+	if got := WithServiceLB(sandbox.Spec{Command: "server --disable traefik --disable servicelb"}, true).Command; got != "server --disable=traefik" {
+		t.Errorf("on from two flags: %q", got)
+	}
+	if got := WithServiceLB(sandbox.Spec{Command: "server --token=x"}, false).Command; got != "server --disable=servicelb --token=x" {
+		t.Errorf("off without --disable: %q", got)
 	}
 }
 
 func TestNodePorts(t *testing.T) {
 	k3s := KubernetesNode()
 	for port, want := range map[int]string{30000: "127.0.0.1:30000", 30019: "127.0.0.1:30019", 30020: "", 30080: "", 29999: "", 6443: "127.0.0.1:6443"} {
-		got, ok := NodePortAddress(k3s, port)
+		got, ok := HostAddress(k3s, port)
 		if got != want || ok != (want != "") {
 			t.Errorf("%d: %q %v, want %q", port, got, ok, want)
 		}
@@ -143,7 +192,7 @@ func TestNodePorts(t *testing.T) {
 		30080: "127.0.0.1:31000", 30084: "127.0.0.1:31004", 30085: "", 32000: "127.0.0.1:32000",
 		30500: "", 30600: "[::1]:30600", 30700: "127.0.0.1:30700", 30800: "", 30000: "",
 	} {
-		got, ok := NodePortAddress(k3s, port)
+		got, ok := HostAddress(k3s, port)
 		if got != want || ok != (want != "") {
 			t.Errorf("%d: %q %v, want %q", port, got, ok, want)
 		}

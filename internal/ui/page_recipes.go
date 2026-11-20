@@ -88,7 +88,7 @@ func dockerPage(m *Model) ggui.Widget {
 			tr("An unmodified dockerd in one sandbox. Images and containers persist in the gvx-docker volume; the API is published on %s.", m.DockerHost()),
 			lucide.Container),
 		widget.Column(
-			sectionTitle(tr("Containers"), tr("Published container ports must be inside 9000–9019, the range the sandbox opened at start.")),
+			sectionTitle(tr("Containers"), publishedPortsNote(m)),
 			containersSummary(m),
 			dockerImagesSummary(m),
 		).Gap(10).Stretch(),
@@ -298,7 +298,7 @@ func dockerNotesCard() ggui.Widget {
 	return ui.Card(
 		ui.CardHeader(tr("Good to know"), tr("Limits that come from running dockerd in a user-space kernel.")),
 		ui.CardContent(widget.Column(
-			note(tr("Paths in docker run -v"), tr("A -v path names a path in the sandbox, not on the host. Add a bind mount to the sandbox first (Edit → Storage), then use its guest path.")),
+			note(tr("Paths in docker run -v"), tr("A -v path names a path in the sandbox. The folders shared in Settings → Docker, your home folder unless you changed them, are at the same paths there, so -v and compose bind mounts of what is in them work; bind mounts outside them are rejected.")),
 			note(tr("Ports"), tr("Host ports are fixed when the sandbox starts. Add more to the range in the sandbox settings and restart.")),
 			note(tr("Architecture"), tr("The engine runs images for this CPU (linux/%s) natively.", goarch())),
 			note(tr("Limits"), tr("docker run -m and --cpus are enforced; BLOCK I/O reads 0B because the guest has no io controller.")),
@@ -380,6 +380,8 @@ func kubeNotesCard() ggui.Widget {
 			note("iptables", tr("The node uses iptables-legacy (IPTABLES_MODE=legacy); nftables, IPVS and eBPF are not available, so kube-proxy runs in iptables mode.")),
 			note("CNI", tr("flannel and Calico (VXLAN) work, with NetworkPolicy. Cilium needs eBPF and does not run.")),
 			note("NodePorts", tr("Only the published range 30000–30019 reaches the host. Widen it in the sandbox settings.")),
+			note(tr("Load balancers"), tr("With the service load balancer on (Settings → Kubernetes), a LoadBalancer service's ports 80 and 443 reach 127.0.0.1:8080 and :8443. Off, such a service stays pending; use a NodePort instead.")),
+			note(tr("Images built here"), tr("Push them to the image registry recipe (Images → Docker Engine → Push to cluster registry), and run them as host.docker.internal:5001/NAME:TAG.")),
 			note(tr("Memory limits"), tr("Pod memory limits are enforced by polling, so a short burst can pass them.")),
 		).Gap(10).Stretch()),
 	)

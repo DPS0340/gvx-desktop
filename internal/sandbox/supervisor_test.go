@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -193,5 +194,43 @@ func TestSupervisorCheckpointRestore(t *testing.T) {
 	tail := s.Logs(spec.ID).Tail(1, Stdout)[0]
 	if tail == "tick-1" || tail == "tick-2" {
 		t.Fatalf("restore started over: last before %q, now %q", last, tail)
+	}
+}
+
+// What Prepare writes is there before rungv runs, and a failure to write it
+// keeps rungv from running at all.
+func TestPrepareRunsBeforeRungv(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	// A stand-in rungv that says whether the prepared file was there.
+	exe := filepath.Join(t.TempDir(), "rungv")
+	prepared := filepath.Join(t.TempDir(), "prepared")
+	script := "#!/bin/sh\nif [ -f " + prepared + " ]; then echo yes > " + marker + "; else echo no > " + marker + "; fi\n"
+	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in rungv is a shell script")
+	}
+	s, _ := newTestSupervisor(t, &rungv.Client{Path: exe})
+	spec := Spec{ID: "p1", Name: "p", Image: "alpine"}
+	s.Prepare = func(Spec) error { return os.ErrPermission }
+	if err := s.Start(spec); err == nil {
+		t.Fatal("started although Prepare failed")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("rungv ran although Prepare failed")
+	}
+	s.Prepare = func(got Spec) error {
+		if got.ID != spec.ID {
+			t.Errorf("prepared %+v", got)
+		}
+		return os.WriteFile(prepared, nil, 0o644)
+	}
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the stand-in to end", 10*time.Second, func() bool { return !s.State(spec.ID).Status.Active() })
+	if got, _ := os.ReadFile(marker); strings.TrimSpace(string(got)) != "yes" {
+		t.Errorf("the prepared file was not there when rungv ran: %q", got)
 	}
 }

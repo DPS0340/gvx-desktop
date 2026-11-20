@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,6 +48,10 @@ type shot struct {
 // terminal's made-up shell prints: its frames wait a moment each.
 func (s shot) live() bool { return strings.HasSuffix(s.name, "-terminal") }
 
+// tall reports whether the shot is drawn taller than the window, to show a
+// long page whole.
+func (s shot) tall() bool { return strings.HasSuffix(s.name, "-whole") }
+
 func renderAll(tmp, out, lang string) error {
 	now := time.Date(2026, 11, 16, 15, 30, 0, 0, time.Local)
 	restore := ggui.SetClock(func() time.Time { return now })
@@ -55,6 +60,8 @@ func renderAll(tmp, out, lang string) error {
 	rungv.HomeDir = func() (string, error) { return demoHome, nil }
 	shots := []shot{
 		{"dashboard", func(m *ui.Model) { m.Page.Set(ui.PageDashboard) }},
+		// The whole page, down to the recipes.
+		{"dashboard-whole", func(m *ui.Model) { m.Page.Set(ui.PageDashboard) }},
 		{"sandboxes-logs", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(0) }},
 		{"sandboxes-connect", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(1) }},
 		{"sandboxes-config", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(2) }},
@@ -64,6 +71,12 @@ func renderAll(tmp, out, lang string) error {
 		{"containers-terminal", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(2) }},
 		// A Compose project folded away, and one filtered to one of its
 		// containers.
+		// A container whose bind mount is of a folder the engine does not share.
+		{"containers-unshared", func(m *ui.Model) {
+			m.Go(ui.PageContainers)
+			m.SelectContainer(demoContainers()[2].ID)
+			m.ContainerDetail.Set(1)
+		}},
 		{"containers-folded", func(m *ui.Model) { m.Go(ui.PageContainers); m.ToggleProject("shop") }},
 		{"containers-filtered", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerQuery.Set("redis") }},
 		{"containers-remove-project", func(m *ui.Model) {
@@ -115,6 +128,19 @@ func renderAll(tmp, out, lang string) error {
 			m.Forwards.Set(demoForwards())
 		}},
 		{"services-system", func(m *ui.Model) { m.GoKube(ui.KubeServices); m.SystemPods.Set(true) }},
+		// The cluster runs ServiceLB, and a LoadBalancer service has its
+		// ports 80 and 443 on this computer.
+		{"services-loadbalancer", func(m *ui.Model) {
+			specs := slices.Clone(ggui.Peek(m.Specs))
+			for i, s := range specs {
+				if s.Recipe == recipes.Kubernetes {
+					specs[i] = recipes.WithServiceLB(s, true)
+				}
+			}
+			m.Specs.Set(specs)
+			m.Services.Set(ui.Listing[kubeapi.Service]{Loaded: true, Items: append(demoServices(ggui.Peek(m.Now)), demoLoadBalancer(ggui.Peek(m.Now)))})
+			m.GoKube(ui.KubeServices)
+		}},
 		{"services-forward", func(m *ui.Model) {
 			m.GoKube(ui.KubeServices)
 			m.Forwards.Set(demoForwards())
@@ -122,10 +148,23 @@ func renderAll(tmp, out, lang string) error {
 		}},
 		{"images", func(m *ui.Model) { m.GoImages(ui.ImagesGVX) }},
 		{"images-docker", func(m *ui.Model) { m.GoImages(ui.ImagesDocker) }},
+		// Pushing an image to the cluster's registry while it is stopped.
+		{"images-docker-push", func(m *ui.Model) {
+			m.GoImages(ui.ImagesDocker)
+			states := maps.Clone(ggui.Peek(m.States))
+			states[demoIDs[4]] = sandbox.State{Status: sandbox.Stopped, ExitedAt: ggui.Peek(m.Now).Add(-time.Hour)}
+			m.States.Set(states)
+			m.PushToRegistry(ui.DockerImageRow{ID: "sha256:1a2b3c4d5e6f708192a3", Repository: "app", Tag: "dev"})
+		}},
+		{"sandboxes-registry", func(m *ui.Model) { m.ShowSandbox(demoIDs[4], 1) }},
 		{"volumes", func(m *ui.Model) { m.Page.Set(ui.PageVolumes) }},
 		{"docker", func(m *ui.Model) { m.Page.Set(ui.PageDocker) }},
 		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes); m.Forwards.Set(demoForwards()) }},
 		{"settings", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
+		// The whole page, down to the recipes' settings.
+		{"settings-whole", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
+		// The engine shares no folder.
+		{"settings-unshared-whole", func(m *ui.Model) { m.SetSharedFolders(nil); m.Page.Set(ui.PageSettings) }},
 		{"settings-source", func(m *ui.Model) {
 			m.UpdateSettings(func(s *store.Settings) {
 				s.UpdateChannel = ui.ChannelSource
@@ -147,13 +186,17 @@ func renderAll(tmp, out, lang string) error {
 		{"palette", func(m *ui.Model) { m.PaletteOpen.Set(true) }},
 		{"sidebar-hidden", func(m *ui.Model) { m.Page.Set(ui.PageImages); m.SidebarNarrow.Set(true) }},
 	}
-	const w, h = 1280, 840
+	const w = 1280
 	for _, dark := range []bool{false, true} {
 		mode := "light"
 		if dark {
 			mode = "dark"
 		}
 		for _, s := range shots {
+			h := 840
+			if s.tall() {
+				h = 2000
+			}
 			dir := filepath.Join(tmp, mode+"-"+s.name)
 			st := store.Store{Dir: dir}
 			if err := st.SaveSandboxes(demoSpecs()); err != nil {
@@ -206,7 +249,7 @@ func renderAll(tmp, out, lang string) error {
 	return nil
 }
 
-var demoIDs = []string{"a1b2c3d4", "d0c4e7f1", "c8s9k3e2", "f00dfeed"}
+var demoIDs = []string{"a1b2c3d4", "d0c4e7f1", "c8s9k3e2", "f00dfeed", "e9r5b001"}
 
 func demoSpecs() []sandbox.Spec {
 	t := time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)
@@ -220,7 +263,9 @@ func demoSpecs() []sandbox.Spec {
 		Env:    []string{"POSTGRES_PASSWORD=secret"},
 		Mounts: []sandbox.Mount{{Type: sandbox.MountVolume, Source: "pgdata", Target: "/var/lib/postgresql/data"}},
 		Memory: "1g", Checkpoint: true, CreatedAt: t.Add(3 * time.Hour)}
-	return []sandbox.Spec{web, docker, k3s, pg}
+	reg := recipes.ImageRegistry()
+	reg.ID, reg.CreatedAt = demoIDs[4], t.Add(4*time.Hour)
+	return []sandbox.Spec{web, docker, k3s, pg, reg}
 }
 
 func demoState(m *ui.Model, now time.Time) {
@@ -240,10 +285,12 @@ func demoState(m *ui.Model, now time.Time) {
 		demoIDs[0]: {Status: sandbox.Running, PID: 41234, StartedAt: now.Add(-42 * time.Minute), Platform: "hvf",
 			Ports: []sandbox.PublishedPort{{Host: "127.0.0.1:8080", Guest: 80, Proto: "tcp"}}},
 		demoIDs[1]: {Status: sandbox.Running, PID: 41301, StartedAt: now.Add(-3*time.Hour - 12*time.Minute), Platform: "hvf",
-			Ports: []sandbox.PublishedPort{{Host: "/Users/me/.gvx/docker.sock", Guest: 2375, Proto: "tcp"},
+			Ports: []sandbox.PublishedPort{{Host: "/Users/me/.gvx/engine/dockerd.sock", Guest: 2375, Proto: "tcp"},
 				{Host: "127.0.0.1:9000", Guest: 9000, Proto: "tcp"}, {Host: "127.0.0.1:9001", Guest: 9001, Proto: "tcp"}}},
 		demoIDs[2]: {Status: sandbox.Running, PID: 41377, StartedAt: now.Add(-2*time.Hour - 10*time.Minute), Platform: "hvf",
 			Ports: []sandbox.PublishedPort{{Host: "127.0.0.1:6443", Guest: 6443, Proto: "tcp"}, {Host: "127.0.0.1:30000", Guest: 30000, Proto: "tcp"}}},
+		demoIDs[4]: {Status: sandbox.Running, PID: 41420, StartedAt: now.Add(-50 * time.Minute), Platform: "hvf",
+			Ports: []sandbox.PublishedPort{{Host: "127.0.0.1:5001", Guest: 5000, Proto: "tcp"}}},
 		demoIDs[3]: {Status: sandbox.Failed, ExitCode: 1, ExitedAt: now.Add(-5 * time.Minute),
 			Error:  "rungv run: listen tcp 127.0.0.1:5432: bind: address already in use",
 			Advice: rungv.Diagnose("address already in use", 1)},
@@ -312,6 +359,7 @@ func demoState(m *ui.Model, now time.Time) {
 func demoUsage(m *ui.Model) {
 	const mib = 1 << 20
 	m.SandboxUsage.Set(map[string]ui.Usage{
+		demoIDs[4]: {CPU: 0.1, HasCPU: true, Memory: 14 * mib},
 		demoIDs[0]: {CPU: 0.8, HasCPU: true, Memory: 46 * mib},
 		demoIDs[1]: {CPU: 12.4, HasCPU: true, Memory: 612 * mib},
 		demoIDs[2]: {CPU: 38.6, HasCPU: true, Memory: 1516 * mib},
@@ -480,6 +528,21 @@ func demoServices(now time.Time) []kubeapi.Service {
 	}
 }
 
+// demoLoadBalancer is a LoadBalancer service ServiceLB has given the
+// node's address, on ports 80 and 443.
+func demoLoadBalancer(now time.Time) kubeapi.Service {
+	s := kubeapi.Service{Metadata: kubeapi.Meta{Namespace: "shop", Name: "storefront", Created: now.Add(-40 * time.Minute)},
+		Spec: kubeapi.ServiceSpec{Type: "LoadBalancer", ClusterIP: "10.43.77.5", Selector: map[string]string{"app": "web"}, Ports: []kubeapi.ServicePort{
+			{Name: "http", Protocol: "TCP", Port: 80, TargetPort: kubeapi.IntOrString{Str: "http"}, NodePort: 31380},
+			{Name: "https", Protocol: "TCP", Port: 443, TargetPort: kubeapi.IntOrString{Int: 8443}, NodePort: 31443},
+		}}}
+	s.Status.LoadBalancer.Ingress = append(s.Status.LoadBalancer.Ingress, struct {
+		IP       string `json:"ip,omitempty"`
+		Hostname string `json:"hostname,omitempty"`
+	}{IP: "10.0.2.15"})
+	return s
+}
+
 // demoForwards are the port forwards the demo runs: one to a web pod, one
 // to redis's service whose last connection failed.
 func demoForwards() []ui.PortForward {
@@ -563,11 +626,14 @@ func demoContainers() []dockerapi.Container {
 	return []dockerapi.Container{
 		{ID: "3f2a9c1b7d4e5f60", Names: []string{"/shop-web-1"}, Image: "nginx:alpine", State: "running", Status: "Up 2 hours", Created: created,
 			Ports:  []dockerapi.Port{{IP: "0.0.0.0", PrivatePort: 80, PublicPort: 9000, Type: "tcp"}, {IP: "::", PrivatePort: 80, PublicPort: 9000, Type: "tcp"}},
-			Labels: map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "web"}},
+			Labels: map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "web"},
+			Mounts: []dockerapi.Mount{{Type: "bind", Source: "/Users/me/shop/site", Destination: "/usr/share/nginx/html", RW: true}}},
 		{ID: "8b7c6d5e4f3a2b10", Names: []string{"/shop-redis-1"}, Image: "redis:alpine", State: "running", Status: "Up 2 hours", Created: created,
 			Ports:  []dockerapi.Port{{PrivatePort: 6379, Type: "tcp"}},
 			Labels: map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "redis"}},
-		{ID: "1a2b3c4d5e6f7081", Names: []string{"/migrate"}, Image: "app:dev", State: "exited", Status: "Exited (0) 2 hours ago", Created: created - 60},
+		// A bind mount of a folder the engine does not share.
+		{ID: "1a2b3c4d5e6f7081", Names: []string{"/migrate"}, Image: "app:dev", State: "exited", Status: "Exited (0) 2 hours ago", Created: created - 60,
+			Mounts: []dockerapi.Mount{{Type: "bind", Source: "/Volumes/work/migrations", Destination: "/migrations", RW: true}}},
 	}
 }
 

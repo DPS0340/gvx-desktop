@@ -113,11 +113,22 @@ func kubeViewSummary(m *Model, v int) string {
 		return trn(len(l.Items), "%d workload in all. Deployments, StatefulSets, DaemonSets and Jobs make the cluster's pods and keep them running.",
 			"%d workloads in all. Deployments, StatefulSets, DaemonSets and Jobs make the cluster's pods and keep them running.")
 	case KubeServices:
-		ranges := recipes.NodePortRanges(m.clusterSpec())
-		if len(ranges) == 0 {
-			return tr("Services give pods one address in the cluster. No NodePorts reach this computer; forward a port instead.")
+		spec := m.clusterSpec()
+		ranges := recipes.NodePortRanges(spec)
+		var lb []string
+		for _, p := range recipes.LoadBalancerPorts(spec) {
+			lb = append(lb, itoa(p))
 		}
-		return tr("Services give pods one address in the cluster. NodePorts %s reach this computer; forward a port for any other.", strings.Join(ranges, ", "))
+		switch {
+		case len(ranges) == 0 && len(lb) == 0:
+			return tr("Services give pods one address in the cluster. No NodePorts reach this computer; forward a port instead.")
+		case len(lb) == 0:
+			return tr("Services give pods one address in the cluster. NodePorts %s reach this computer; forward a port for any other.", strings.Join(ranges, ", "))
+		case len(ranges) == 0:
+			return tr("Services give pods one address in the cluster. Load balancer ports %s reach this computer; forward a port for any other.", strings.Join(lb, ", "))
+		}
+		return tr("Services give pods one address in the cluster. NodePorts %s and load balancer ports %s reach this computer; forward a port for any other.",
+			strings.Join(ranges, ", "), strings.Join(lb, ", "))
 	}
 	if l := m.Pods.Get(); answered {
 		running, total, namespaces := podCounts(l.Items)

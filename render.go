@@ -16,6 +16,7 @@ import (
 	uitheme "github.com/ironpark/ggui/ui/theme"
 	"github.com/ironpark/ggwd"
 
+	"github.com/ironpark/gvx-desktop/internal/appupdate"
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
@@ -58,6 +59,9 @@ func renderAll(tmp, out, lang string) error {
 	defer restore()
 
 	rungv.HomeDir = func() (string, error) { return demoHome, nil }
+	// A release's version, which the update of the app is measured against.
+	defer func(v string) { ui.AppVersion = v }(ui.AppVersion)
+	ui.AppVersion = "0.5.1"
 	shots := []shot{
 		{"dashboard", func(m *ui.Model) { m.Page.Set(ui.PageDashboard) }},
 		// The whole page, down to the recipes.
@@ -174,6 +178,33 @@ func renderAll(tmp, out, lang string) error {
 			m.Update.Set(ui.Update{Source: true, Repo: "ironpark/gvx", Branch: "feat/test", Commit: "e410633f24cf", Subject: "feat: test branch", Ahead: 2})
 			m.Page.Set(ui.PageSettings)
 		}},
+		// A newer GVX Desktop: the banner offers it, downloading, downloaded,
+		// and the question before the restart that puts it in place.
+		{"dashboard-app-update", func(m *ui.Model) { demoAppUpdate(m, appupdate.Bundle, nil) }},
+		{"dashboard-app-update-downloading", func(m *ui.Model) {
+			demoAppUpdate(m, appupdate.Bundle, func(u *ui.AppUpdate) { u.Downloading, u.Percent = true, 42 })
+		}},
+		{"dashboard-app-update-restart", func(m *ui.Model) {
+			demoAppUpdate(m, appupdate.Bundle, func(u *ui.AppUpdate) { u.Ready = true })
+			m.AskRestartToUpdate()
+		}},
+		// The settings' group of the app's updates, as each install has it.
+		{"settings-app-update-whole", func(m *ui.Model) {
+			demoAppUpdate(m, appupdate.Bundle, func(u *ui.AppUpdate) { u.Ready = true })
+			m.Page.Set(ui.PageSettings)
+		}},
+		{"settings-app-update-homebrew-whole", func(m *ui.Model) {
+			demoAppUpdate(m, appupdate.Homebrew, nil)
+			m.Page.Set(ui.PageSettings)
+		}},
+		{"settings-app-update-deb-whole", func(m *ui.Model) {
+			demoAppUpdate(m, appupdate.Deb, nil)
+			m.Page.Set(ui.PageSettings)
+		}},
+		{"settings-app-update-current-whole", func(m *ui.Model) {
+			m.AppUpdate.Set(ui.AppUpdate{Tag: "v0.5.1", Page: appupdate.ReleasesURL, Install: appupdate.Install{Method: appupdate.Bundle}})
+			m.Page.Set(ui.PageSettings)
+		}},
 		{"editor", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.NewSandbox("postgres:17-alpine") }},
 		{"pull-search", func(m *ui.Model) {
 			m.Page.Set(ui.PageImages)
@@ -247,6 +278,25 @@ func renderAll(tmp, out, lang string) error {
 		}
 	}
 	return nil
+}
+
+// demoAppUpdate has GVX Desktop 0.6.0 out, for the app installed by
+// method, as change has the update.
+func demoAppUpdate(m *ui.Model, method appupdate.Method, change func(*ui.AppUpdate)) {
+	const page = appupdate.ReleasesURL + "/tag/v0.6.0"
+	u := ui.AppUpdate{Tag: "v0.6.0", Page: page, Install: appupdate.Install{Method: method, Path: "/Applications/GVX Desktop.app"}}
+	switch method {
+	case appupdate.Homebrew:
+		u.Command = "brew upgrade --cask gvx-desktop"
+	case appupdate.Deb:
+		u.Install.Path = "/usr/bin/gvx-desktop"
+		dl := appupdate.ReleasesURL + "/download/v0.6.0/gvx-desktop_0.6.0_amd64.deb"
+		u.Command = `cd "$(mktemp -d)" && curl -fL -O ` + dl + ` -O ` + dl + `.sha256 && sha256sum -c gvx-desktop_0.6.0_amd64.deb.sha256 && sudo apt install ./gvx-desktop_0.6.0_amd64.deb`
+	}
+	if change != nil {
+		change(&u)
+	}
+	m.AppUpdate.Set(u)
 }
 
 var demoIDs = []string{"a1b2c3d4", "d0c4e7f1", "c8s9k3e2", "f00dfeed", "e9r5b001"}

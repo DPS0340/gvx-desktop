@@ -90,7 +90,7 @@ func settingsPage(m *Model) ggui.Widget {
 	noTray := ggui.Map(m.Settings, func(s storeSettings) bool { return s.NoTray })
 
 	groups := []ggui.Widget{
-		headed(pageHeader(tr("Settings"), ui.Caption(tr("Where rungv lives and how the app treats running sandboxes."))), engineAlert(m)),
+		headed(pageHeader(tr("Settings"), ui.Caption(tr("Where rungv lives and how the app treats running sandboxes."))), engineAlert(m), appUpdateAlert(m)),
 		settingsGroup(lucide.Palette, tr("General"),
 			settingRow(tr("Appearance"), tr("Light, dark, or as the system is."),
 				ui.ToggleGroup[string](theme).Options([]string{"system", "light", "dark"}).Format(themeName).Icon(themeIcon).Outline().Spacing(0).Name(tr("Appearance"))),
@@ -100,6 +100,7 @@ func settingsPage(m *Model) ggui.Widget {
 				tr("Starts the app when you log in, in the tray without its window when the tray icon is shown. Sandboxes set to start with the app start then."),
 				ui.Switch(ggui.Bind(m.Autostart.Get, m.SetAutostart), "")),
 		),
+		appUpdateSettings(m),
 	}
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
 		groups = append(groups, settingsGroup(lucide.PanelTop, tr("Tray"),
@@ -139,7 +140,7 @@ func settingsPage(m *Model) ggui.Widget {
 			).Gap(8)),
 			engineFacts(m),
 		),
-		settingsGroup(lucide.Download, tr("Updates"),
+		settingsGroup(lucide.Download, tr("rungv updates"),
 			widget.Column(
 				settingRow(tr("Channel"),
 					tr("Releases are gvx's published builds. From source clones a git repository and builds rungv on this computer, which needs git and Go."),

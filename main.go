@@ -150,6 +150,11 @@ func run(st store.Store, dir string, hidden bool) error {
 	// Whatever ended the app, no sandbox outlives it: gvx has no daemon to
 	// adopt them.
 	m.Supervisor().StopAll(10 * time.Second)
+	// Last, an update the user restarted for goes in place and the new app
+	// starts; one downloaded and not asked for is removed.
+	if err := m.FinishUpdate(); err != nil {
+		log.Printf("update: %v", err)
+	}
 	return runErr
 }
 
@@ -213,6 +218,7 @@ func installMenus(app *ggui.App, m *ui.Model) {
 			ggui.MenuAction(ui.T("Create Volume…"), "", func() { m.VolumeOpen.Set(true) }),
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("Settings…"), "cmd+,", func() { m.Go(ui.PageSettings) }),
+			ggui.MenuAction(ui.T("Check for Updates…"), "", func() { m.CheckAppUpdate(false) }),
 		),
 		ggui.EditMenu(ggui.EditActions{}),
 		ggui.Menu(ui.T("Sandbox"),
@@ -249,6 +255,14 @@ func installTray(app *ggui.App, m *ui.Model) {
 	}
 	var tray *ggui.Tray
 	show := app.ShowFromTray
+	// The newest app the tray offers, as its menu tells it: not how far
+	// its download is.
+	appUpdate := ggui.Combine(m.AppUpdate, m.Settings, func(u ui.AppUpdate, s store.Settings) string {
+		if !u.Offered(s) || u.Downloading {
+			return ""
+		}
+		return u.Name()
+	})
 	rebuild := func() {
 		if tray == nil {
 			return
@@ -261,6 +275,9 @@ func installTray(app *ggui.App, m *ui.Model) {
 		}
 		if update.Available(engine) && !update.Installing {
 			items = append(items, ggui.MenuAction(ui.T("Update rungv to %s", update.Name()), "", m.InstallRungv))
+		}
+		if name := ggui.Peek(appUpdate); name != "" {
+			items = append(items, ggui.MenuAction(ui.T("Update GVX Desktop to %s", name), "", func() { show(); m.UpdateApp() }))
 		}
 		items = append(items, ggui.MenuSeparator())
 		rows := ggui.Peek(m.Rows)
@@ -333,6 +350,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 	ggui.Watch(m.Menus, func(ui.MenuState) { rebuild() })
 	ggui.Watch(m.Engine, func(ui.Engine) { rebuild() })
 	ggui.Watch(m.Update, func(ui.Update) { rebuild() })
+	ggui.Watch(appUpdate, func(string) { rebuild() })
 	ggui.Watch(m.Lang, func(string) { rebuild() })
 }
 

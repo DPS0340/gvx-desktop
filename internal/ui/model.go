@@ -17,6 +17,7 @@ import (
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/ui"
 
+	"github.com/ironpark/gvx-desktop/internal/appupdate"
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/dockerproxy"
 	"github.com/ironpark/gvx-desktop/internal/imagefs"
@@ -103,7 +104,14 @@ type Model struct {
 	Autostart *ggui.StateValue[bool]   // registered to start at login
 	BuildLog  *ggui.StateValue[string] // the end of what a build from source printed
 	release   rungv.Release            // what Update tells of
-	Now       *ggui.StateValue[time.Time]
+	// AppUpdate is what the app knows of its own newest release; see
+	// model_appupdate.go.
+	AppUpdate  *ggui.StateValue[AppUpdate]
+	appRelease appupdate.Release // what AppUpdate tells of
+	appStaged  *appupdate.Staged // downloaded, for a restart to put in place
+	appRestart *appupdate.Staged // to finish once the app has ended
+	appChecked time.Time         // when the app's releases were last asked for, by the wall clock
+	Now        *ggui.StateValue[time.Time]
 	// Lang is the language the app is worded in, from the settings or the
 	// system: one of LanguageTags.
 	Lang *ggui.DerivedValue[string]
@@ -331,6 +339,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Update:    ggui.State(Update{Source: settings.UpdateChannel == ChannelSource, Repo: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.DisplayRepo(), Branch: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.BranchName()}),
 		Autostart: ggui.State(false), // read by Start
 		BuildLog:  ggui.State(""),
+		AppUpdate: ggui.State(AppUpdate{Install: appupdate.Detect()}),
 		Now:       ggui.State(time.Now()),
 
 		Specs:    ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
@@ -686,6 +695,7 @@ func (m *Model) Start() {
 	if !ggui.Peek(m.Settings).NoUpdateCheck {
 		m.CheckUpdate(true)
 	}
+	m.startAppUpdates()
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()

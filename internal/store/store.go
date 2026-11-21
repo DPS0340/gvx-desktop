@@ -36,6 +36,11 @@ type Settings struct {
 	SourceBranch   string `json:"sourceBranch,omitempty"`   // branch or tag for building rungv from source; empty: main
 	NoUpdateCheck  bool   `json:"noUpdateCheck,omitempty"`  // do not ask GitHub for a newer rungv at launch
 	LoginCommand   string `json:"loginCommand,omitempty"`   // what the start at login was registered to run, to register it again when the app moves
+	// NoAppUpdateCheck keeps the app from asking GitHub for a newer GVX
+	// Desktop by itself, at launch and once a day; SkipAppVersion is a
+	// release of it the user chose to skip, which is not offered again.
+	NoAppUpdateCheck bool   `json:"noAppUpdateCheck,omitempty"`
+	SkipAppVersion   string `json:"skipAppVersion,omitempty"`
 	// DockerSharedFolders are the host folders the Docker Engine recipe
 	// shares at their own paths: nil for the default, the home folder, and
 	// empty for none.

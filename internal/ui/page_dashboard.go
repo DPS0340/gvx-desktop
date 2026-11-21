@@ -21,7 +21,7 @@ func dashboardPage(m *Model) ggui.Widget {
 			ui.Caption(tr("Linux containers in a single unprivileged process — no VM, no daemon, no root.")),
 			ui.Button(tr("Pull image"), func() { m.OpenPull("") }).Outline().Icon(glyph(lucide.Download, 16)),
 			ui.Button(tr("New sandbox"), func() { m.NewSandbox("") }).Icon(glyph(lucide.Plus, 16)),
-		), engineAlert(m)),
+		), engineAlert(m), appUpdateAlert(m)),
 		metrics(m),
 		widget.Responsive(900,
 			widget.Row(widget.Flex(recentSandboxes(m), 3), widget.Flex(engineCard(m), 2)).Gap(16).Stretch(),

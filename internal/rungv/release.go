@@ -3,13 +3,8 @@ package rungv
 import (
 	"archive/tar"
 	"archive/zip"
-	"bufio"
-	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,8 +13,9 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
+
+	"github.com/ironpark/gvx-desktop/internal/ghrelease"
 )
 
 // ReleasesURL is where a person reads about the releases of gvx.
@@ -33,55 +29,18 @@ var latestURL = "https://api.github.com/repos/gfire-sigs/gvx/releases/latest"
 const maxArchive = 512 << 20
 
 // Asset is one file of a release.
-type Asset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
-	Size int64  `json:"size"`
-}
+type Asset = ghrelease.Asset
 
 // Release is a published version of gvx.
-type Release struct {
-	Tag    string  `json:"tag_name"` // v0.17.1…
-	Page   string  `json:"html_url"`
-	Assets []Asset `json:"assets"`
-}
+type Release = ghrelease.Release
 
 // ErrNoBuild reports a release with no rungv for this machine.
 var ErrNoBuild = errors.New("the release has no rungv for this system")
 
-func get(ctx context.Context, url string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "gvx-desktop")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, fmt.Errorf("%s: %s", url, resp.Status)
-	}
-	return resp, nil
-}
+func get(ctx context.Context, url string) (*http.Response, error) { return ghrelease.Get(ctx, url) }
 
 // Latest asks GitHub for the newest release of gvx.
-func Latest(ctx context.Context) (Release, error) {
-	resp, err := get(ctx, latestURL)
-	if err != nil {
-		return Release{}, err
-	}
-	defer resp.Body.Close()
-	var r Release
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&r); err != nil {
-		return Release{}, err
-	}
-	if r.Tag == "" {
-		return Release{}, errors.New("the release has no tag")
-	}
-	return r, nil
-}
+func Latest(ctx context.Context) (Release, error) { return ghrelease.Latest(ctx, latestURL) }
 
 // AssetName is the archive of tag that holds rungv for goos and goarch.
 func AssetName(tag, goos, goarch string) string {
@@ -92,62 +51,15 @@ func AssetName(tag, goos, goarch string) string {
 	return "rungv-" + tag + "-" + goos + "-" + goarch + ext
 }
 
-func (r Release) asset(name string) (Asset, bool) {
-	for _, a := range r.Assets {
-		if a.Name == name {
-			return a, true
-		}
-	}
-	return Asset{}, false
-}
-
-// Build is the archive of r for this machine.
-func (r Release) Build() (Asset, bool) {
-	return r.asset(AssetName(r.Tag, runtime.GOOS, runtime.GOARCH))
+// build is the archive of r for this machine.
+func build(r Release) (Asset, bool) {
+	return r.Find(AssetName(r.Tag, runtime.GOOS, runtime.GOARCH))
 }
 
 // Newer reports whether version a is later than b. Versions are compared
 // number by number, v0.17.2 after v0.9.10; one that is not numbers, such as
 // (devel), is earlier than any that is.
-func Newer(a, b string) bool {
-	x, okx := versionNumbers(a)
-	y, oky := versionNumbers(b)
-	if !okx || !oky {
-		return okx && !oky
-	}
-	for i := 0; i < len(x) || i < len(y); i++ {
-		var p, q uint64
-		if i < len(x) {
-			p = x[i]
-		}
-		if i < len(y) {
-			q = y[i]
-		}
-		if p != q {
-			return p > q
-		}
-	}
-	return false
-}
-
-func versionNumbers(v string) ([]uint64, bool) {
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
-	if i := strings.IndexAny(v, "-+ "); i >= 0 {
-		v = v[:i]
-	}
-	if v == "" {
-		return nil, false
-	}
-	var out []uint64
-	for part := range strings.SplitSeq(v, ".") {
-		n, err := strconv.ParseUint(part, 10, 64)
-		if err != nil {
-			return nil, false
-		}
-		out = append(out, n)
-	}
-	return out, true
-}
+func Newer(a, b string) bool { return ghrelease.Newer(a, b) }
 
 // InstallDir is where Install puts rungv when it has no better place:
 // ~/.gvx/bin, one of the places Locate looks.
@@ -166,7 +78,7 @@ func InstallDir() (string, error) {
 // first.
 func InstallTarget(current string) (target string, replaces bool, err error) {
 	if current != "" {
-		if st, err := os.Lstat(current); err == nil && st.Mode().IsRegular() && writable(filepath.Dir(current)) {
+		if st, err := os.Lstat(current); err == nil && st.Mode().IsRegular() && ghrelease.Writable(filepath.Dir(current)) {
 			return current, true, nil
 		}
 	}
@@ -177,31 +89,21 @@ func InstallTarget(current string) (target string, replaces bool, err error) {
 	return filepath.Join(dir, BinaryName()), false, nil
 }
 
-func writable(dir string) bool {
-	f, err := os.CreateTemp(dir, ".gvx-desktop-*")
-	if err != nil {
-		return false
-	}
-	f.Close()
-	os.Remove(f.Name())
-	return true
-}
-
 // Install downloads the rungv of r for this machine, checks it against the
 // release's SHA256SUMS, and puts it at target, replacing what is there. A
 // rungv that is running keeps running the file it started from. progress,
 // when not nil, hears how much of the archive has arrived. On macOS the
 // caller still signs the binary, with Sign.
 func Install(ctx context.Context, r Release, target string, progress func(done, total int64)) error {
-	a, ok := r.Build()
+	a, ok := build(r)
 	if !ok {
 		return fmt.Errorf("%w (%s/%s)", ErrNoBuild, runtime.GOOS, runtime.GOARCH)
 	}
-	sums, ok := r.asset("SHA256SUMS")
+	sums, ok := r.Find("SHA256SUMS")
 	if !ok {
 		return errors.New("the release has no SHA256SUMS to check the download against")
 	}
-	want, err := checksum(ctx, sums.URL, a.Name)
+	want, err := ghrelease.Checksum(ctx, sums.URL, a.Name)
 	if err != nil {
 		return err
 	}
@@ -214,26 +116,8 @@ func Install(ctx context.Context, r Release, target string, progress func(done, 
 	}
 	defer os.Remove(archive.Name())
 	defer archive.Close()
-
-	resp, err := get(ctx, a.URL)
-	if err != nil {
+	if err := ghrelease.Download(ctx, a, want, archive, maxArchive, progress); err != nil {
 		return err
-	}
-	defer resp.Body.Close()
-	total := resp.ContentLength
-	if total <= 0 {
-		total = a.Size
-	}
-	sum := sha256.New()
-	body := io.TeeReader(io.LimitReader(resp.Body, maxArchive), sum)
-	if progress != nil {
-		body = &counter{r: body, total: total, report: progress}
-	}
-	if _, err := io.Copy(archive, body); err != nil {
-		return err
-	}
-	if got := hex.EncodeToString(sum.Sum(nil)); got != want {
-		return fmt.Errorf("%s does not match its checksum: got %s, the release says %s", a.Name, got, want)
 	}
 	if _, err := archive.Seek(0, io.SeekStart); err != nil {
 		return err
@@ -273,41 +157,6 @@ func replaceFile(fresh, target string) error {
 		}
 	}
 	return os.Rename(fresh, target)
-}
-
-type counter struct {
-	r      io.Reader
-	done   int64
-	total  int64
-	report func(done, total int64)
-}
-
-func (c *counter) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.done += int64(n)
-	c.report(c.done, c.total)
-	return n, err
-}
-
-// checksum reads the SHA-256 that the sums file at url gives name.
-func checksum(ctx context.Context, url, name string) (string, error) {
-	resp, err := get(ctx, url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", err
-	}
-	sc := bufio.NewScanner(bytes.NewReader(b))
-	for sc.Scan() {
-		f := strings.Fields(sc.Text())
-		if len(f) == 2 && strings.TrimPrefix(f[1], "*") == name && len(f[0]) == sha256.Size*2 {
-			return strings.ToLower(f[0]), nil
-		}
-	}
-	return "", fmt.Errorf("SHA256SUMS does not list %s", name)
 }
 
 // isBinary reports whether an archive's entry is rungv itself, which lies

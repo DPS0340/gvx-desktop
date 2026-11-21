@@ -83,7 +83,7 @@ func TestSharedFolders(t *testing.T) {
 }
 
 func TestAddSharedFolder(t *testing.T) {
-	root := t.TempDir()
+	root := shareableDir(t)
 	src := filepath.Join(root, "src")
 	app := filepath.Join(src, "app")
 	other := filepath.Join(root, "other")
@@ -149,4 +149,21 @@ func TestUnshared(t *testing.T) {
 			t.Errorf("%s: %v", src, got)
 		}
 	}
+}
+
+// shareableDir is a temporary folder a test can share: t.TempDir is under
+// /tmp on Linux, where the sandbox's own system is, so it is made in the
+// package's folder instead.
+func shareableDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(".", "share-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
 }

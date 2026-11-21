@@ -116,6 +116,9 @@ func TestLoadBalancerReach(t *testing.T) {
 // folder unless they say otherwise, and its sandbox's from then on; a
 // change rewrites the sandbox's shared mounts and nothing else of it.
 func TestSharedFoldersMoveTheSettingAndTheSandbox(t *testing.T) {
+	// Home and the folder shared besides it are side by side, neither in
+	// the other, wherever the test runs.
+	t.Setenv("HOME", shareableDir(t))
 	m, p, st := recipeModel(t)
 	home := rungv.ExpandHome("~")
 	if got := m.SharedFolders(); !slices.Equal(got, []string{home}) {
@@ -129,7 +132,7 @@ func TestSharedFoldersMoveTheSettingAndTheSandbox(t *testing.T) {
 		t.Error("none was saved as the default")
 	}
 
-	dir := t.TempDir()
+	dir := shareableDir(t)
 	m.ShareFolder(dir)
 	spec := recipes.WithSharedFolders(recipes.DockerEngine(), sharedSetting(ggui.Peek(m.Settings)))
 	if got := recipes.SharedFoldersOf(spec); !slices.Equal(got, []string{dir}) {
@@ -170,14 +173,14 @@ func TestShareProblem(t *testing.T) {
 	}{
 		{"/usr/local", "The sandbox's own system is at that path, or inside it. Share a folder of your own."},
 		{"relative", "Choose a folder by its full path, on a drive of this computer."},
-		{filepath.Join(t.TempDir(), "gone"), "No folder is at that path."},
+		{filepath.Join(shareableDir(t), "gone"), "No folder is at that path."},
 	} {
 		_, err := recipes.AddSharedFolder(nil, c.dir)
 		if got := shareProblem(err); got != c.want {
 			t.Errorf("%s: %q", c.dir, got)
 		}
 	}
-	dir := t.TempDir()
+	dir := shareableDir(t)
 	_, err := recipes.AddSharedFolder([]string{dir}, dir)
 	if got := shareProblem(err); got != "It is shared already, through "+tildePath(dir)+"." {
 		t.Errorf("shared: %q", got)
@@ -279,4 +282,21 @@ func TestPushOffersTheRegistry(t *testing.T) {
 	if ggui.Peek(m.ConfirmOpen) {
 		t.Error("a dangling image was offered a push")
 	}
+}
+
+// shareableDir is a temporary folder a test can share: t.TempDir is under
+// /tmp on Linux, where the sandbox's own system is, so it is made in the
+// package's folder instead.
+func shareableDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(".", "share-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
 }

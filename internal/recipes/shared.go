@@ -32,6 +32,11 @@ var ErrNoGuestPath = errors.New("the path has no guest path")
 // same path, or on Windows the drive as a folder, /c/Users/me.
 func GuestPath(host string) (string, error) { return guestPath(runtime.GOOS, host) }
 
+// WindowsGuestPath is the guest path of a Windows path, C:\Users\me or
+// C:/Users/me, whatever system this is: what docker on Windows names a
+// folder by is at /c/Users/me in the engine.
+func WindowsGuestPath(host string) (string, error) { return guestPath("windows", host) }
+
 func guestPath(goos, host string) (string, error) {
 	if goos != "windows" {
 		if !strings.HasPrefix(host, "/") {

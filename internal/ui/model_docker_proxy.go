@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -30,6 +32,7 @@ func (m *Model) initDockerProxy() {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", recipes.DockerBackendSocket())
 	})
+	m.dockerProxy.Rewrite = m.rewriteContainerCreate
 	m.dockerProxy.Check = m.checkContainerCreate
 	m.dockerProxy.Changed = func() {
 		m.post(func() {
@@ -143,4 +146,75 @@ func checkCreateBinds(body []byte, engine sandbox.Spec) error {
 
 func unsharedBindError(path string) error {
 	return fmt.Errorf("%s is not in a folder shared with the Docker Engine. Share it in GVX Desktop → Settings → Docker, restart the engine, and run this again.", path)
+}
+
+// rewriteContainerCreate changes a container's creation on its way to the
+// engine: on Windows the folders docker names the Windows way are named as
+// the engine has them.
+func (m *Model) rewriteContainerCreate(_ *http.Request, body []byte) []byte {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return windowsBinds(body)
+}
+
+// windowsSource splits a bind at the colon after its source, C:\\src:/dst
+// into C:\\src and :/dst, the drive's colon aside; whether the source is a
+// Windows folder is recipes.WindowsGuestPath's to say.
+func windowsSource(bind string) (source, rest string) {
+	if len(bind) > 2 {
+		if i := strings.IndexByte(bind[2:], ':'); i >= 0 {
+			return bind[:2+i], bind[2+i:]
+		}
+	}
+	return bind, ""
+}
+
+// windowsBinds returns a POST /containers/create body with the bind mount
+// sources written the Windows way, C:\Users\me\src, as the engine has
+// them, /c/Users/me/src; nil when there is none, or the body is not what
+// it should be, which is dockerd's to say.
+func windowsBinds(body []byte) []byte {
+	var req map[string]any
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber() // a memory limit must come out as it went in
+	if err := dec.Decode(&req); err != nil {
+		return nil
+	}
+	host, _ := req["HostConfig"].(map[string]any)
+	if host == nil {
+		return nil
+	}
+	changed := false
+	if binds, _ := host["Binds"].([]any); binds != nil {
+		for i, b := range binds {
+			s, _ := b.(string)
+			src, rest := windowsSource(s)
+			if g, err := recipes.WindowsGuestPath(src); err == nil {
+				binds[i], changed = g+rest, true
+			}
+		}
+	}
+	if mounts, _ := host["Mounts"].([]any); mounts != nil {
+		for _, mt := range mounts {
+			mount, _ := mt.(map[string]any)
+			if typ, _ := mount["Type"].(string); !strings.EqualFold(typ, "bind") {
+				continue
+			}
+			src, _ := mount["Source"].(string)
+			if g, err := recipes.WindowsGuestPath(src); err == nil {
+				mount["Source"], changed = g, true
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(req); err != nil {
+		return nil
+	}
+	return bytes.TrimRight(b.Bytes(), "\n")
 }

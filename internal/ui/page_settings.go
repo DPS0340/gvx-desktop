@@ -436,7 +436,7 @@ func sharedFoldersField(m *Model) ggui.Widget {
 	help := []ggui.Widget{list, ui.Caption(tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. The engine sees a change when it is restarted."))}
 	if runtime.GOOS == "windows" {
 		help = append(help, widget.Row(glyph(lucide.Info, 14).Color(colorBlue),
-			widget.Expanded(ui.Caption(tr("A folder such as C:\\Users\\me is at /c/Users/me in the engine. Set COMPOSE_CONVERT_WINDOWS_PATHS=1 so that compose writes its paths that way, and use them in docker run -v."))),
+			widget.Expanded(ui.Caption(tr("A folder such as C:\\Users\\me is at /c/Users/me in the engine. Paths written the Windows way in docker run -v and in compose files are converted on the way there."))),
 		).Gap(8).Align(widget.AlignStart))
 	}
 	return widget.Column(

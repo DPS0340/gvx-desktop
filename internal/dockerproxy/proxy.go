@@ -53,6 +53,11 @@ type Proxy struct {
 	// and prevents the request from reaching the backend.
 	Check func(r *http.Request, body []byte) error
 
+	// Rewrite, when set, is called before Check with the body of the same
+	// requests, and may return another body to send in its place; nil
+	// keeps the one received.
+	Rewrite func(r *http.Request, body []byte) []byte
+
 	// Changed is invoked asynchronously after successful mutating requests,
 	// with bursts coalesced over ChangedDebounce (default 300ms).
 	Changed func()
@@ -286,8 +291,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Clean the path for route matching only; forward r.URL untouched.
 	stripped := stripVersion(cleanMatchPath(r.URL.Path))
 
-	if p.Check != nil && r.Method == http.MethodPost && stripped == "/containers/create" {
-		if !p.checkCreate(w, r) {
+	if (p.Check != nil || p.Rewrite != nil) && r.Method == http.MethodPost && stripped == "/containers/create" {
+		var ok bool
+		if r, ok = p.checkCreate(w, r); !ok {
 			return
 		}
 	}
@@ -304,19 +310,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (p *Proxy) checkCreate(w http.ResponseWriter, r *http.Request) bool {
+// checkCreate reads the body of a container's creation, lets Rewrite change
+// it and Check refuse it, and returns the request to send on with the body
+// to forward.
+func (p *Proxy) checkCreate(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
 	if r.Body == nil {
-		if err := p.Check(r, nil); err != nil {
-			writeDockerError(w, r, http.StatusBadRequest, err.Error())
-			return false
-		}
-		return true
+		r.Body = http.NoBody
 	}
 	origBody := r.Body
 	buf, err := io.ReadAll(io.LimitReader(origBody, maxCheckBody+1))
 	if err != nil {
 		writeDockerError(w, r, http.StatusBadRequest, err.Error())
-		return false
+		return r, false
 	}
 	// Reading r.Body already triggered http.Server to answer any
 	// Expect: 100-continue; strip it so the backend does not emit a second 100.
@@ -327,18 +332,25 @@ func (p *Proxy) checkCreate(w http.ResponseWriter, r *http.Request) bool {
 			Reader: io.MultiReader(bytes.NewReader(buf), origBody),
 			Closer: origBody,
 		}
-		return true
+		return r, true
 	}
 	_ = origBody.Close()
-	if err := p.Check(r, buf); err != nil {
-		writeDockerError(w, r, http.StatusBadRequest, err.Error())
-		return false
+	if p.Rewrite != nil {
+		if out := p.Rewrite(r, buf); out != nil {
+			buf = out
+		}
+	}
+	if p.Check != nil {
+		if err := p.Check(r, buf); err != nil {
+			writeDockerError(w, r, http.StatusBadRequest, err.Error())
+			return r, false
+		}
 	}
 	r.Body = io.NopCloser(bytes.NewReader(buf))
 	r.ContentLength = int64(len(buf))
 	r.TransferEncoding = nil
 	r.Trailer = nil
-	return true
+	return r, true
 }
 
 func (p *Proxy) serveHijack(w http.ResponseWriter, r *http.Request, stripped string) {

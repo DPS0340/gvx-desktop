@@ -234,3 +234,37 @@ func TestPrepareRunsBeforeRungv(t *testing.T) {
 		t.Errorf("the prepared file was not there when rungv ran: %q", got)
 	}
 }
+
+// rungv's report of a port it could not publish, on stderr, becomes an event
+// naming the port.
+func TestSupervisorReportsABusyPort(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake rungv is a shell script")
+	}
+	path := filepath.Join(t.TempDir(), "rungv")
+	script := "#!/bin/sh\ncase \"$*\" in *-help*) exit 2 ;; esac\n" +
+		"echo 'gvx: warning: could not auto-publish 127.0.0.1:18082/tcp: listen tcp4 127.0.0.1:18082: bind: address already in use' >&2\n" +
+		"exec sleep 30\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, events := newTestSupervisor(t, &rungv.Client{Path: path})
+	spec := Spec{ID: NewID(), Name: "engine", Image: "docker:dind"}
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case e := <-events:
+			if e.Kind == EventPortBusy {
+				if e.ID != spec.ID || e.Port != "127.0.0.1:18082" {
+					t.Fatalf("event %+v", e)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("no EventPortBusy")
+		}
+	}
+}

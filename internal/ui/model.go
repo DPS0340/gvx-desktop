@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -766,6 +768,8 @@ func (m *Model) SignRungv() {
 
 func (m *Model) onEvent(e sandbox.Event) {
 	switch e.Kind {
+	case sandbox.EventPortBusy:
+		m.post(func() { m.announce(e) })
 	case sandbox.EventReady, sandbox.EventExited:
 		m.post(func() {
 			m.refreshStates()
@@ -791,6 +795,15 @@ func (m *Model) announce(e sandbox.Event) {
 	}
 	st := m.sup.State(e.ID)
 	switch e.Kind {
+	case sandbox.EventPortBusy:
+		_, port, _ := net.SplitHostPort(e.Port)
+		n, err := strconv.Atoi(port)
+		if err != nil {
+			return
+		}
+		m.Toasts.Push(ui.Toast(tr("Port %d is already in use on this computer", n),
+			tr("A container publishes it, and will not be reachable at 127.0.0.1:%d until what uses it stops.", n)).Warning().Duration(8*time.Second).
+			Action(tr("Logs"), func() { m.ShowSandbox(e.ID, 0) }))
 	case sandbox.EventReady:
 		m.toastOK(tr("%s is ready", spec.Name), m.readyText(spec))
 		if spec.Recipe == recipes.Kubernetes {

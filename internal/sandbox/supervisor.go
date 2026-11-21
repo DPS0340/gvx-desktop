@@ -110,15 +110,17 @@ type Event struct {
 	ID    string
 	Kind  EventKind
 	State State
+	Port  string // the host address rungv could not publish, for EventPortBusy
 }
 
 // EventKind classifies an Event.
 type EventKind int
 
 const (
-	EventChanged EventKind = iota // state or logs changed
-	EventReady                    // the guest became ready
-	EventExited                   // the process ended
+	EventChanged  EventKind = iota // state or logs changed
+	EventReady                     // the guest became ready
+	EventExited                    // the process ended
+	EventPortBusy                  // rungv could not publish a port: Port names it
 )
 
 // Supervisor runs sandboxes as rungv child processes. It is the daemon gvx
@@ -150,6 +152,11 @@ type proc struct {
 }
 
 var publishRe = regexp.MustCompile(`^rungv: publishing (\S+) -> (\d+)/(\w+)`)
+
+// busyRe is what rungv's -auto-publish says of a port the guest listens on
+// that this computer has taken already: it tries it once, and again only
+// after the guest lets it go.
+var busyRe = regexp.MustCompile(`^gvx: warning: could not auto-publish (\S+)/\w+: `)
 
 func (s *Supervisor) notify(e Event) {
 	if s.Notify != nil {
@@ -406,10 +413,12 @@ func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sy
 	for sc.Scan() {
 		line := strings.TrimRight(sc.Text(), "\r")
 		logs.Add(stream, line)
-		kind := EventChanged
+		ev := Event{ID: id, Kind: EventChanged}
 		s.mu.Lock()
 		if stream == Stderr {
-			if m := publishRe.FindStringSubmatch(line); m != nil {
+			if m := busyRe.FindStringSubmatch(line); m != nil {
+				ev.Kind, ev.Port = EventPortBusy, m[1]
+			} else if m := publishRe.FindStringSubmatch(line); m != nil {
 				guest, _ := strconv.Atoi(m[2])
 				p.state.Ports = append(p.state.Ports, PublishedPort{Host: m[1], Guest: guest, Proto: m[3]})
 			} else if v, ok := strings.CutPrefix(line, "rungv: platform="); ok {
@@ -419,10 +428,10 @@ func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sy
 		if p.state.Status == Starting && p.spec.ReadyPattern != "" && strings.Contains(line, p.spec.ReadyPattern) {
 			p.state.Status = Running
 			p.state.ReadyAt = time.Now()
-			kind = EventReady
+			ev.Kind = EventReady
 		}
 		s.mu.Unlock()
-		s.notify(Event{ID: id, Kind: kind})
+		s.notify(ev)
 	}
 }
 

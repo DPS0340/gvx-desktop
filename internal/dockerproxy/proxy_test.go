@@ -1240,3 +1240,33 @@ func TestRealProxyServe(t *testing.T) {
 	defer signal.Stop(sigs)
 	<-sigs
 }
+
+func TestRewriteChangesTheBodyBeforeCheck(t *testing.T) {
+	var seen string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.47/containers/create", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		seen = string(b)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"Id":"abc","Warnings":[]}`)
+	})
+	var checked string
+	_, _, client := startProxy(t, startFakeBackend(t, mux), func(p *Proxy) {
+		p.Rewrite = func(_ *http.Request, body []byte) []byte {
+			return []byte(strings.ReplaceAll(string(body), "old", "new"))
+		}
+		p.Check = func(_ *http.Request, body []byte) error { checked = string(body); return nil }
+	})
+	resp, err := client.Post("http://docker/v1.47/containers/create", "application/json", strings.NewReader(`{"Image":"old"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || string(got) != `{"Id":"abc","Warnings":[]}` {
+		t.Errorf("%d %s", resp.StatusCode, got)
+	}
+	if seen != `{"Image":"new"}` || checked != seen {
+		t.Errorf("backend saw %q, Check %q", seen, checked)
+	}
+}

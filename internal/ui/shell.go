@@ -585,7 +585,7 @@ func quitText(n int) string {
 func quitDialog(m *Model) ggui.Widget {
 	return ui.Dialog(m.QuitOpen, widget.Column(
 		ui.Heading(tr("Stop running sandboxes?")).Size(17),
-		ui.CaptionOf(ggui.Map(m.Running, quitText)),
+		ui.CaptionOf(ggui.Map(m.TotalRunning, quitText)),
 		widget.Row(
 			ui.Button(tr("Cancel"), func() { m.QuitOpen.Set(false) }).Outline(),
 			ui.Button(tr("Stop and quit"), func() {

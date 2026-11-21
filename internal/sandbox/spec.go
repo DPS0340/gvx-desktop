@@ -88,6 +88,16 @@ type Spec struct {
 
 	ExtraArgs string    `json:"extraArgs,omitempty"` // more rungv run flags, shell-quoted
 	CreatedAt time.Time `json:"createdAt"`
+
+	// Interactive gives the run a standard input that Supervisor.Stdin
+	// writes to (rungv -i), in place of the empty one that stays open.
+	Interactive bool `json:"interactive,omitempty"`
+	// TTY runs the guest on a pseudo-terminal (rungv -t) that the
+	// supervisor holds the other side of.
+	TTY bool `json:"tty,omitempty"`
+	// ContainerID marks a sandbox the app's Docker engine runs for a
+	// container: it is not one of the user's sandboxes.
+	ContainerID string `json:"containerId,omitempty"`
 }
 
 // NewID returns a short random identifier.
@@ -344,6 +354,12 @@ func (s Spec) flags(p Paths, restore bool) []string {
 		}
 		if s.Pull != "" && s.Pull != "missing" {
 			add("--pull", s.Pull)
+		}
+		if s.Interactive {
+			add("-i")
+		}
+		if s.TTY {
+			add("-t")
 		}
 	}
 	if s.Workdir != "" {

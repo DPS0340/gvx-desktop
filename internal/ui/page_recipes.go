@@ -13,7 +13,6 @@ import (
 	"github.com/ironpark/ggui/ui/icons"
 	"github.com/ironpark/ggui/widget"
 
-	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
@@ -71,19 +70,32 @@ func recipeHero(m *Model, key string, row ggui.Readable[Row], title, what string
 func dockerPage(m *Model) ggui.Widget {
 	row := recipeRow(m, recipes.Docker)
 	// The model follows the engine's containers; see followDocker.
-	running := ggui.Map(row, func(r Row) bool { return r.State.Status == sandbox.Running })
+	sandboxMode := ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine })
 
-	version := ui.CaptionOf(ggui.Combine(running, m.DockerVersion, func(run bool, v dockerapi.Version) string {
-		if !run || v.Version == "" {
-			return tr("Containers run inside the sandbox; the docker CLI on this machine talks to dockerd over a Unix socket.")
+	version := ui.CaptionOf(ggui.Derived(func() string {
+		open, se, v := m.ContainersOpen.Get(), sandboxMode.Get(), m.DockerVersion.Get()
+		if open && v.Version != "" {
+			return fmt.Sprintf("Docker Engine %s (API %s) · %s/%s · kernel %s", v.Version, v.APIVersion, v.OS, v.Arch, v.KernelVersion)
 		}
-		return fmt.Sprintf("Docker Engine %s (API %s) · %s/%s · kernel %s", v.Version, v.APIVersion, v.OS, v.Arch, v.KernelVersion)
+		if se {
+			return tr("Containers run directly as gvx sandboxes; the docker CLI talks to GVX Desktop.")
+		}
+		return tr("Containers run inside the sandbox; the docker CLI on this machine talks to dockerd over a Unix socket.")
 	}))
+
+	sandboxBanner := ggui.If(sandboxMode, func() ggui.Widget {
+		return noticeBanner(lucide.FlaskConical, 0x3b82f6, false,
+			tr("Experimental sandbox engine is on"),
+			tr("Containers run directly as gvx sandboxes. The Docker Engine sandbox is not used while this mode is on."),
+			ui.Button(tr("Open Settings"), func() { m.Go(PageSettings) }).Outline(),
+		)
+	})
 
 	return page(
 		pageHeader("Docker Engine", version,
 			tip(iconButton(lucide.RefreshCw, tr("Refresh containers"), func() { m.LoadDocker(); m.LoadDockerImages(); m.CheckLink(m.DockerLink) }), tr("Refresh")),
 		),
+		sandboxBanner,
 		recipeHero(m, recipes.Docker, row, "docker:dind",
 			tr("An unmodified dockerd in one sandbox. Images and containers persist in the gvx-docker volume; the API is published on %s.", m.DockerHost()),
 			lucide.Container),
@@ -102,16 +114,24 @@ func dockerPage(m *Model) ggui.Widget {
 // dockerImagesSummary counts the engine's images and leads to the Docker
 // Engine tab of the Images page.
 func dockerImagesSummary(m *Model) ggui.Widget {
-	line := ggui.Combine(m.ContainersAccess, m.DockerImages, func(a ContainersAccess, l Listing[dockerapi.Image]) [2]string {
+	line := ggui.Derived(func() [2]string {
+		a, l, se := m.ContainersAccess.Get(), m.DockerImages.Get(), m.Settings.Get().SandboxEngine
 		switch {
 		case a != ContainersOpen:
 			return [2]string{tr("Images inside the Docker Engine"), a.Reason()}
 		case l.Err != "":
 			return [2]string{tr("Could not list Docker images"), l.Err}
 		case !l.Loaded:
+			if se {
+				return [2]string{tr("Loading images…"), ""}
+			}
 			return [2]string{tr("Asking dockerd…"), ""}
 		}
-		return [2]string{tr("%d images · %s", len(l.Items), formatBytes(dockerImagesTotalSize(l.Items))), tr("Built or pulled inside the Docker Engine sandbox.")}
+		sub := tr("Built or pulled inside the Docker Engine sandbox.")
+		if se {
+			sub = tr("Shared with gvx's image cache.")
+		}
+		return [2]string{tr("%d images · %s", len(l.Items), formatBytes(dockerImagesTotalSize(l.Items))), sub}
 	})
 	text := ggui.View(line, func(t [2]string) ggui.Widget {
 		col := []ggui.Widget{widget.Text(t[0]).Size(13).Weight(ggui.WeightMedium)}
@@ -131,13 +151,20 @@ func dockerImagesSummary(m *Model) ggui.Widget {
 // containersSummary counts the engine's containers and leads to the
 // Containers page, which lists them.
 func containersSummary(m *Model) ggui.Widget {
-	line := ggui.Combine(m.ContainersAccess, m.DockerContainers, func(a ContainersAccess, l Listing[dockerapi.Container]) [2]string {
+	line := ggui.Derived(func() [2]string {
+		a, l, se := m.ContainersAccess.Get(), m.DockerContainers.Get(), m.Settings.Get().SandboxEngine
 		switch {
 		case a != ContainersOpen:
 			return [2]string{a.Reason(), ""}
 		case l.Err != "":
+			if se {
+				return [2]string{tr("Could not reach the sandbox engine"), l.Err}
+			}
 			return [2]string{tr("Could not reach dockerd"), l.Err}
 		case !l.Loaded:
+			if se {
+				return [2]string{tr("Loading containers…"), ""}
+			}
 			return [2]string{tr("Asking dockerd…"), ""}
 		}
 		var running []string

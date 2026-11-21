@@ -1,0 +1,1711 @@
+package engine
+
+// Owner: workstream B (containers). Workstream B may add files named
+// container_*.go.
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"maps"
+	"net/http"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ironpark/gvx-desktop/internal/sandbox"
+)
+
+const (
+	defaultRestartBase  = 100 * time.Millisecond
+	defaultRestartMax   = time.Minute
+	defaultRestartReset = 10 * time.Second
+)
+
+// containerState is what the engine keeps of its containers.
+type containerState struct {
+	// portMu serializes port probing/allocation and reservation across
+	// concurrent startContainer calls. Lock order: portMu before mu.
+	portMu sync.Mutex
+
+	mu      sync.Mutex
+	byID    map[string]*Container
+	closing bool
+
+	// Restart backoff parameters; zero values use the defaults above.
+	// Tests may set shorter values on a testEngine.
+	restartBase  time.Duration
+	restartMax   time.Duration
+	restartReset time.Duration
+}
+
+func (s *containerState) ensureInit() {
+	if s.byID == nil {
+		s.byID = map[string]*Container{}
+	}
+}
+
+func (s *containerState) backoffBase() time.Duration {
+	if s.restartBase > 0 {
+		return s.restartBase
+	}
+	return defaultRestartBase
+}
+
+func (s *containerState) backoffMax() time.Duration {
+	if s.restartMax > 0 {
+		return s.restartMax
+	}
+	return defaultRestartMax
+}
+
+func (s *containerState) backoffReset() time.Duration {
+	if s.restartReset > 0 {
+		return s.restartReset
+	}
+	return defaultRestartReset
+}
+
+// ---- seams: called by the other workstreams; the signatures are frozen ----
+
+// lookup finds a container by full ID, name (with or without the leading
+// slash) or unique ID prefix, and returns a copy. Not found is a 404 "No
+// such container: ref".
+func (e *Engine) lookup(ref string) (Container, error) {
+	e.ctr.mu.Lock()
+	defer e.ctr.mu.Unlock()
+	c, err := e.lookupLocked(ref)
+	if err != nil {
+		return Container{}, err
+	}
+	return c.clone(), nil
+}
+
+func (e *Engine) lookupLocked(ref string) (*Container, error) {
+	if ref == "" || len(e.ctr.byID) == 0 {
+		return nil, errNotFound("No such container: %s", ref)
+	}
+	if c, ok := e.ctr.byID[ref]; ok {
+		return c, nil
+	}
+	name := strings.TrimPrefix(ref, "/")
+	for _, c := range e.ctr.byID {
+		if c.Name == name {
+			return c, nil
+		}
+	}
+	var match *Container
+	matches := 0
+	for id, c := range e.ctr.byID {
+		if strings.HasPrefix(id, ref) {
+			match = c
+			matches++
+		}
+	}
+	if matches == 1 {
+		return match, nil
+	}
+	if matches > 1 {
+		return nil, errNotFound("Multiple IDs found with provided prefix: %s", ref)
+	}
+	return nil, errNotFound("No such container: %s", ref)
+}
+
+// allContainers returns a copy of every container, oldest first.
+func (e *Engine) allContainers() []Container {
+	e.ctr.mu.Lock()
+	defer e.ctr.mu.Unlock()
+	out := make([]Container, 0, len(e.ctr.byID))
+	for _, c := range e.ctr.byID {
+		out = append(out, c.clone())
+	}
+	slices.SortFunc(out, func(a, b Container) int {
+		if d := a.Created.Compare(b.Created); d != 0 {
+			return d
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return out
+}
+
+// saveContainersLocked writes containers.json atomically. Caller holds e.ctr.mu.
+func (e *Engine) saveContainersLocked() error {
+	if e.cfg.Dir == "" {
+		return nil
+	}
+	list := make([]Container, 0, len(e.ctr.byID))
+	for _, c := range e.ctr.byID {
+		list = append(list, c.clone())
+	}
+	slices.SortFunc(list, func(a, b Container) int {
+		if d := a.Created.Compare(b.Created); d != 0 {
+			return d
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return saveFile(e.path("containers.json"), containerStoreFile{
+		Version:    storeVersion,
+		Containers: list,
+	})
+}
+
+// containerEvent takes the runner's events for the containers' sandboxes:
+// a run that ended updates the state, emits die, and applies AutoRemove and
+// the restart policy. It ignores IDs that are not containers'.
+func (e *Engine) containerEvent(ev sandbox.Event) {
+	switch ev.Kind {
+	case sandbox.EventChanged, sandbox.EventReady:
+		changed := false
+		e.ctr.mu.Lock()
+		if c := e.ctr.byID[ev.ID]; c != nil && c.State.Status == StatusRunning {
+			if ev.State.PID != 0 && c.State.Pid != ev.State.PID {
+				c.State.Pid = ev.State.PID
+				changed = true
+			}
+			if !ev.State.StartedAt.IsZero() && c.State.StartedAt.IsZero() {
+				c.State.StartedAt = ev.State.StartedAt.UTC()
+				changed = true
+			}
+		}
+		e.ctr.mu.Unlock()
+		if changed {
+			e.notify()
+		}
+		return
+
+	case sandbox.EventExited:
+		var (
+			found         bool
+			needStartEmit bool
+			startAttrs    map[string]string
+			dieAttrs      map[string]string
+			autoRemove    bool
+			anonVols      []string
+			baseAttrs     map[string]string
+		)
+		e.ctr.mu.Lock()
+		c := e.ctr.byID[ev.ID]
+		if c != nil {
+			found = true
+			exitCode := ev.State.ExitCode
+			if exitCode == -1 && ev.State.Signal != 0 {
+				exitCode = 128 + ev.State.Signal
+			}
+			finishedAt := ev.State.ExitedAt.UTC()
+			if finishedAt.IsZero() {
+				finishedAt = time.Now().UTC()
+			}
+			var runDur time.Duration
+			if !c.State.StartedAt.IsZero() {
+				runDur = finishedAt.Sub(c.State.StartedAt)
+			}
+
+			c.State.ExitCode = exitCode
+			c.State.Pid = 0
+			c.State.FinishedAt = finishedAt
+			c.State.Exits++
+
+			if c.startEmittedGen < c.runGen {
+				c.startEmittedGen = c.runGen
+				needStartEmit = true
+				startAttrs = containerAttrs(c)
+			}
+			baseAttrs = containerAttrs(c)
+			dieAttrs = containerAttrs(c)
+			dieAttrs["exitCode"] = strconv.Itoa(exitCode)
+
+			wasRemoving := c.State.Status == StatusRemoving
+			closing := e.ctr.closing
+			stoppedByUser := c.State.StoppedByUser
+
+			switch {
+			case wasRemoving:
+				// Removal handler owns the remaining cleanup.
+			case c.HostConfig.AutoRemove && !closing:
+				c.State.Status = StatusRemoving
+				autoRemove = true
+				anonVols = slices.Clone(c.AnonymousVolumes)
+			case stoppedByUser || closing:
+				c.State.Status = StatusExited
+			default:
+				if !e.scheduleRestartLocked(c, runDur, false) {
+					c.State.Status = StatusExited
+				}
+			}
+
+			if err := e.saveContainersLocked(); err != nil {
+				e.logf("engine: save containers.json: %v", err)
+			}
+		}
+		e.ctr.mu.Unlock()
+
+		if !found {
+			return
+		}
+		if needStartEmit {
+			e.emit(Event{Type: "container", Action: "start", ID: ev.ID, Attributes: startAttrs})
+		}
+		e.emit(Event{Type: "container", Action: "die", ID: ev.ID, Attributes: dieAttrs})
+		e.notify()
+		if autoRemove {
+			go e.removeContainerCleanup(context.Background(), ev.ID, false, true, anonVols, baseAttrs)
+		}
+	}
+}
+
+func shouldRestart(p RestartPolicy, exitCode, restartCount int) bool {
+	switch p.Name {
+	case "always", "unless-stopped":
+		return true
+	case "on-failure":
+		if exitCode == 0 {
+			return false
+		}
+		return p.MaximumRetryCount == 0 || restartCount < p.MaximumRetryCount
+	default:
+		return false
+	}
+}
+
+// scheduleRestartLocked arms the next backoff timer if c's restart policy
+// applies. Caller holds e.ctr.mu.
+func (e *Engine) scheduleRestartLocked(c *Container, runDur time.Duration, forceBackoff bool) bool {
+	if !shouldRestart(c.HostConfig.RestartPolicy, c.State.ExitCode, c.RestartCount) {
+		return false
+	}
+	if !forceBackoff && runDur >= e.ctr.backoffReset() {
+		c.backoff = 0
+	}
+	delay := c.backoff * 2
+	if delay < e.ctr.backoffBase() {
+		delay = e.ctr.backoffBase()
+	}
+	if delay > e.ctr.backoffMax() {
+		delay = e.ctr.backoffMax()
+	}
+	c.backoff = delay
+	c.State.Status = StatusRestarting
+	c.restartGen++
+	rGen := c.restartGen
+	if c.restartTimer != nil {
+		c.restartTimer.Stop()
+	}
+	id := c.ID
+	c.restartTimer = time.AfterFunc(delay, func() {
+		e.doRestart(id, rGen)
+	})
+	return true
+}
+
+func (e *Engine) doRestart(id string, rGen uint64) {
+	e.ctr.mu.Lock()
+	c := e.ctr.byID[id]
+	if c == nil || e.ctr.closing || c.restartGen != rGen || c.State.Status != StatusRestarting || c.State.StoppedByUser {
+		e.ctr.mu.Unlock()
+		return
+	}
+	c.RestartCount++
+	c.restartTimer = nil
+	if err := e.saveContainersLocked(); err != nil {
+		e.logf("engine: save containers.json: %v", err)
+	}
+	e.ctr.mu.Unlock()
+
+	if err := e.startContainer(id); err != nil {
+		e.logf("engine: restart %s: %v", id[:min(12, len(id))], err)
+		notify := false
+		e.ctr.mu.Lock()
+		c := e.ctr.byID[id]
+		if c != nil && !e.ctr.closing && !c.State.StoppedByUser &&
+			c.State.Status != StatusRemoving && c.State.Status != StatusRunning && c.restartTimer == nil {
+			c.State.Error = err.Error()
+			if !e.scheduleRestartLocked(c, 0, true) {
+				c.State.Status = StatusExited
+			}
+			_ = e.saveContainersLocked()
+			notify = true
+		}
+		e.ctr.mu.Unlock()
+		if notify {
+			e.notify()
+		}
+	}
+}
+
+// loadContainers reads containers.json. A container that ran when the
+// engine closed is exited now.
+func (e *Engine) loadContainers() error {
+	var f containerStoreFile
+	if e.cfg.Dir != "" {
+		if err := loadFile(e.path("containers.json"), &f); err != nil {
+			return err
+		}
+	}
+	now := time.Now().UTC()
+	dirty := false
+
+	e.ctr.mu.Lock()
+	defer e.ctr.mu.Unlock()
+	e.ctr.byID = make(map[string]*Container, len(f.Containers))
+	e.ctr.closing = false
+
+	for i := range f.Containers {
+		c := f.Containers[i]
+		if len(c.AnonymousVolumes) > 0 {
+			anonSet := make(map[string]bool, len(c.AnonymousVolumes))
+			for _, v := range c.AnonymousVolumes {
+				anonSet[v] = true
+			}
+			for j := range c.Mounts {
+				if c.Mounts[j].Type == "volume" && anonSet[c.Mounts[j].Name] {
+					c.Mounts[j].Anonymous = true
+				}
+			}
+		}
+		switch c.State.Status {
+		case StatusRunning, StatusRestarting, StatusRemoving:
+			c.State.Status = StatusExited
+			c.State.Pid = 0
+			if !c.State.StoppedByUser {
+				c.State.ExitCode = 255
+			}
+			c.State.FinishedAt = now
+			dirty = true
+		}
+		cCopy := c
+		e.ctr.byID[c.ID] = &cCopy
+	}
+	if dirty {
+		return e.saveContainersLocked()
+	}
+	return nil
+}
+
+// resumeContainers starts the containers whose restart policy says so
+// after a start of the engine.
+func (e *Engine) resumeContainers(ctx context.Context) {
+	var toStart []string
+	e.ctr.mu.Lock()
+	e.ctr.closing = false
+	for _, c := range e.ctr.byID {
+		switch c.HostConfig.RestartPolicy.Name {
+		case "always":
+			toStart = append(toStart, c.ID)
+		case "unless-stopped":
+			if !c.State.StoppedByUser {
+				toStart = append(toStart, c.ID)
+			}
+		}
+	}
+	e.ctr.mu.Unlock()
+
+	slices.Sort(toStart)
+	for _, id := range toStart {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := e.startContainer(id); err != nil {
+			e.logf("engine: resume %s: %v", id[:min(12, len(id))], err)
+		}
+	}
+}
+
+// stopContainers stops every running container in parallel, waiting up to
+// timeout for each, and records them as stopped by the engine, not by the
+// user.
+func (e *Engine) stopContainers(timeout time.Duration) {
+	var running []string
+	dirty := false
+
+	e.ctr.mu.Lock()
+	e.ctr.closing = true
+	for _, c := range e.ctr.byID {
+		c.restartGen++
+		if c.restartTimer != nil {
+			c.restartTimer.Stop()
+			c.restartTimer = nil
+		}
+		if c.State.Status == StatusRunning {
+			running = append(running, c.ID)
+		} else if c.State.Status == StatusRestarting {
+			c.State.Status = StatusExited
+			dirty = true
+		}
+	}
+	if dirty {
+		_ = e.saveContainersLocked()
+	}
+	e.ctr.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, id := range running {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			if err := e.runner.Stop(id, timeout); err != nil {
+				e.logf("engine: stop %s: %v", id[:min(12, len(id))], err)
+			}
+		}(id)
+	}
+	wg.Wait()
+
+	// Wait briefly for EventExited callbacks to settle, then ensure any
+	// remaining running records are marked exited without setting StoppedByUser.
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		ch := e.changes()
+		stillRunning := false
+		e.ctr.mu.Lock()
+		for _, id := range running {
+			if c := e.ctr.byID[id]; c != nil && c.State.Status == StatusRunning {
+				stillRunning = true
+				break
+			}
+		}
+		e.ctr.mu.Unlock()
+		if !stillRunning {
+			break
+		}
+		select {
+		case <-ch:
+		case <-deadline:
+			e.ctr.mu.Lock()
+			now := time.Now().UTC()
+			for _, id := range running {
+				if c := e.ctr.byID[id]; c != nil && c.State.Status == StatusRunning {
+					c.State.Status = StatusExited
+					c.State.Pid = 0
+					c.State.FinishedAt = now
+				}
+			}
+			_ = e.saveContainersLocked()
+			e.ctr.mu.Unlock()
+			return
+		}
+	}
+}
+
+// ---- internal lifecycle helpers ----
+
+func containerAttrs(c *Container) map[string]string {
+	attrs := make(map[string]string, len(c.Config.Labels)+2)
+	maps.Copy(attrs, c.Config.Labels)
+	attrs["name"] = c.Name
+	attrs["image"] = c.Image
+	return attrs
+}
+
+// usedPortsLocked returns all host ports ("8080/tcp") currently bound by
+// running containers other than skipID. Caller holds e.ctr.mu.
+func (e *Engine) usedPortsLocked(skipID string) map[string]bool {
+	used := map[string]bool{}
+	for id, c := range e.ctr.byID {
+		if id == skipID || c.State.Status != StatusRunning {
+			continue
+		}
+		for containerPort, bindings := range c.Ports {
+			_, proto, ok := strings.Cut(containerPort, "/")
+			if !ok || proto == "" {
+				proto = "tcp"
+			}
+			for _, b := range bindings {
+				if b.HostPort != "" {
+					used[b.HostPort+"/"+proto] = true
+				}
+			}
+		}
+	}
+	return used
+}
+
+// startContainer resolves ports, starts the sandbox via runner.Start, updates
+// state and emits the start event.
+func (e *Engine) startContainer(id string) error {
+	// Serialize port probing and reservation across concurrent starts so two
+	// containers cannot claim the same fixed or dynamic host port.
+	e.ctr.portMu.Lock()
+
+	e.ctr.mu.Lock()
+	c, ok := e.ctr.byID[id]
+	if !ok {
+		e.ctr.mu.Unlock()
+		e.ctr.portMu.Unlock()
+		return errNotFound("No such container: %s", id)
+	}
+	if c.State.Status == StatusRunning {
+		e.ctr.mu.Unlock()
+		e.ctr.portMu.Unlock()
+		return errNotModified
+	}
+	if c.State.Status == StatusRemoving {
+		e.ctr.mu.Unlock()
+		e.ctr.portMu.Unlock()
+		return errConflict("container %s is being removed", c.ID)
+	}
+	// Cancel any pending restart backoff timer.
+	c.restartGen++
+	if c.restartTimer != nil {
+		c.restartTimer.Stop()
+		c.restartTimer = nil
+	}
+	usedByOthers := e.usedPortsLocked(c.ID)
+	snapshot := c.clone()
+	prevStatus := c.State.Status
+	prevStartedAt := c.State.StartedAt
+	prevFinishedAt := c.State.FinishedAt
+	prevPorts := c.Ports
+	e.ctr.mu.Unlock()
+
+	resolvedPorts, specPorts, err := resolveStartPorts(&snapshot, usedByOthers)
+	if err != nil {
+		e.ctr.portMu.Unlock()
+		e.handleStartFailure(id, 0, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, err)
+		return err
+	}
+
+	spec := snapshot.Spec.Clone()
+	spec.Name = snapshot.Name
+	spec.Ports = specPorts
+
+	// Mark running and record reserved ports BEFORE releasing portMu and
+	// before calling runner.Start, so concurrent starts see these ports and
+	// an instantaneous EventExited cannot be overwritten.
+	e.ctr.mu.Lock()
+	c, ok = e.ctr.byID[id]
+	if !ok {
+		e.ctr.mu.Unlock()
+		e.ctr.portMu.Unlock()
+		return errNotFound("No such container: %s", id)
+	}
+	if c.State.Status == StatusRunning {
+		e.ctr.mu.Unlock()
+		e.ctr.portMu.Unlock()
+		return errNotModified
+	}
+	if c.State.Status == StatusRemoving {
+		e.ctr.mu.Unlock()
+		e.ctr.portMu.Unlock()
+		return errConflict("container %s is being removed", c.ID)
+	}
+	c.runGen++
+	gen := c.runGen
+	c.State.Status = StatusRunning
+	c.State.StartedAt = time.Now().UTC()
+	c.State.FinishedAt = time.Time{}
+	c.State.Error = ""
+	c.State.StoppedByUser = false
+	c.Ports = resolvedPorts
+	e.ctr.mu.Unlock()
+
+	e.ctr.portMu.Unlock()
+
+	if err := e.runner.Start(spec); err != nil {
+		e.handleStartFailure(id, gen, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, err)
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "volume") && (strings.Contains(msg, "in use") || strings.Contains(msg, "locked")) {
+			return errConflict("%s", err.Error())
+		}
+		return err
+	}
+
+	if snapshot.Config.Tty && snapshot.HostConfig.ConsoleSize[0] > 0 && snapshot.HostConfig.ConsoleSize[1] > 0 {
+		_ = e.runner.Resize(id, uint16(snapshot.HostConfig.ConsoleSize[0]), uint16(snapshot.HostConfig.ConsoleSize[1]))
+	}
+
+	st := e.runner.State(id)
+	var (
+		emitStart bool
+		attrs     map[string]string
+	)
+	e.ctr.mu.Lock()
+	if c := e.ctr.byID[id]; c != nil && c.runGen == gen {
+		if c.State.Status == StatusRunning {
+			if st.PID != 0 {
+				c.State.Pid = st.PID
+			}
+			if !st.StartedAt.IsZero() {
+				c.State.StartedAt = st.StartedAt.UTC()
+			}
+		}
+		if c.startEmittedGen < gen {
+			c.startEmittedGen = gen
+			emitStart = true
+			attrs = containerAttrs(c)
+		}
+		_ = e.saveContainersLocked()
+	}
+	e.ctr.mu.Unlock()
+
+	if emitStart {
+		e.emit(Event{Type: "container", Action: "start", ID: id, Attributes: attrs})
+	}
+	e.notify()
+	return nil
+}
+
+// handleStartFailure records startErr on the container and, when AutoRemove
+// is set, removes the container and its anonymous volumes so wait?condition=removed
+// and attach do not hang.
+func (e *Engine) handleStartFailure(id string, gen uint64, prevStatus string, prevStartedAt, prevFinishedAt time.Time, prevPorts map[string][]PortBinding, startErr error) {
+	var (
+		autoRemove bool
+		anonVols   []string
+		attrs      map[string]string
+		updated    bool
+	)
+	e.ctr.mu.Lock()
+	if c := e.ctr.byID[id]; c != nil && (gen == 0 || c.runGen == gen) {
+		updated = true
+		c.State.Error = startErr.Error()
+		c.State.Pid = 0
+		c.Ports = prevPorts
+		if c.HostConfig.AutoRemove && !e.ctr.closing {
+			c.State.Status = StatusRemoving
+			c.State.StoppedByUser = true
+			anonVols = slices.Clone(c.AnonymousVolumes)
+			attrs = containerAttrs(c)
+			autoRemove = true
+		} else {
+			if prevStatus == StatusCreated {
+				c.State.Status = StatusCreated
+			} else {
+				c.State.Status = StatusExited
+			}
+			c.State.StartedAt = prevStartedAt
+			c.State.FinishedAt = prevFinishedAt
+		}
+		_ = e.saveContainersLocked()
+	}
+	e.ctr.mu.Unlock()
+	if !updated {
+		return
+	}
+	e.notify()
+	if autoRemove {
+		e.removeContainerCleanup(context.Background(), id, false, true, anonVols, attrs)
+	}
+}
+
+// stopContainerByRef stops a container by ref with timeout. It returns
+// errNotModified if the container is already stopped.
+func (e *Engine) stopContainerByRef(ctx context.Context, ref string, timeout time.Duration, hasExplicitTimeout bool) error {
+	e.ctr.mu.Lock()
+	c, err := e.lookupLocked(ref)
+	if err != nil {
+		e.ctr.mu.Unlock()
+		return err
+	}
+	id := c.ID
+	if !hasExplicitTimeout {
+		if c.Config.StopTimeout != nil && *c.Config.StopTimeout >= 0 {
+			timeout = time.Duration(*c.Config.StopTimeout) * time.Second
+		} else {
+			timeout = 10 * time.Second
+		}
+	}
+	c.restartGen++
+	if c.restartTimer != nil {
+		c.restartTimer.Stop()
+		c.restartTimer = nil
+	}
+	if c.State.Status == StatusRestarting {
+		c.State.Status = StatusExited
+		c.State.StoppedByUser = true
+		attrs := containerAttrs(c)
+		_ = e.saveContainersLocked()
+		e.ctr.mu.Unlock()
+		e.emit(Event{Type: "container", Action: "stop", ID: id, Attributes: attrs})
+		e.notify()
+		return nil
+	}
+	if c.State.Status != StatusRunning {
+		e.ctr.mu.Unlock()
+		return errNotModified
+	}
+	c.State.StoppedByUser = true
+	attrs := containerAttrs(c)
+	_ = e.saveContainersLocked()
+	e.ctr.mu.Unlock()
+
+	if err := e.runner.Stop(id, timeout); err != nil {
+		return err
+	}
+	e.waitNotRunning(ctx, id)
+	e.emit(Event{Type: "container", Action: "stop", ID: id, Attributes: attrs})
+	return nil
+}
+
+// waitNotRunning waits briefly for EventExited to transition id out of
+// Running after runner.Stop returns.
+func (e *Engine) waitNotRunning(ctx context.Context, id string) {
+	deadline := time.After(time.Second)
+	for {
+		ch := e.changes()
+		e.ctr.mu.Lock()
+		c := e.ctr.byID[id]
+		done := c == nil || c.State.Status != StatusRunning
+		e.ctr.mu.Unlock()
+		if done {
+			return
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// removeContainerCleanup finishes removing a container whose status is already
+// StatusRemoving.
+func (e *Engine) removeContainerCleanup(ctx context.Context, id string, stopFirst, removeVols bool, anonVols []string, attrs map[string]string) {
+	if stopFirst {
+		_ = e.runner.Stop(id, 0)
+		e.waitNotRunning(ctx, id)
+	}
+	e.runner.Forget(id)
+	e.dropLogs(id)
+	e.disconnectNetworks(id)
+
+	e.ctr.mu.Lock()
+	delete(e.ctr.byID, id)
+	_ = e.saveContainersLocked()
+	e.ctr.mu.Unlock()
+
+	if removeVols {
+		for _, v := range anonVols {
+			_ = e.removeVolume(ctx, v, false)
+		}
+	}
+
+	e.emit(Event{Type: "container", Action: "destroy", ID: id, Attributes: attrs})
+	e.notify()
+}
+
+// ---- handlers ----
+
+func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
+	var req containerCreateRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if strings.TrimSpace(req.Image) == "" {
+		writeError(w, r, errInvalid("No image specified"))
+		return
+	}
+
+	reqName := strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("name")), "/")
+	if strings.HasPrefix(reqName, "buildx_buildkit_") || isBuildkitImage(req.Image) {
+		writeError(w, r, errBuildDriverNotSupported())
+		return
+	}
+	if r.URL.Query().Get("name") != "" && !validContainerName(reqName) {
+		writeError(w, r, errInvalid("Invalid container name (%s), only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed", reqName))
+		return
+	}
+
+	// Quick pre-check for name conflict before touching volumes/networks.
+	if reqName != "" {
+		e.ctr.mu.Lock()
+		for _, existing := range e.ctr.byID {
+			if existing.Name == reqName {
+				id := existing.ID
+				e.ctr.mu.Unlock()
+				writeError(w, r, nameConflictErr(reqName, id))
+				return
+			}
+		}
+		e.ctr.mu.Unlock()
+	}
+
+	// Inspect the cached image (404 makes docker CLI pull).
+	img, err := e.imageConfig(r.Context(), req.Image)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	id := randomHex64()
+	cfg, argv, warnings, err := mergeContainerConfig(id, &req, img)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	hc := req.HostConfig
+	if err := validateRestartPolicy(hc); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// Validate ExtraHosts.
+	if len(hc.ExtraHosts) > 0 {
+		warnings = append(warnings, "ExtraHosts is ignored by GVX Desktop's experimental sandbox engine")
+	}
+
+	// Determine target networks and validate they exist.
+	type netTarget struct {
+		ref     string
+		aliases []string
+	}
+	var targets []netTarget
+	seenNet := map[string]bool{}
+	addNet := func(ref string, aliases []string) {
+		if ref == "" || ref == "default" {
+			ref = "bridge"
+		}
+		if seenNet[ref] {
+			return
+		}
+		seenNet[ref] = true
+		targets = append(targets, netTarget{ref: ref, aliases: slices.Clone(aliases)})
+	}
+
+	netMode := strings.TrimSpace(hc.NetworkMode)
+	if strings.HasPrefix(netMode, "container:") {
+		writeError(w, r, errInvalid("container network mode is not supported"))
+		return
+	}
+	if netMode == "host" {
+		warnings = append(warnings, "Host networking is not supported; running on the default NAT network instead")
+	}
+	var endpoints map[string]*endpointConfig
+	if req.NetworkingConfig != nil {
+		endpoints = req.NetworkingConfig.EndpointsConfig
+	}
+	switch netMode {
+	case "", "default":
+		if len(endpoints) == 0 {
+			hc.NetworkMode = "bridge"
+			addNet("bridge", nil)
+		} else {
+			keys := slices.Sorted(maps.Keys(endpoints))
+			if len(keys) == 1 && keys[0] != "" && keys[0] != "default" {
+				hc.NetworkMode = keys[0]
+			} else {
+				hc.NetworkMode = "bridge"
+			}
+			for _, k := range keys {
+				var aliases []string
+				if ep := endpoints[k]; ep != nil {
+					aliases = ep.Aliases
+				}
+				addNet(k, aliases)
+			}
+		}
+	default:
+		hc.NetworkMode = netMode
+		var primaryAliases []string
+		if ep := endpoints[netMode]; ep != nil {
+			primaryAliases = ep.Aliases
+		}
+		addNet(netMode, primaryAliases)
+		for _, k := range slices.Sorted(maps.Keys(endpoints)) {
+			if k == netMode {
+				continue
+			}
+			var aliases []string
+			if ep := endpoints[k]; ep != nil {
+				aliases = ep.Aliases
+			}
+			addNet(k, aliases)
+		}
+	}
+
+	type resolvedNet struct {
+		net     Network
+		aliases []string
+	}
+	resolvedNets := make([]resolvedNet, 0, len(targets))
+	for _, t := range targets {
+		n, err := e.network(t.ref)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		resolvedNets = append(resolvedNets, resolvedNet{net: n, aliases: t.aliases})
+	}
+
+	// Validate ports after normalizing NetworkMode.
+	portWarnings, err := validatePortBindings(&hc)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	warnings = append(warnings, portWarnings...)
+
+	// Plan and validate mounts before creating any volumes.
+	planned, err := planMounts(hc, cfg)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// Validate spec early (using a temporary name if unnamed).
+	specImage := img.ResolvedRef
+	if specImage == "" {
+		specImage = cfg.Image
+	}
+	tmpName := reqName
+	if tmpName == "" {
+		tmpName = "container"
+	}
+	tmpMounts := make([]sandbox.Mount, len(planned))
+	for i, pm := range planned {
+		tmpMounts[i] = pm.spec
+	}
+	if _, err := buildSandboxSpec(id, tmpName, specImage, cfg, hc, argv, tmpMounts); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// Materialize volumes (calls workstream C seam, holding no lock).
+	specMounts, mountPoints, anonVols, err := e.materializeMounts(r.Context(), planned)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	cleanupAnon := func() {
+		for _, v := range anonVols {
+			_ = e.removeVolume(r.Context(), v, true)
+		}
+	}
+
+	// Reserve the container name and record under lock.
+	created := time.Now().UTC()
+	e.ctr.mu.Lock()
+	e.ctr.ensureInit()
+	name := reqName
+	if name != "" {
+		for _, existing := range e.ctr.byID {
+			if existing.Name == name {
+				existingID := existing.ID
+				e.ctr.mu.Unlock()
+				cleanupAnon()
+				writeError(w, r, nameConflictErr(name, existingID))
+				return
+			}
+		}
+	} else {
+		name = generateContainerName(func(cand string) bool {
+			for _, existing := range e.ctr.byID {
+				if existing.Name == cand {
+					return true
+				}
+			}
+			return false
+		})
+	}
+	spec, err := buildSandboxSpec(id, name, specImage, cfg, hc, argv, specMounts)
+	if err != nil {
+		e.ctr.mu.Unlock()
+		cleanupAnon()
+		writeError(w, r, err)
+		return
+	}
+	spec.CreatedAt = created
+
+	c := &Container{
+		ID:               id,
+		Name:             name,
+		Created:          created,
+		Image:            req.Image,
+		ImageID:          img.ID,
+		Config:           cfg,
+		HostConfig:       hc,
+		Networks:         map[string]EndpointSettings{},
+		Mounts:           mountPoints,
+		AnonymousVolumes: anonVols,
+		Spec:             spec,
+		State: ContainerState{
+			Status: StatusCreated,
+		},
+	}
+	e.ctr.byID[id] = c
+	e.ctr.mu.Unlock()
+
+	// Connect to networks (workstream C seam, holding no lock).
+	netSettings := make(map[string]EndpointSettings, len(resolvedNets))
+	for _, rn := range resolvedNets {
+		warn, err := e.connectNetwork(rn.net.Name, id, rn.aliases)
+		if err != nil {
+			e.disconnectNetworks(id)
+			e.ctr.mu.Lock()
+			delete(e.ctr.byID, id)
+			e.ctr.mu.Unlock()
+			cleanupAnon()
+			writeError(w, r, err)
+			return
+		}
+		if warn != "" {
+			warnings = append(warnings, warn)
+		}
+		ep := EndpointSettings{
+			Aliases:    slices.Clone(rn.aliases),
+			NetworkID:  rn.net.ID,
+			EndpointID: randomHex64(),
+			DNSNames:   buildDNSNames(name, id[:12], rn.aliases),
+		}
+		if rn.net.Name != "none" {
+			ep.Gateway = "10.0.2.2"
+			ep.IPAddress = "10.0.2.15"
+			ep.IPPrefixLen = 24
+			ep.MacAddress = containerMAC(id)
+		}
+		netSettings[rn.net.Name] = ep
+	}
+
+	e.ctr.mu.Lock()
+	if cur := e.ctr.byID[id]; cur != nil {
+		cur.Networks = netSettings
+		if err := e.saveContainersLocked(); err != nil {
+			e.logf("engine: save containers.json: %v", err)
+		}
+	}
+	attrs := containerAttrs(c)
+	e.ctr.mu.Unlock()
+
+	e.emit(Event{Type: "container", Action: "create", ID: id, Attributes: attrs})
+	e.notify()
+
+	if warnings == nil {
+		warnings = []string{}
+	}
+	writeJSON(w, http.StatusCreated, containerCreateResponse{ID: id, Warnings: warnings})
+}
+
+func nameConflictErr(name, existingID string) error {
+	return errConflict(
+		`Conflict. The container name "/%s" is already in use by container "%s". You have to remove (or rename) that container to be able to reuse that name.`,
+		name, existingID,
+	)
+}
+
+func isBuildkitImage(ref string) bool {
+	s := strings.TrimSpace(ref)
+	s = strings.TrimPrefix(s, "docker.io/")
+	if i := strings.IndexAny(s, "@:"); i >= 0 {
+		s = s[:i]
+	}
+	return s == "moby/buildkit"
+}
+
+func buildDNSNames(name, shortID string, aliases []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	add(name)
+	for _, a := range aliases {
+		add(a)
+	}
+	add(shortID)
+	return out
+}
+
+func containerMAC(id string) string {
+	if len(id) < 8 {
+		return "02:42:0a:00:02:0f"
+	}
+	return fmt.Sprintf("02:42:%s:%s:%s:%s", id[0:2], id[2:4], id[4:6], id[6:8])
+}
+
+func (e *Engine) containerList(w http.ResponseWriter, r *http.Request) {
+	all := queryBool(r, "all")
+	limit, err := queryInt(r, "limit", 0)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	f, err := queryFilters(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	nameRegexes := make([]*regexp.Regexp, 0, len(f["name"]))
+	for _, pat := range f["name"] {
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			writeError(w, r, errInvalid("invalid name filter %q: %v", pat, err))
+			return
+		}
+		nameRegexes = append(nameRegexes, re)
+	}
+	showAll := all || limit > 0 || f.has("status") || f.has("exited")
+
+	containers := e.allContainers()
+	// Newest first.
+	slices.Reverse(containers)
+
+	now := time.Now().UTC()
+	out := make([]containerListItem, 0, len(containers))
+	for _, c := range containers {
+		if !showAll && !c.State.Running() {
+			continue
+		}
+		if !matchContainerFilters(c, f, nameRegexes) {
+			continue
+		}
+		out = append(out, formatContainerListItem(c, now))
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func matchContainerFilters(c Container, f filters, nameRegexes []*regexp.Regexp) bool {
+	if !f.matchLabels(c.Config.Labels) {
+		return false
+	}
+	if !f.matchAny("id", func(v string) bool { return strings.HasPrefix(c.ID, v) }) {
+		return false
+	}
+	if len(nameRegexes) > 0 {
+		matched := false
+		slashName := "/" + c.Name
+		for _, re := range nameRegexes {
+			if re.MatchString(slashName) || re.MatchString(c.Name) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if !f.matchAny("status", func(v string) bool { return c.State.Status == v }) {
+		return false
+	}
+	if !f.matchAny("exited", func(v string) bool {
+		return c.State.Status == StatusExited && strconv.Itoa(c.State.ExitCode) == v
+	}) {
+		return false
+	}
+	if !f.matchAny("ancestor", func(v string) bool {
+		if c.Image == v || c.ImageID == v || strings.HasPrefix(c.ImageID, v) {
+			return true
+		}
+		if strings.TrimPrefix(c.ImageID, "sha256:") == strings.TrimPrefix(v, "sha256:") {
+			return true
+		}
+		if !strings.Contains(v, ":") && c.Image == v+":latest" {
+			return true
+		}
+		if !strings.Contains(c.Image, ":") && v == c.Image+":latest" {
+			return true
+		}
+		return false
+	}) {
+		return false
+	}
+	if !f.matchAny("network", func(v string) bool {
+		for name, ep := range c.Networks {
+			if name == v || ep.NetworkID == v || strings.HasPrefix(ep.NetworkID, v) {
+				return true
+			}
+		}
+		return false
+	}) {
+		return false
+	}
+	if !f.matchAny("volume", func(v string) bool {
+		for _, m := range c.Mounts {
+			if m.Name == v || m.Source == v || m.Destination == v {
+				return true
+			}
+		}
+		return false
+	}) {
+		return false
+	}
+	return true
+}
+
+func formatContainerListItem(c Container, now time.Time) containerListItem {
+	argv := make([]string, 0, len(c.Config.Entrypoint)+len(c.Config.Cmd))
+	argv = append(argv, c.Config.Entrypoint...)
+	argv = append(argv, c.Config.Cmd...)
+
+	labels := c.Config.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	networks := c.Networks
+	if networks == nil {
+		networks = map[string]EndpointSettings{}
+	}
+	mounts := c.Mounts
+	if mounts == nil {
+		mounts = []MountPoint{}
+	}
+
+	ports := []containerListPort{}
+	if c.State.Status == StatusRunning {
+		published := map[string]bool{}
+		for containerPort, bindings := range c.Ports {
+			priv, proto := splitPortProto(containerPort)
+			for _, b := range bindings {
+				pub, _ := strconv.Atoi(b.HostPort)
+				ports = append(ports, containerListPort{
+					IP:          b.HostIP,
+					PrivatePort: uint16(priv),
+					PublicPort:  uint16(pub),
+					Type:        proto,
+				})
+				published[containerPort] = true
+			}
+		}
+		for ep := range c.Config.ExposedPorts {
+			if published[ep] {
+				continue
+			}
+			priv, proto := splitPortProto(ep)
+			ports = append(ports, containerListPort{
+				PrivatePort: uint16(priv),
+				Type:        proto,
+			})
+		}
+		slices.SortFunc(ports, func(a, b containerListPort) int {
+			if d := cmp.Compare(a.PrivatePort, b.PrivatePort); d != 0 {
+				return d
+			}
+			if d := cmp.Compare(a.Type, b.Type); d != 0 {
+				return d
+			}
+			return cmp.Compare(a.PublicPort, b.PublicPort)
+		})
+	}
+
+	return containerListItem{
+		ID:      c.ID,
+		Names:   []string{"/" + c.Name},
+		Image:   c.Image,
+		ImageID: c.ImageID,
+		Command: strings.Join(argv, " "),
+		Created: c.Created.Unix(),
+		Ports:   ports,
+		Labels:  labels,
+		State:   c.State.Status,
+		Status:  containerStatusText(c.State, now),
+		HostConfig: listHostConfig{
+			NetworkMode: c.HostConfig.NetworkMode,
+		},
+		NetworkSettings: listNetworkSettings{
+			Networks: networks,
+		},
+		Mounts: mounts,
+	}
+}
+
+func splitPortProto(s string) (int, string) {
+	pStr, proto, ok := strings.Cut(s, "/")
+	if !ok || proto == "" {
+		proto = "tcp"
+	}
+	n, _ := strconv.Atoi(pStr)
+	return n, proto
+}
+
+func (e *Engine) containerInspect(w http.ResponseWriter, r *http.Request) {
+	ref := r.PathValue("id")
+	c, err := e.lookup(ref)
+	if err != nil {
+		if statusOf(err) == http.StatusNotFound && strings.HasPrefix(strings.TrimPrefix(ref, "/"), "buildx_buildkit_") {
+			writeError(w, r, errBuildDriverNotSupported())
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+
+	argv := make([]string, 0, len(c.Config.Entrypoint)+len(c.Config.Cmd))
+	argv = append(argv, c.Config.Entrypoint...)
+	argv = append(argv, c.Config.Cmd...)
+	pathStr := ""
+	args := []string{}
+	if len(argv) > 0 {
+		pathStr = argv[0]
+		if len(argv) > 1 {
+			args = argv[1:]
+		}
+	}
+
+	if c.Config.Labels == nil {
+		c.Config.Labels = map[string]string{}
+	}
+	mounts := c.Mounts
+	if mounts == nil {
+		mounts = []MountPoint{}
+	}
+	networks := c.Networks
+	if networks == nil {
+		networks = map[string]EndpointSettings{}
+	}
+
+	inspectPorts := map[string][]PortBinding{}
+	gateway, ipAddr, macAddr := "", "", ""
+	prefixLen := 0
+	if c.State.Status == StatusRunning {
+		for k, v := range c.Ports {
+			inspectPorts[k] = slices.Clone(v)
+		}
+		for ep := range c.Config.ExposedPorts {
+			if _, ok := inspectPorts[ep]; !ok {
+				inspectPorts[ep] = nil
+			}
+		}
+		for _, k := range slices.Sorted(maps.Keys(networks)) {
+			if k == "none" {
+				continue
+			}
+			ep := networks[k]
+			gateway = ep.Gateway
+			ipAddr = ep.IPAddress
+			prefixLen = ep.IPPrefixLen
+			macAddr = ep.MacAddress
+			break
+		}
+	}
+
+	logPath := ""
+	if e.cfg.Dir != "" {
+		logPath = e.path("logs", c.ID+".log")
+	}
+
+	resp := containerInspectResponse{
+		ID:      c.ID,
+		Created: formatInspectTime(c.Created),
+		Path:    pathStr,
+		Args:    args,
+		State: inspectState{
+			Status:     c.State.Status,
+			Running:    c.State.Running(),
+			Paused:     false,
+			Restarting: c.State.Status == StatusRestarting,
+			OOMKilled:  c.State.OOMKilled,
+			Dead:       c.State.Status == StatusDead,
+			Pid:        c.State.Pid,
+			ExitCode:   c.State.ExitCode,
+			Error:      c.State.Error,
+			StartedAt:  formatInspectTime(c.State.StartedAt),
+			FinishedAt: formatInspectTime(c.State.FinishedAt),
+		},
+		Image:        c.ImageID,
+		LogPath:      logPath,
+		Name:         "/" + c.Name,
+		RestartCount: c.RestartCount,
+		Driver:       "gvx",
+		Platform:     "linux",
+		HostConfig:   c.HostConfig,
+		GraphDriver:  inspectGraphDriver{Name: "gvx"},
+		Mounts:       mounts,
+		Config:       c.Config,
+		NetworkSettings: inspectNetworkSettings{
+			Ports:       inspectPorts,
+			Gateway:     gateway,
+			IPAddress:   ipAddr,
+			IPPrefixLen: prefixLen,
+			MacAddress:  macAddr,
+			Networks:    networks,
+		},
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (e *Engine) containerStart(w http.ResponseWriter, r *http.Request) {
+	c, err := e.lookup(r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := e.startContainer(c.ID); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (e *Engine) containerStop(w http.ResponseWriter, r *http.Request) {
+	hasT := strings.TrimSpace(r.URL.Query().Get("t")) != ""
+	tSec, err := queryInt(r, "t", 10)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if tSec < 0 {
+		tSec = 0
+	}
+	if err := e.stopContainerByRef(r.Context(), r.PathValue("id"), time.Duration(tSec)*time.Second, hasT); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (e *Engine) containerRestart(w http.ResponseWriter, r *http.Request) {
+	ref := r.PathValue("id")
+	c, err := e.lookup(ref)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	hasT := strings.TrimSpace(r.URL.Query().Get("t")) != ""
+	tSec, err := queryInt(r, "t", 10)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if tSec < 0 {
+		tSec = 0
+	}
+	if err := e.stopContainerByRef(r.Context(), c.ID, time.Duration(tSec)*time.Second, hasT); err != nil && err != errNotModified {
+		writeError(w, r, err)
+		return
+	}
+	if err := e.startContainer(c.ID); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	e.ctr.mu.Lock()
+	var attrs map[string]string
+	if cur := e.ctr.byID[c.ID]; cur != nil {
+		attrs = containerAttrs(cur)
+	}
+	e.ctr.mu.Unlock()
+	if attrs != nil {
+		e.emit(Event{Type: "container", Action: "restart", ID: c.ID, Attributes: attrs})
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (e *Engine) containerKill(w http.ResponseWriter, r *http.Request) {
+	sig, err := parseSignal(r.URL.Query().Get("signal"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ref := r.PathValue("id")
+	e.ctr.mu.Lock()
+	c, err := e.lookupLocked(ref)
+	if err != nil {
+		e.ctr.mu.Unlock()
+		writeError(w, r, err)
+		return
+	}
+	if c.State.Status == StatusRestarting {
+		id := c.ID
+		c.restartGen++
+		if c.restartTimer != nil {
+			c.restartTimer.Stop()
+			c.restartTimer = nil
+		}
+		c.State.Status = StatusExited
+		c.State.StoppedByUser = true
+		attrs := containerAttrs(c)
+		attrs["signal"] = strconv.Itoa(int(sig))
+		_ = e.saveContainersLocked()
+		e.ctr.mu.Unlock()
+		e.emit(Event{Type: "container", Action: "kill", ID: id, Attributes: attrs})
+		e.notify()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if c.State.Status != StatusRunning {
+		id := c.ID
+		e.ctr.mu.Unlock()
+		writeError(w, r, errConflict("Cannot kill container: %s: container %s is not running", ref, id))
+		return
+	}
+	id := c.ID
+	c.restartGen++
+	if c.restartTimer != nil {
+		c.restartTimer.Stop()
+		c.restartTimer = nil
+	}
+	c.State.StoppedByUser = true
+	attrs := containerAttrs(c)
+	attrs["signal"] = strconv.Itoa(int(sig))
+	_ = e.saveContainersLocked()
+	e.ctr.mu.Unlock()
+
+	if err := e.runner.Signal(id, sig); err != nil {
+		writeError(w, r, errConflict("Cannot kill container: %s: %v", ref, err))
+		return
+	}
+	e.emit(Event{Type: "container", Action: "kill", ID: id, Attributes: attrs})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (e *Engine) containerRename(w http.ResponseWriter, r *http.Request) {
+	newName := strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("name")), "/")
+	if !validContainerName(newName) {
+		writeError(w, r, errInvalid("Invalid container name (%s), only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed", newName))
+		return
+	}
+	ref := r.PathValue("id")
+	e.ctr.mu.Lock()
+	c, err := e.lookupLocked(ref)
+	if err != nil {
+		e.ctr.mu.Unlock()
+		writeError(w, r, err)
+		return
+	}
+	if c.Name == newName {
+		e.ctr.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	for _, other := range e.ctr.byID {
+		if other.ID != c.ID && other.Name == newName {
+			otherID := other.ID
+			e.ctr.mu.Unlock()
+			writeError(w, r, nameConflictErr(newName, otherID))
+			return
+		}
+	}
+	oldName := c.Name
+	c.Name = newName
+	c.Spec.Name = newName
+	id := c.ID
+	attrs := containerAttrs(c)
+	attrs["oldName"] = "/" + oldName
+	if err := e.saveContainersLocked(); err != nil {
+		e.logf("engine: save containers.json: %v", err)
+	}
+	e.ctr.mu.Unlock()
+
+	e.emit(Event{Type: "container", Action: "rename", ID: id, Attributes: attrs})
+	e.notify()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (e *Engine) containerDelete(w http.ResponseWriter, r *http.Request) {
+	ref := r.PathValue("id")
+	force := queryBool(r, "force")
+	removeVols := queryBool(r, "v")
+
+	e.ctr.mu.Lock()
+	c, err := e.lookupLocked(ref)
+	if err != nil {
+		e.ctr.mu.Unlock()
+		writeError(w, r, err)
+		return
+	}
+	if c.State.Status == StatusRemoving {
+		e.ctr.mu.Unlock()
+		writeError(w, r, errConflict("removal of container %s is already in progress", ref))
+		return
+	}
+	if (c.State.Running() || c.State.Status == StatusRestarting) && !force {
+		id := c.ID
+		e.ctr.mu.Unlock()
+		writeError(w, r, errConflict("You cannot remove a running container %s. Stop the container before attempting removal or force remove", id))
+		return
+	}
+	c.restartGen++
+	if c.restartTimer != nil {
+		c.restartTimer.Stop()
+		c.restartTimer = nil
+	}
+	wasRunning := c.State.Status == StatusRunning
+	c.State.Status = StatusRemoving
+	c.State.StoppedByUser = true
+	id := c.ID
+	anonVols := slices.Clone(c.AnonymousVolumes)
+	attrs := containerAttrs(c)
+	_ = e.saveContainersLocked()
+	e.ctr.mu.Unlock()
+
+	e.removeContainerCleanup(r.Context(), id, wasRunning, removeVols, anonVols, attrs)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (e *Engine) containerPrune(w http.ResponseWriter, r *http.Request) {
+	f, err := queryFilters(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var untilTime time.Time
+	if vals := f["until"]; len(vals) > 0 {
+		untilTime, err = parseUntilFilter(vals[0], time.Now().UTC())
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+
+	type candidate struct {
+		id       string
+		anonVols []string
+		attrs    map[string]string
+	}
+	var toRemove []candidate
+
+	e.ctr.mu.Lock()
+	for _, c := range e.ctr.byID {
+		if c.State.Running() || c.State.Status == StatusRestarting || c.State.Status == StatusRemoving {
+			continue
+		}
+		if !f.matchLabels(c.Config.Labels) {
+			continue
+		}
+		if !untilTime.IsZero() && !c.Created.Before(untilTime) {
+			continue
+		}
+		c.State.Status = StatusRemoving
+		c.State.StoppedByUser = true
+		toRemove = append(toRemove, candidate{
+			id:       c.ID,
+			anonVols: slices.Clone(c.AnonymousVolumes),
+			attrs:    containerAttrs(c),
+		})
+	}
+	if len(toRemove) > 0 {
+		_ = e.saveContainersLocked()
+	}
+	e.ctr.mu.Unlock()
+
+	deleted := make([]string, 0, len(toRemove))
+	for _, cand := range toRemove {
+		e.removeContainerCleanup(r.Context(), cand.id, false, true, cand.anonVols, cand.attrs)
+		deleted = append(deleted, cand.id)
+	}
+	slices.Sort(deleted)
+	writeJSON(w, http.StatusOK, containerPruneResponse{
+		ContainersDeleted: deleted,
+		SpaceReclaimed:    0,
+	})
+}
+
+func parseUntilFilter(raw string, now time.Time) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	if sec, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return time.Unix(sec, 0).UTC(), nil
+	}
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t.UTC(), nil
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.UTC(), nil
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		return now.Add(-d), nil
+	}
+	return time.Time{}, errInvalid("invalid until filter: %q", raw)
+}

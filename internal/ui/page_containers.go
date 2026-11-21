@@ -32,8 +32,12 @@ const (
 // under it. It tells what to do while the engine is not running.
 func containersPage(m *Model) ggui.Widget {
 	listing := m.DockerContainers
-	summary := ui.CaptionOf(ggui.Combine(m.ContainersOpen, listing, func(open bool, l Listing[dockerapi.Container]) string {
+	summary := ui.CaptionOf(ggui.Derived(func() string {
+		open, l, se := m.ContainersOpen.Get(), listing.Get(), m.Settings.Get().SandboxEngine
 		if !open || !l.Loaded || l.Err != "" {
+			if se {
+				return tr("Containers run directly as gvx sandboxes.")
+			}
 			return tr("Containers run inside the Docker Engine sandbox.")
 		}
 		running := 0
@@ -41,6 +45,9 @@ func containersPage(m *Model) ggui.Widget {
 			if c.State == "running" {
 				running++
 			}
+		}
+		if se {
+			return tr("%d running · %d total. Containers run directly as gvx sandboxes.", running, len(l.Items))
 		}
 		return tr("%d running · %d total. Containers run inside the Docker Engine sandbox.", running, len(l.Items))
 	}))
@@ -62,14 +69,23 @@ func containersPage(m *Model) ggui.Widget {
 		empty := func(title, text string) *ui.EmptyWidget {
 			return ui.Empty(title, text).Media(glyph(lucide.Boxes, 32).Color(colorGray)).Outline()
 		}
+		se := ggui.Peek(m.Settings).SandboxEngine
 		switch s {
 		case 0:
 			stage := ggui.Map(m.ContainersAccess, func(a ContainersAccess) int { return int(a) })
 			return ggui.View(gateOf(m, recipes.Docker, stage), func(g engineGate) ggui.Widget { return engineNotRunning(m, g, dockerGate()) })
 		case containersFailed:
-			return ui.Alert(tr("Could not reach dockerd"), ggui.Peek(listing).Err).Destructive().Icon(icons.Alert)
+			title := tr("Could not reach dockerd")
+			if se {
+				title = tr("Could not reach the sandbox engine")
+			}
+			return ui.Alert(title, ggui.Peek(listing).Err).Destructive().Icon(icons.Alert)
 		case containersLoading:
-			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking dockerd…"))).Gap(8)
+			msg := tr("Asking dockerd…")
+			if se {
+				msg = tr("Loading containers…")
+			}
+			return widget.Row(ui.Spinner(), ui.Caption(msg)).Gap(8)
 		case containersNone:
 			return empty(tr("No containers"), tr("Run one with the docker CLI: docker run -d -p 9000:80 nginx:alpine"))
 		}
@@ -143,7 +159,12 @@ func containersTable(m *Model) ggui.Widget {
 			return ggui.View(ggui.Map(r, func(row containerRow) []dockerapi.Container { return row.Members }).WithEqual(nil), projectStatusLabel)
 		})).W(150),
 		ui.Col(tr("Name"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
-			unshared := ggui.Combine(r, engine, unsharedBinds).WithEqual(slices.Equal[[]dockerapi.Mount])
+			unshared := ggui.Derived(func() []dockerapi.Mount {
+				if m.Settings.Get().SandboxEngine {
+					return nil
+				}
+				return unsharedBinds(r.Get(), engine.Get())
+			}).WithEqual(slices.Equal[[]dockerapi.Mount])
 			name := widget.Row(
 				widget.Flexible(widget.Column(
 					widget.TextOf(ggui.Map(r, dockerapi.Container.Name)).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
@@ -369,7 +390,11 @@ func containerMenu(m *Model, c dockerapi.Container) ggui.Widget {
 	entries = append(entries,
 		ui.MenuItem(tr("Copy ID"), func() { m.Copy(c.ID, c.ShortID()) }),
 		ui.MenuItem(tr("Copy docker logs command"), func() { m.Copy("docker logs -f "+name, "docker logs") }),
-		ui.MenuItem(tr("Copy docker exec command"), func() { m.Copy("docker exec -it "+name+" sh", "docker exec") }),
+	)
+	if !ggui.Peek(m.Settings).SandboxEngine {
+		entries = append(entries, ui.MenuItem(tr("Copy docker exec command"), func() { m.Copy("docker exec -it "+name+" sh", "docker exec") }))
+	}
+	entries = append(entries,
 		ui.MenuDivider(),
 		ui.MenuItem(tr("Remove"), func() { m.AskRemoveContainer(c) }).Destructive(),
 	)
@@ -431,11 +456,19 @@ func containerLogsView(m *Model) ggui.Widget {
 }
 
 // containerTerminal is a shell in the chosen container, as docker exec -it
-// runs one.
+// runs one. In sandbox-engine mode exec is not supported.
 func containerTerminal(m *Model) ggui.Widget {
-	name := ggui.Peek(m.Container).Name()
-	return terminalTab(m, m.containerShell(), tr("A shell in the container, as docker exec -it runs one."),
-		tip(iconButton(lucide.Copy, tr("Copy docker exec command"), func() { m.Copy("docker exec -it "+name+" sh", "docker exec") }), tr("Copy")))
+	return ggui.View(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func(se bool) ggui.Widget {
+		if se {
+			return terminalEmpty(
+				tr("Not supported in the experimental sandbox engine"),
+				tr("Container exec is not supported in the experimental sandbox engine yet. Use docker run -it for an interactive shell."),
+			)
+		}
+		name := ggui.Peek(m.Container).Name()
+		return terminalTab(m, m.containerShell(), tr("A shell in the container, as docker exec -it runs one."),
+			tip(iconButton(lucide.Copy, tr("Copy docker exec command"), func() { m.Copy("docker exec -it "+name+" sh", "docker exec") }), tr("Copy")))
+	})
 }
 
 // engineSpecOf follows the spec of the Docker Engine's sandbox.
@@ -475,14 +508,20 @@ func unsharedMark(binds []dockerapi.Mount) ggui.Widget {
 }
 
 // containerBinds lists a container's bind mounts, warning of those of
-// folders the engine does not share.
-func containerBinds(c dockerapi.Container, engine sandbox.Spec) []ggui.Widget {
+// folders the engine does not share (in Docker Engine sandbox mode).
+func containerBinds(c dockerapi.Container, engine sandbox.Spec, sandboxEngine bool) []ggui.Widget {
 	binds := c.Binds()
 	if len(binds) == 0 {
 		return nil
 	}
-	unshared := unsharedBinds(c, engine)
-	parts := []ggui.Widget{sectionTitle(tr("Bind mounts"), tr("Paths in the Docker Engine's sandbox, mounted into the container."))}
+	var unshared []dockerapi.Mount
+	desc := tr("Paths in the Docker Engine's sandbox, mounted into the container.")
+	if sandboxEngine {
+		desc = tr("Host paths mounted directly into the container's sandbox.")
+	} else {
+		unshared = unsharedBinds(c, engine)
+	}
+	parts := []ggui.Widget{sectionTitle(tr("Bind mounts"), desc)}
 	for _, b := range binds {
 		label := b.Source + " → " + b.Destination
 		if !b.RW {
@@ -538,15 +577,18 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 	if len(ports) == 0 {
 		parts = append(parts, ui.Caption(tr("No ports are published. Publish one with docker run -p 9000:80.")))
 	}
+	se := ggui.Peek(m.Settings).SandboxEngine
 	engine, _ := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
-	parts = append(parts, containerBinds(c, engine.Spec)...)
+	parts = append(parts, containerBinds(c, engine.Spec, se)...)
 	name := c.Name()
 	parts = append(parts,
 		sectionTitle(tr("Commands"), tr("For a terminal where docker uses the gvx context.")),
 		copyable(m, "docker logs -f "+name, "docker logs"),
-		copyable(m, "docker exec -it "+name+" sh", "docker exec"),
-		copyable(m, "docker inspect "+name, "docker inspect"),
 	)
+	if !se {
+		parts = append(parts, copyable(m, "docker exec -it "+name+" sh", "docker exec"))
+	}
+	parts = append(parts, copyable(m, "docker inspect "+name, "docker inspect"))
 	return widget.Padding(widget.Column(parts...).Gap(10).Stretch(), 8, 0)
 }
 
@@ -554,6 +596,9 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 // under its own number when the engine's sandbox publishes ports as they
 // come, and inside the range it opened at start otherwise.
 func publishedPortsNote(m *Model) string {
+	if ggui.Peek(m.Settings).SandboxEngine {
+		return tr("Published container ports reach this computer on 127.0.0.1.")
+	}
 	if engine, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker); ok && !sandbox.HasAutoPublish(engine.Spec) {
 		return tr("Published container ports must be inside 9000–9019, the range the sandbox opened at start.")
 	}

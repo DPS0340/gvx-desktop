@@ -12,6 +12,7 @@ import (
 	"github.com/ironpark/ggui/ui/icons"
 	"github.com/ironpark/ggui/widget"
 
+	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
@@ -391,59 +392,195 @@ func dockerSettings(m *Model) ggui.Widget {
 			found,
 		).Gap(6).Stretch()),
 		widget.Column(
-			settingRow(tr("Engine API"),
-				tr("How the Docker Engine is reached. Changes take effect immediately."),
+			widget.Row(
+				widget.Expanded(widget.Column(
+					widget.Text(tr("Engine API")).Size(14).Weight(ggui.WeightMedium),
+					ui.CaptionOf(ggui.Map(m.Settings, func(s storeSettings) string {
+						if s.SandboxEngine {
+							return tr("How docker reaches GVX Desktop's sandbox engine. Changes take effect immediately.")
+						}
+						return tr("How the Docker Engine is reached. Changes take effect immediately.")
+					})),
+				).Gap(2)),
 				widget.Row(
 					ggui.If(overTCP, func() ggui.Widget {
 						return widget.Box(ui.TextField(port).Name(tr("Docker API port")).OnCommit(setPort)).Width(84)
 					}),
 					ui.ToggleGroup(endpoint).Options([]string{DockerSocketEndpoint, DockerTCPEndpoint}).Format(dockerEndpointName).Outline().Spacing(0).Name(tr("Engine API")),
-				).Gap(8).Align(widget.AlignCenter)),
+				).Gap(8).Align(widget.AlignCenter),
+			).Gap(24).Align(widget.AlignCenter),
 			ui.Caption(tr("A Docker CLI on Windows reaches a Unix socket only from version 29 on. TCP on this computer's loopback address works with any version, on every system.")),
 			host,
 			proxyErr,
 		).Gap(6).Stretch(),
 		sharedFoldersField(m),
+		sandboxEngineSettings(m),
 	)
+}
+
+// sandboxEngineSettings is the Experimental subsection under Settings → Docker.
+func sandboxEngineSettings(m *Model) ggui.Widget {
+	enabled := ggui.Bind(func() bool { return m.Settings.Get().SandboxEngine }, m.SetSandboxEngine)
+	dockerRunning := ggui.Combine(m.Settings, m.Rows, func(s storeSettings, rows []Row) bool {
+		if !s.SandboxEngine {
+			return false
+		}
+		r, ok := m.RecipeSandbox(rows, recipes.Docker)
+		return ok && r.State.Status.Active()
+	})
+	runningNote := ggui.If(dockerRunning, func() ggui.Widget {
+		return widget.Row(
+			glyph(lucide.Info, 14).Color(colorAmber),
+			widget.Expanded(ui.Caption(tr("Your Docker Engine sandbox is still running, but docker no longer reaches it while this mode is on. Stop it manually if you do not need it."))),
+		).Gap(8).Align(widget.AlignStart)
+	})
+	builderStatus := ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func() ggui.Widget {
+		return sandboxBuilderStatus(m)
+	})
+	return widget.Column(
+		widget.Row(
+			glyph(lucide.FlaskConical, 14).Color(colorAmber),
+			widget.Text(tr("Experimental")).Size(14).Weight(ggui.WeightMedium),
+		).Gap(6).Align(widget.AlignCenter),
+		settingRow(tr("Run containers as sandboxes, without a Docker Engine"),
+			tr("GVX Desktop answers the Docker API directly and runs each container as its own gvx sandbox. Takes effect immediately; turning it off stops those containers."),
+			ui.Switch(enabled, "")),
+		ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, and single-service Compose.")),
+		ui.Caption(tr("Not yet supported: exec, cp, inter-container networking, and Windows terminals.")),
+		ui.Caption(tr("Turning this on routes docker build through buildx (docker buildx install) and selects the gvx-desktop builder for the gvx context and engine endpoint; turning it off puts both back.")),
+		builderStatus,
+		runningNote,
+	).Gap(6).Stretch()
+}
+
+// sandboxBuilderStatus shows the lazy BuildKit builder state (idle/running)
+// and the buildx gvx-desktop builder status line in Settings → Docker.
+func sandboxBuilderStatus(m *Model) ggui.Widget {
+	type viewState struct {
+		builder engine.BuilderState
+		bx      BuildxStatus
+	}
+	combined := ggui.Combine(m.BuilderState, m.BuildxStatus, func(b engine.BuilderState, bx BuildxStatus) viewState {
+		return viewState{builder: b, bx: bx}
+	})
+	return ggui.View(combined, func(v viewState) ggui.Widget {
+		var rows []ggui.Widget
+
+		// 1. Builder sandbox state (idle / starting / running).
+		var stateDot ggui.Widget
+		var stateLabel string
+		switch v.builder.Status {
+		case engine.BuilderRunning:
+			stateDot = dot(colorGreen, 7)
+			stateLabel = tr("Image builder: running")
+		case engine.BuilderStarting:
+			stateDot = dot(colorAmber, 7)
+			stateLabel = tr("Image builder: starting…")
+		default:
+			stateDot = dot(colorGray, 7)
+			stateLabel = tr("Image builder: idle")
+		}
+		rows = append(rows, widget.Row(
+			stateDot,
+			widget.Text(stateLabel).Size(12).Weight(ggui.WeightMedium),
+			widget.Expanded(ui.Caption(tr("Starts automatically on the first build and stops when idle.")).Size(12)),
+		).Gap(8).Align(widget.AlignCenter))
+		if v.builder.Err != "" {
+			rows = append(rows, widget.Row(
+				glyph(lucide.TriangleExclamationPoint, 13).Color(colorAmber),
+				widget.Expanded(ui.Caption(tr("Image builder error: %s", v.builder.Err)).Size(12)),
+			).Gap(8).Align(widget.AlignStart))
+		}
+
+		// 2. "Use the gvx-desktop builder" status line.
+		bx := v.bx
+		switch {
+		case bx.Selected:
+			rows = append(rows, widget.Row(
+				glyph(lucide.CircleCheck, 14).Color(colorGreen),
+				widget.Expanded(ui.Caption(tr("docker build uses the gvx-desktop builder for the gvx context.")).Size(12)),
+			).Gap(8).Align(widget.AlignCenter))
+		case bx.NoCLI:
+			rows = append(rows, widget.Row(
+				glyph(lucide.Info, 14).Color(colorAmber),
+				widget.Expanded(ui.Caption(tr("docker was not found. Install the Docker CLI with the buildx plugin to use docker build.")).Size(12)),
+			).Gap(8).Align(widget.AlignStart))
+		case bx.NoBuildx:
+			rows = append(rows, widget.Row(
+				glyph(lucide.Info, 14).Color(colorAmber),
+				widget.Expanded(ui.Caption(tr("The docker buildx plugin was not found. Install docker-buildx to use docker build with the gvx-desktop builder.")).Size(12)),
+			).Gap(8).Align(widget.AlignStart))
+		case bx.NoCtx:
+			rows = append(rows, widget.Row(
+				glyph(lucide.Info, 14).Color(colorBlue),
+				widget.Expanded(ui.Caption(tr("The gvx-desktop builder is ready. Set up the gvx context, or run: docker buildx use gvx-desktop")).Size(12)),
+				ui.Button(tr("Use the gvx-desktop builder"), m.UseSandboxBuilder).Outline().Size(ui.ButtonExtraSmall).Disabled(bx.Busy),
+			).Gap(8).Align(widget.AlignCenter))
+		case bx.Err != "":
+			rows = append(rows, widget.Row(
+				glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber),
+				widget.Expanded(ui.Caption(tr("Could not configure the gvx-desktop builder: %s", bx.Err)).Size(12)),
+				ui.Button(tr("Use the gvx-desktop builder"), m.UseSandboxBuilder).Outline().Size(ui.ButtonExtraSmall).Disabled(bx.Busy),
+			).Gap(8).Align(widget.AlignCenter))
+		default:
+			rows = append(rows, widget.Row(
+				glyph(lucide.Wrench, 14).Color(colorGray),
+				widget.Expanded(ui.Caption(tr("Use the gvx-desktop builder")).Size(12)),
+				ui.Button(tr("Use the gvx-desktop builder"), m.UseSandboxBuilder).Outline().Size(ui.ButtonExtraSmall).Disabled(bx.Busy),
+			).Gap(8).Align(widget.AlignCenter))
+		}
+
+		return widget.Box(widget.Column(rows...).Gap(6).Stretch()).Pad(10).Radius(8).Border(1, colorGrayA)
+	})
 }
 
 // sharedFoldersField lists the folders the Docker Engine shares at their
 // own paths, with a button that removes each and one that adds another.
+// In sandbox-engine mode it shows a dimmed note instead because rungv mounts
+// host bind paths directly.
 func sharedFoldersField(m *Model) ggui.Widget {
-	folders := ggui.Combine(m.Rows, m.Settings, m.sharedFoldersOf).WithEqual(slices.Equal[[]string])
-	pick := ggui.State("")
-	list := ggui.View(folders, func(list []string) ggui.Widget {
-		add := ui.Button(tr("Add folder…"), func() { browseFolder(m, pick, m.ShareFolder) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.FolderPlus, 14))
-		if len(list) == 0 {
-			home := rungv.ExpandHome("~")
+	return ggui.View(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func(se bool) ggui.Widget {
+		if se {
 			return widget.Column(
-				widget.Row(glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber),
-					widget.Expanded(ui.Caption(tr("No folder is shared: bind mounts of folders on this computer are rejected."))),
-				).Gap(8).Align(widget.AlignStart),
-				widget.Row(ui.Button(tr("Share your home folder"), func() { m.ShareFolder(home) }).Size(ui.ButtonSmall), add).Gap(8),
-			).Gap(8).Stretch()
+				widget.Text(tr("Shared folders")).Size(14).Weight(ggui.WeightMedium).Color(colorGray),
+				ui.Caption(tr("Applies only to the Docker Engine sandbox. In sandbox-engine mode, bind mounts access host paths directly.")),
+			).Gap(4).Stretch()
 		}
-		rows := make([]ggui.Widget, 0, len(list)+1)
-		for _, f := range list {
-			rows = append(rows, widget.Row(
-				glyph(lucide.Folder, 14).Color(colorGray),
-				widget.Expanded(ui.Mono(tildePath(f)).Size(12).NoWrap().Ellipsis()),
-				tip(iconButton(lucide.X, tr("Stop sharing %s", f), func() { m.UnshareFolder(f) }), tr("Stop sharing")),
-			).Gap(8).Align(widget.AlignCenter))
+		folders := ggui.Combine(m.Rows, m.Settings, m.sharedFoldersOf).WithEqual(slices.Equal[[]string])
+		pick := ggui.State("")
+		list := ggui.View(folders, func(list []string) ggui.Widget {
+			add := ui.Button(tr("Add folder…"), func() { browseFolder(m, pick, m.ShareFolder) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.FolderPlus, 14))
+			if len(list) == 0 {
+				home := rungv.ExpandHome("~")
+				return widget.Column(
+					widget.Row(glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber),
+						widget.Expanded(ui.Caption(tr("No folder is shared: bind mounts of folders on this computer are rejected."))),
+					).Gap(8).Align(widget.AlignStart),
+					widget.Row(ui.Button(tr("Share your home folder"), func() { m.ShareFolder(home) }).Size(ui.ButtonSmall), add).Gap(8),
+				).Gap(8).Stretch()
+			}
+			rows := make([]ggui.Widget, 0, len(list)+1)
+			for _, f := range list {
+				rows = append(rows, widget.Row(
+					glyph(lucide.Folder, 14).Color(colorGray),
+					widget.Expanded(ui.Mono(tildePath(f)).Size(12).NoWrap().Ellipsis()),
+					tip(iconButton(lucide.X, tr("Stop sharing %s", f), func() { m.UnshareFolder(f) }), tr("Stop sharing")),
+				).Gap(8).Align(widget.AlignCenter))
+			}
+			rows = append(rows, widget.Row(add))
+			return widget.Column(rows...).Gap(6).Stretch()
+		})
+		help := []ggui.Widget{list, ui.Caption(tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. The engine sees a change when it is restarted."))}
+		if runtime.GOOS == "windows" {
+			help = append(help, widget.Row(glyph(lucide.Info, 14).Color(colorBlue),
+				widget.Expanded(ui.Caption(tr("A folder such as C:\\Users\\me is at /c/Users/me in the engine. Paths written the Windows way in docker run -v and in compose files are converted on the way there."))),
+			).Gap(8).Align(widget.AlignStart))
 		}
-		rows = append(rows, widget.Row(add))
-		return widget.Column(rows...).Gap(6).Stretch()
+		return widget.Column(
+			widget.Text(tr("Shared folders")).Size(14).Weight(ggui.WeightMedium),
+			widget.Column(help...).Gap(6).Stretch(),
+		).Gap(6).Stretch()
 	})
-	help := []ggui.Widget{list, ui.Caption(tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. The engine sees a change when it is restarted."))}
-	if runtime.GOOS == "windows" {
-		help = append(help, widget.Row(glyph(lucide.Info, 14).Color(colorBlue),
-			widget.Expanded(ui.Caption(tr("A folder such as C:\\Users\\me is at /c/Users/me in the engine. Paths written the Windows way in docker run -v and in compose files are converted on the way there."))),
-		).Gap(8).Align(widget.AlignStart))
-	}
-	return widget.Column(
-		widget.Text(tr("Shared folders")).Size(14).Weight(ggui.WeightMedium),
-		widget.Column(help...).Gap(6).Stretch(),
-	).Gap(6).Stretch()
 }
 
 // kubeSettings chooses what the Kubernetes recipe's cluster runs.

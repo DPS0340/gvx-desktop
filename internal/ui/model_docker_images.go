@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -155,6 +156,55 @@ func dockerImageUsers(containers []dockerapi.Container, row DockerImageRow) []st
 	return names
 }
 
+// sandboxImageUsers returns the names of user sandboxes referencing row.
+func sandboxImageUsers(rows []Row, row DockerImageRow) []string {
+	var names []string
+	ref := row.Ref()
+	for _, r := range rows {
+		if sandboxUsesImage(r.Spec.Image, row, ref) {
+			names = append(names, r.Spec.Name)
+		}
+	}
+	return names
+}
+
+func sandboxUsesImage(img string, row DockerImageRow, ref string) bool {
+	if img == "" {
+		return false
+	}
+	if img == ref || img == row.ID || img == row.ShortID {
+		return true
+	}
+	if row.Tag == "latest" && row.Repository != "<none>" && img == row.Repository {
+		return true
+	}
+	norm := func(s string) string {
+		s = strings.TrimPrefix(s, "docker.io/")
+		s = strings.TrimPrefix(s, "library/")
+		return s
+	}
+	nImg := norm(img)
+	if nImg == norm(ref) {
+		return true
+	}
+	return row.Tag == "latest" && row.Repository != "<none>" && nImg == norm(row.Repository)
+}
+
+// dockerImageAllUsers returns container users of row, plus user sandbox users
+// when the shared rungv image cache is active in sandbox-engine mode.
+func dockerImageAllUsers(containers []dockerapi.Container, rows []Row, sandboxEngine bool, row DockerImageRow) []string {
+	users := dockerImageUsers(containers, row)
+	if !sandboxEngine {
+		return users
+	}
+	for _, sb := range sandboxImageUsers(rows, row) {
+		if !slices.Contains(users, sb) {
+			users = append(users, sb)
+		}
+	}
+	return users
+}
+
 // dockerImagesTotalSize sums the sizes of unique Docker images.
 func dockerImagesTotalSize(images []dockerapi.Image) int64 {
 	var total int64
@@ -170,16 +220,22 @@ func (m *Model) GoImages(view int) {
 	m.Go(PageImages)
 }
 
-// LoadDockerImages reads the images stored inside the Docker Engine sandbox.
-// Asked for while a listing runs, it lists them again after it.
+// LoadDockerImages reads the images stored inside the Docker Engine sandbox
+// or served by the experimental sandbox engine. Asked for while a listing
+// runs, it lists them again after it.
 func (m *Model) LoadDockerImages() {
 	if m.Offline {
 		return
 	}
-	row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
-	if !ok || row.State.Status != sandbox.Running {
+	if ggui.Peek(m.ContainersAccess) != ContainersOpen {
 		m.DockerImages.Set(Listing[dockerapi.Image]{})
 		return
+	}
+	if ggui.Peek(m.Settings).SandboxEngine {
+		if pe := ggui.Peek(m.DockerProxyErr); pe != "" {
+			m.DockerImages.Set(Listing[dockerapi.Image]{Loaded: true, Err: pe})
+			return
+		}
 	}
 	if m.dockerImagesLoading {
 		m.dockerImagesAgain = true
@@ -206,7 +262,7 @@ func (m *Model) LoadDockerImages() {
 			m.LoadDockerImages()
 			return
 		}
-		if row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker); !ok || row.State.Status != sandbox.Running {
+		if ggui.Peek(m.ContainersAccess) != ContainersOpen {
 			return
 		}
 		l := Listing[dockerapi.Image]{Items: items, Loaded: true}
@@ -235,8 +291,19 @@ func (m *Model) InspectDockerImage(img DockerImageRow) {
 }
 
 // AskRemoveDockerImage confirms and removes a Docker image (or untags one tag).
+// In sandbox-engine mode (shared rungv image cache), images referenced by user
+// sandboxes are refused rather than force-deleted.
 func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 	ref := img.Ref()
+	if ggui.Peek(m.Settings).SandboxEngine {
+		if sbs := sandboxImageUsers(ggui.Peek(m.Rows), img); len(sbs) > 0 {
+			m.Toasts.Push(ui.Toast(
+				tr("Cannot remove %s", ref),
+				tr("Used by sandbox %s. Remove it from the GVX Sandboxes tab instead if you want to re-pull it later.", strings.Join(sbs, ", ")),
+			).Warning().Duration(8 * time.Second))
+			return
+		}
+	}
 	users := dockerImageUsers(ggui.Peek(m.DockerContainers).Items, img)
 	text := tr("The image is removed from the Docker Engine (%s).", formatBytes(img.Size))
 	if len(users) > 0 {

@@ -15,11 +15,12 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
+	"github.com/ironpark/gvx-desktop/internal/store"
 )
 
 // ContainersAccess is whether the Containers page can be used, and if not,
 // why: its containers are the Docker Engine's, which answers only while its
-// sandbox is running.
+// sandbox is running, or always when the experimental sandbox engine is on.
 type ContainersAccess int
 
 const (
@@ -29,8 +30,11 @@ const (
 	ContainersStopped                          // the engine is stopped, stopping, exited or failed
 )
 
-// containersAccess reads it from the sandboxes.
-func containersAccess(rows []Row) ContainersAccess {
+// containersAccess reads it from the sandboxes and settings.
+func containersAccess(rows []Row, set store.Settings) ContainersAccess {
+	if set.SandboxEngine {
+		return ContainersOpen
+	}
 	return ContainersAccess(engineStage(rows, recipes.Docker))
 }
 

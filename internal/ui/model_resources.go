@@ -186,7 +186,7 @@ func (m *Model) AskPruneImages() {
 
 // ---- Volumes ------------------------------------------------------------
 
-// LoadVolumes reads the local volumes.
+// LoadVolumes reads the local volumes and the sandbox engine's volume users.
 func (m *Model) LoadVolumes() {
 	c := m.Client()
 	if c.Path == "" {
@@ -194,17 +194,32 @@ func (m *Model) LoadVolumes() {
 	}
 	m.Volumes.Update(func(l Listing[rungv.Volume]) Listing[rungv.Volume] { l.Loading = true; return l })
 	var items []rungv.Volume
+	var engUsers map[string][]string
 	m.async(func(ctx context.Context) error {
 		var err error
 		items, err = c.Volumes(ctx)
+		_, engUsers = m.sandboxEngineVolumeOwnership()
 		return err
 	}, func(err error) {
 		l := Listing[rungv.Volume]{Items: items, Loaded: true}
 		if err != nil {
 			l.Err = err.Error()
 		}
+		m.EngineVolumeUsers.Set(engUsers)
 		m.Volumes.Set(l)
 	})
+}
+
+func stringSliceMapEqual(a, b map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		if vb, ok := b[k]; !ok || !slices.Equal(va, vb) {
+			return false
+		}
+	}
+	return true
 }
 
 // VolumeUsers names the sandboxes that mount a volume.
@@ -216,6 +231,64 @@ func VolumeUsers(rows []Row, name string) []string {
 		}
 	}
 	return out
+}
+
+// volumeUsersWithEngine names the sandboxes and experimental sandbox-engine
+// containers that mount a volume.
+func volumeUsersWithEngine(rows []Row, engineUsers map[string][]string, name string) []string {
+	out := VolumeUsers(rows, name)
+	for _, ctr := range engineUsers[name] {
+		if !slices.Contains(out, ctr) {
+			out = append(out, ctr)
+		}
+	}
+	return out
+}
+
+// prunableVolumes returns the names of rungv volumes that are neither locked in
+// use, referenced by any saved user sandbox, nor owned/referenced by the
+// experimental sandbox engine.
+func prunableVolumes(volumes []rungv.Volume, rows []Row, engineOwned map[string]bool, engineUsers map[string][]string) []string {
+	var out []string
+	for _, v := range volumes {
+		if v.InUse {
+			continue
+		}
+		if len(VolumeUsers(rows, v.Name)) > 0 {
+			continue
+		}
+		if engineOwned[v.Name] || len(engineUsers[v.Name]) > 0 {
+			continue
+		}
+		out = append(out, v.Name)
+	}
+	return out
+}
+
+// pruneVolumes removes every volume not used by a sandbox or owned by the
+// sandbox engine one by one, never calling rungv volume prune.
+func (m *Model) pruneVolumes(
+	ctx context.Context,
+	list func(context.Context) ([]rungv.Volume, error),
+	remove func(context.Context, string) error,
+	rows []Row,
+) (int, error) {
+	vols, err := list(ctx)
+	if err != nil {
+		return 0, err
+	}
+	engineOwned, engineUsers := m.sandboxEngineVolumeOwnership()
+	targets := prunableVolumes(vols, rows, engineOwned, engineUsers)
+	deleted := 0
+	var errs []error
+	for _, name := range targets {
+		if err := remove(ctx, name); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			continue
+		}
+		deleted++
+	}
+	return deleted, errors.Join(errs...)
 }
 
 // CreateVolume formats the volume named in the dialog.
@@ -237,7 +310,8 @@ func (m *Model) CreateVolume() {
 
 // AskRemoveVolume confirms and deletes a volume.
 func (m *Model) AskRemoveVolume(v rungv.Volume) {
-	users := VolumeUsers(ggui.Peek(m.Rows), v.Name)
+	_, engUsers := m.sandboxEngineVolumeOwnership()
+	users := volumeUsersWithEngine(ggui.Peek(m.Rows), engUsers, v.Name)
 	text := tr("All data in %s (%s) is deleted. This cannot be undone.", v.Name, formatSize(v.Size))
 	if len(users) > 0 {
 		text += tr(" Used by: %s.", strings.Join(users, ", "))
@@ -256,25 +330,31 @@ func (m *Model) AskRemoveVolume(v rungv.Volume) {
 	})
 }
 
-// AskPruneVolumes deletes every unlocked volume.
+// AskPruneVolumes removes unused rungv volumes individually, keeping volumes
+// referenced by saved sandboxes and all engine-managed volumes.
 func (m *Model) AskPruneVolumes() {
-	m.Confirm(tr("Delete all unused volumes?"), tr("Every volume no running sandbox holds is deleted, with its data. Saved sandboxes that mount them start empty."), tr("Prune volumes"), func() {
-		c := m.Client()
-		var out string
-		m.async(func(ctx context.Context) error {
-			var err error
-			out, err = c.PruneVolumes(ctx)
-			return err
-		}, func(err error) {
-			if err != nil {
-				m.toastError(tr("Prune failed"), err)
-			} else {
-				m.toastOK(tr("Volumes pruned"), lastLine(out))
-			}
-			m.LoadVolumes()
-			m.LoadDisk()
+	m.Confirm(tr("Delete all unused volumes?"),
+		tr("Unused volumes that no sandbox or container uses are deleted, with their data. Engine-managed Docker volumes are kept."),
+		tr("Prune volumes"), func() {
+			c := m.Client()
+			rows := slices.Clone(ggui.Peek(m.Rows))
+			var deleted int
+			m.async(func(ctx context.Context) error {
+				var err error
+				deleted, err = m.pruneVolumes(ctx, c.Volumes, c.RemoveVolume, rows)
+				return err
+			}, func(err error) {
+				if err != nil {
+					m.toastError(tr("Prune failed"), err)
+				} else if deleted == 0 {
+					m.toastOK(tr("Volumes pruned"), tr("No unused volumes to remove."))
+				} else {
+					m.toastOK(tr("Volumes pruned"), trn(deleted, "Removed %d unused volume.", "Removed %d unused volumes."))
+				}
+				m.LoadVolumes()
+				m.LoadDisk()
+			})
 		})
-	})
 }
 
 // LoadDisk reads the disk usage totals.
@@ -301,10 +381,14 @@ func (m *Model) LoadDisk() {
 func (m *Model) dockerHost() string { return m.DockerAPI().Host() }
 
 // dockerBackendHost is the app-private backend socket dockerd publishes inside
-// the sandbox, used directly by the app's own dockerapi client.
+// the sandbox, used directly by the app's own dockerapi client. In
+// sandbox-engine mode the proxy's front endpoint serves the in-app engine.
 func (m *Model) dockerBackendHost() string {
 	if m.dockerBackend != "" {
 		return m.dockerBackend
+	}
+	if ggui.Peek(m.Settings).SandboxEngine {
+		return m.dockerHost()
 	}
 	return recipes.DockerBackendHost()
 }
@@ -472,16 +556,22 @@ func shareProblem(err error) string {
 	return err.Error()
 }
 
-// LoadDocker lists the containers of the Docker Engine recipe. Asked for
-// while a listing runs, it lists them again after it.
+// LoadDocker lists the containers of the Docker Engine recipe or the
+// experimental sandbox engine. Asked for while a listing runs, it lists them
+// again after it.
 func (m *Model) LoadDocker() {
 	if m.Offline {
 		return // the containers shown are made up
 	}
-	row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
-	if !ok || row.State.Status != sandbox.Running {
+	if ggui.Peek(m.ContainersAccess) != ContainersOpen {
 		m.DockerContainers.Set(Listing[dockerapi.Container]{})
 		return
+	}
+	if ggui.Peek(m.Settings).SandboxEngine {
+		if pe := ggui.Peek(m.DockerProxyErr); pe != "" {
+			m.DockerContainers.Set(Listing[dockerapi.Container]{Loaded: true, Err: pe})
+			return
+		}
 	}
 	if m.dockerLoading {
 		m.dockerAgain = true
@@ -512,7 +602,7 @@ func (m *Model) LoadDocker() {
 			m.LoadDocker()
 			return
 		}
-		if row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker); !ok || row.State.Status != sandbox.Running {
+		if ggui.Peek(m.ContainersAccess) != ContainersOpen {
 			return // the engine stopped meanwhile, and its list was emptied
 		}
 		l := Listing[dockerapi.Container]{Items: items, Loaded: true}
@@ -521,6 +611,7 @@ func (m *Model) LoadDocker() {
 		} else {
 			m.DockerVersion.Set(version)
 		}
+		m.refreshEngineRunning()
 		m.DockerContainers.Set(l)
 	})
 }
@@ -534,7 +625,16 @@ func (m *Model) followDocker() {
 	if m.Offline {
 		return
 	}
-	every := ggui.Derived(func() time.Duration { return m.recipePageInterval(recipes.Docker, PageDocker, PageContainers) })
+	every := ggui.Derived(func() time.Duration {
+		if !m.ContainersOpen.Get() {
+			return 0
+		}
+		switch m.Page.Get() {
+		case PageDocker, PageContainers:
+			return 3 * time.Second
+		}
+		return 10 * time.Second
+	})
 	logs := ggui.Derived(m.followsContainerLogs)
 	m.poll(every, m.LoadDocker, func() {
 		m.LoadDocker()
@@ -543,8 +643,7 @@ func (m *Model) followDocker() {
 		}
 	})
 	imagesEvery := ggui.Derived(func() time.Duration {
-		row, ok := m.RecipeSandbox(m.Rows.Get(), recipes.Docker)
-		if !ok || row.State.Status != sandbox.Running {
+		if !m.ContainersOpen.Get() {
 			return 0
 		}
 		switch m.Page.Get() {
@@ -681,6 +780,9 @@ func (m *Model) UpdateSettings(fn func(*store.Settings)) {
 	}
 	if s.DockerPath != before.DockerPath {
 		m.CheckLink(m.DockerLink)
+		if s.SandboxEngine {
+			m.syncSandboxBuilder(true)
+		}
 	}
 }
 
@@ -706,40 +808,54 @@ func (m *Model) Open(target string) {
 	}
 }
 
-// PrepareQuit decides what quitting does with running sandboxes: true
-// when the app may close now.
+// PrepareQuit decides what quitting does with running sandboxes and
+// sandbox-engine containers: true when the app may close now.
 func (m *Model) PrepareQuit() bool {
-	if len(m.sup.Running()) == 0 {
+	m.refreshEngineRunning()
+	if m.ActiveCount() == 0 {
 		return true
 	}
 	m.QuitOpen.Set(true)
 	return false
 }
 
-// StopAll stops every sandbox, as the user asked: the recipe sandboxes
-// among them are not started again with the app.
+// StopAll stops every sandbox and every running sandbox-engine container, as
+// the user asked: the recipe sandboxes among them are not started again with
+// the app.
 func (m *Model) StopAll() {
 	for _, id := range m.sup.Running() {
 		m.setResume(id, false)
 	}
-	m.stopAll(func() {})
+	m.stopAll(false, func() {})
 }
 
-// StopAllAndThen stops every sandbox to quit, then runs then on the UI
-// thread. The recipe sandboxes running start again with the app.
+// StopAllAndThen stops every sandbox (and closes the in-app sandbox engine) to
+// quit, then runs then on the UI thread. The recipe sandboxes running start
+// again with the app.
 func (m *Model) StopAllAndThen(then func()) {
 	m.quitting = true
-	m.stopAll(then)
+	m.stopAll(true, then)
 }
 
-func (m *Model) stopAll(then func()) {
+func (m *Model) stopAll(closeEngine bool, then func()) {
 	timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
 	id := m.Toasts.Push(ui.Toast(tr("Stopping sandboxes"), tr("Waiting for the guests to exit…")).Loading())
 	m.async(func(context.Context) error {
-		m.sup.StopAll(timeout)
+		var wg sync.WaitGroup
+		wg.Go(func() { m.sup.StopAll(timeout) })
+		if closeEngine {
+			wg.Go(func() { m.CloseSandboxEngine(timeout) })
+		} else {
+			wg.Go(func() { m.StopSandboxEngineContainers(timeout) })
+		}
+		wg.Wait()
 		return nil
 	}, func(error) {
 		m.Toasts.Dismiss(id)
+		m.refreshEngineRunning()
+		if !closeEngine {
+			m.LoadDocker()
+		}
 		then()
 	})
 }

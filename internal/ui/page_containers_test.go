@@ -30,12 +30,26 @@ func TestContainersAccess(t *testing.T) {
 		{"exited", []Row{{Spec: docker, State: sandbox.State{Status: sandbox.Exited}}}, ContainersStopped},
 		{"failed", []Row{{Spec: docker, State: sandbox.State{Status: sandbox.Failed, ExitCode: 1}}}, ContainersStopped},
 	} {
-		got := containersAccess(tc.rows)
+		got := containersAccess(tc.rows, store.Settings{})
 		if got != tc.want {
 			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
 		}
 		if open := got == ContainersOpen; open != (got.Reason() == "") {
 			t.Errorf("%s: open %v with the reason %q", tc.name, open, got.Reason())
+		}
+	}
+	// In experimental sandbox-engine mode, ContainersAccess is always open
+	// regardless of the Docker Engine recipe sandbox state.
+	se := store.Settings{SandboxEngine: true}
+	for _, rows := range [][]Row{
+		nil,
+		{{Spec: other, State: sandbox.State{Status: sandbox.Running}}},
+		{{Spec: docker}},
+		{{Spec: docker, State: sandbox.State{Status: sandbox.Stopped}}},
+		{{Spec: docker, State: sandbox.State{Status: sandbox.Failed, ExitCode: 1}}},
+	} {
+		if got := containersAccess(rows, se); got != ContainersOpen {
+			t.Errorf("sandbox-engine mode with %d rows: got %v, want ContainersOpen", len(rows), got)
 		}
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/appupdate"
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/dockerproxy"
+	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/imagefs"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
@@ -116,14 +117,19 @@ type Model struct {
 	// system: one of LanguageTags.
 	Lang *ggui.DerivedValue[string]
 
-	Specs    *ggui.StateValue[[]sandbox.Spec]
-	States   *ggui.StateValue[map[string]sandbox.State]
-	Rows     *ggui.DerivedValue[[]Row]
-	Running  *ggui.DerivedValue[int]
-	Selected *ggui.StateValue[string]
-	Logs     *ggui.StateValue[[]sandbox.LogLine]
-	Detail   *ggui.StateValue[int]
-	Query    *ggui.StateValue[string]
+	Specs             *ggui.StateValue[[]sandbox.Spec]
+	States            *ggui.StateValue[map[string]sandbox.State]
+	Rows              *ggui.DerivedValue[[]Row]
+	Running           *ggui.DerivedValue[int]
+	EngineRunning     *ggui.StateValue[int]
+	TotalRunning      *ggui.DerivedValue[int]
+	EngineVolumeUsers *ggui.StateValue[map[string][]string]
+	BuilderState      *ggui.StateValue[engine.BuilderState]
+	BuildxStatus      *ggui.StateValue[BuildxStatus]
+	Selected          *ggui.StateValue[string]
+	Logs              *ggui.StateValue[[]sandbox.LogLine]
+	Detail            *ggui.StateValue[int]
+	Query             *ggui.StateValue[string]
 
 	Images    *ggui.StateValue[Listing[rungv.Image]]
 	Volumes   *ggui.StateValue[Listing[rungv.Volume]]
@@ -304,6 +310,10 @@ type Model struct {
 	dockerProxyStarted                     bool
 	dockerBackend                          string // overrides recipes.DockerBackendHost() in tests
 	engineSpec                             atomic.Pointer[sandbox.Spec]
+	sandboxEngine                          sandboxEngine // in-app Docker Engine API (*engine.Engine); tests may replace
+	sandboxEngineGen                       int
+	buildxSyncGen                          int
+	keepImages                             atomic.Pointer[[]string]
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -342,12 +352,16 @@ func NewModel(st store.Store, dataDir string) *Model {
 		AppUpdate: ggui.State(AppUpdate{Install: appupdate.Detect()}),
 		Now:       ggui.State(time.Now()),
 
-		Specs:    ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
-		States:   ggui.State(map[string]sandbox.State{}).WithEqual(nil),
-		Selected: ggui.State(""),
-		Logs:     ggui.State([]sandbox.LogLine(nil)).WithEqual(nil),
-		Detail:   ggui.State(0),
-		Query:    ggui.State(""),
+		Specs:             ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
+		States:            ggui.State(map[string]sandbox.State{}).WithEqual(nil),
+		EngineRunning:     ggui.State(0),
+		EngineVolumeUsers: ggui.State(map[string][]string(nil)).WithEqual(stringSliceMapEqual),
+		BuilderState:      ggui.State(engine.BuilderState{Status: engine.BuilderIdle}),
+		BuildxStatus:      ggui.State(BuildxStatus{}).WithEqual(BuildxStatus.Equal),
+		Selected:          ggui.State(""),
+		Logs:              ggui.State([]sandbox.LogLine(nil)).WithEqual(nil),
+		Detail:            ggui.State(0),
+		Query:             ggui.State(""),
 
 		Images:              ggui.State(Listing[rungv.Image]{}).WithEqual(nil),
 		Volumes:             ggui.State(Listing[rungv.Volume]{}).WithEqual(nil),
@@ -458,12 +472,12 @@ func NewModel(st store.Store, dataDir string) *Model {
 		}
 		return rows
 	}).WithEqual(func(a, b []Row) bool { return slices.EqualFunc(a, b, Row.Equal) })
-	m.initDockerProxy()
+	m.initDockerProxy(dataDir)
 	m.DockerEndpoint = ggui.Map(m.Settings, func(set store.Settings) string {
 		return dockerSettingOf(set).Host()
 	})
 	m.newLinks()
-	m.ContainersAccess = ggui.Map(m.Rows, containersAccess)
+	m.ContainersAccess = ggui.Combine(m.Rows, m.Settings, containersAccess)
 	m.ContainersOpen = ggui.Map(m.ContainersAccess, func(a ContainersAccess) bool { return a == ContainersOpen })
 	m.RunningContainers = ggui.Map(m.DockerContainers, func(l Listing[dockerapi.Container]) int {
 		n := 0
@@ -488,7 +502,12 @@ func NewModel(st store.Store, dataDir string) *Model {
 	}).WithEqual(kubeapi.Pod.Equal)
 	m.PodLogContainer = ggui.Combine(m.Pod, m.PodContainer, podLogContainer)
 	m.Menus = ggui.Derived(func() MenuState {
-		s := menuState(m.Rows.Get(), m.DockerContainers.Get(), m.Pods.Get(), m.PodsWaiting.Get(), m.DockerLink.View.Get(), m.KubeLink.View.Get())
+		ctrs := m.DockerContainers.Get()
+		s := menuState(m.Rows.Get(), ctrs, m.Pods.Get(), m.PodsWaiting.Get(), m.DockerLink.View.Get(), m.KubeLink.View.Get())
+		if m.Settings.Get().SandboxEngine {
+			s.SandboxEngine = true
+			s.menuContainers(ctrs)
+		}
 		s.Forwards = menuForwards(m.Forwards.Get())
 		return s
 	}).WithEqual(MenuState.Equal)
@@ -501,6 +520,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		}
 		return n
 	})
+	m.TotalRunning = ggui.Combine(m.Running, m.EngineRunning, func(a, b int) int { return a + b })
 	m.DraftError = m.Draft.Map(func(d Draft) string {
 		spec, err := d.Spec()
 		if err != nil {
@@ -744,14 +764,18 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 		}
 		m.Engine.Set(r.e)
 		ok := r.e.Path != "" && r.e.Err == ""
+		ready := ok && len(r.e.Info.AvailableBackends) > 0
 		if ok {
 			m.LoadImages()
 			m.LoadVolumes()
 			m.LoadDisk()
 			m.LoadSnapshots()
 		}
+		if ready && ggui.Peek(m.Settings).SandboxEngine {
+			m.openSandboxEngine()
+		}
 		if then != nil {
-			then(ok && len(r.e.Info.AvailableBackends) > 0)
+			then(ready)
 		}
 	})
 }

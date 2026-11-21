@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -85,6 +84,9 @@ type State struct {
 	Ports     []PublishedPort
 	Restored  string // the checkpoint bundle this run resumed, if any
 	LogSeq    int64
+	// Signal is the signal that ended the process, 0 when it exited by
+	// itself; ExitCode is then -1.
+	Signal int
 }
 
 // Equal makes State comparable for signals.
@@ -102,7 +104,7 @@ func (s State) Equal(o State) bool {
 	return a.Status == b.Status && a.PID == b.PID && a.StartedAt.Equal(b.StartedAt) &&
 		a.ReadyAt.Equal(b.ReadyAt) && a.ExitedAt.Equal(b.ExitedAt) && a.ExitCode == b.ExitCode &&
 		a.Error == b.Error && a.Advice == b.Advice && a.Platform == b.Platform &&
-		a.Restored == b.Restored && a.LogSeq == b.LogSeq
+		a.Restored == b.Restored && a.LogSeq == b.LogSeq && a.Signal == b.Signal
 }
 
 // Event is a change the supervisor reports.
@@ -136,6 +138,10 @@ type Supervisor struct {
 	// Prepare, when set, writes what a spec reads from this computer as it
 	// starts, before rungv runs: the files a recipe gives its guest.
 	Prepare func(Spec) error
+	// Output, when set, receives what the guest of every run writes, as it
+	// comes and without rungv's own lines, from the goroutines reading it.
+	// It must not block. The log buffers get the same output either way.
+	Output func(id string, o Output)
 
 	mu    sync.Mutex
 	procs map[string]*proc
@@ -143,12 +149,35 @@ type Supervisor struct {
 }
 
 type proc struct {
-	cmd      *exec.Cmd
-	state    State
-	spec     Spec
-	paths    Paths
-	done     chan struct{}
-	stopping bool
+	cmd         *exec.Cmd
+	state       State
+	spec        Spec
+	paths       Paths
+	done        chan struct{}
+	stopping    bool
+	interactive bool
+
+	stdinMu     sync.Mutex
+	stdinW      *os.File
+	stdinClosed bool
+	term        *term
+	closed      bool
+}
+
+func (p *proc) closeStdio() {
+	p.stdinMu.Lock()
+	defer p.stdinMu.Unlock()
+	if p.closed {
+		return
+	}
+	p.closed = true
+	if p.stdinW != nil && !p.stdinClosed {
+		p.stdinClosed = true
+		_ = p.stdinW.Close()
+	}
+	if p.term != nil {
+		_ = p.term.close()
+	}
 }
 
 var publishRe = regexp.MustCompile(`^rungv: publishing (\S+) -> (\d+)/(\w+)`)
@@ -304,6 +333,13 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 		// reaches this computer through the ports it publishes.
 		spec = WithAutoPublish(spec, false)
 	}
+	usePTY := spec.TTY && ptySupported
+	launchSpec := spec
+	if spec.TTY && !ptySupported {
+		// On Windows creack/pty is unavailable; fall back to pipes.
+		launchSpec = spec.Clone()
+		launchSpec.TTY = false
+	}
 	var args []string
 	if restoreDir != "" {
 		// The resumed sandbox keeps the bundle directory it was restored
@@ -312,28 +348,55 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 			_ = os.Remove(paths.CheckpointDir)
 			paths.CheckpointDir = restoreDir
 		}
-		args = spec.RestoreArgs(restoreDir, paths)
+		args = launchSpec.RestoreArgs(restoreDir, paths)
 	} else {
-		args = spec.RunArgs(paths)
+		args = launchSpec.RunArgs(paths)
 	}
 
 	cmd := client.Command(context.Background(), args...)
 	cmd.Env = os.Environ()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return err
 	}
-	// The guest reads rungv's standard input; give it an empty one that
-	// stays open so shells and servers do not see EOF and quit.
-	stdinR, stdinW, err := os.Pipe()
-	if err != nil {
-		return err
+	var (
+		stdout          io.Reader
+		stdinW          *os.File
+		ptyTerm         *term
+		closeAfterStart func()
+		closeOnFail     func()
+	)
+	if usePTY {
+		var closeSlave func()
+		ptyTerm, stdout, closeSlave, err = openPTY(cmd)
+		if err != nil {
+			return err
+		}
+		closeAfterStart = closeSlave
+		closeOnFail = func() {
+			closeSlave()
+			_ = ptyTerm.close()
+		}
+	} else {
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		// The guest reads rungv's standard input; give it a pipe that
+		// stays open so non-interactive shells and servers do not see EOF
+		// and quit. Spec.Interactive exposes stdinW through Supervisor.Stdin.
+		stdinR, w, err := os.Pipe()
+		if err != nil {
+			return err
+		}
+		stdinW = w
+		cmd.Stdin = stdinR
+		closeAfterStart = func() { _ = stdinR.Close() }
+		closeOnFail = func() {
+			_ = stdinR.Close()
+			_ = stdinW.Close()
+		}
 	}
-	cmd.Stdin = stdinR
 
 	logs := s.Logs(spec.ID)
 	what := "Starting"
@@ -344,19 +407,21 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 	logs.Add(System, "$ rungv "+rungv.FormatArgs(args))
 
 	if err := cmd.Start(); err != nil {
-		stdinR.Close()
-		stdinW.Close()
+		closeOnFail()
 		logs.Add(System, "failed to start: "+err.Error())
 		return err
 	}
-	stdinR.Close()
+	closeAfterStart()
 
 	p := &proc{
-		cmd:   cmd,
-		spec:  spec.Clone(),
-		paths: paths,
-		done:  make(chan struct{}),
-		state: State{Status: Starting, PID: cmd.Process.Pid, StartedAt: time.Now(), Restored: restoreDir},
+		cmd:         cmd,
+		spec:        spec.Clone(),
+		paths:       paths,
+		done:        make(chan struct{}),
+		interactive: spec.Interactive,
+		stdinW:      stdinW,
+		term:        ptyTerm,
+		state:       State{Status: Starting, PID: cmd.Process.Pid, StartedAt: time.Now(), Restored: restoreDir},
 	}
 	if spec.ReadyPattern == "" {
 		p.state.Status = Running
@@ -377,7 +442,7 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 	go func() {
 		wg.Wait()
 		err := cmd.Wait()
-		stdinW.Close()
+		p.closeStdio()
 		s.exited(spec.ID, p, err)
 	}()
 	return nil
@@ -408,10 +473,9 @@ func (s *Supervisor) volumeHolderLocked(spec Spec) string {
 func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sync.WaitGroup) {
 	defer wg.Done()
 	logs := s.Logs(id)
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimRight(sc.Text(), "\r")
+	var split lineSplitter
+	var filter rungvFilter
+	emitLine := func(line string) {
 		logs.Add(stream, line)
 		ev := Event{ID: id, Kind: EventChanged}
 		s.mu.Lock()
@@ -433,6 +497,40 @@ func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sy
 		s.mu.Unlock()
 		s.notify(ev)
 	}
+	emitOutput := func(data []byte) {
+		if s.Output == nil || len(data) == 0 {
+			return
+		}
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		s.Output(id, Output{Stream: stream, Data: cp})
+	}
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			if s.Output != nil {
+				if stream == Stderr {
+					emitOutput(filter.write(chunk))
+				} else {
+					emitOutput(chunk)
+				}
+			}
+			split.write(chunk, emitLine)
+		}
+		if err != nil {
+			// On Linux, reading the PTY master returns EIO once the slave closes.
+			if stream == Stdout && p.term != nil && isPTYEIO(err) {
+				break
+			}
+			break
+		}
+	}
+	if s.Output != nil && stream == Stderr {
+		emitOutput(filter.flush())
+	}
+	split.flush(emitLine)
 }
 
 func (s *Supervisor) exited(id string, p *proc, err error) {
@@ -443,6 +541,7 @@ func (s *Supervisor) exited(id string, p *proc, err error) {
 		code = p.cmd.ProcessState.ExitCode()
 	}
 	p.state.ExitCode = code
+	p.state.Signal = waitSignal(p.cmd.ProcessState)
 	p.state.ExitedAt = time.Now()
 	p.state.PID = 0
 	switch {

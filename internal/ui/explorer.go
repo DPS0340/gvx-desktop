@@ -54,12 +54,22 @@ func explorerDialog(m *Model) ggui.Widget {
 		Width(960).Name(tr("Image explorer")).CloseButton(true)
 }
 
+func explorerUnsupportedView() ggui.Widget {
+	return widget.Box(ui.Empty(
+		tr("Not supported in the experimental sandbox engine"),
+		tr("Browsing Docker image files is not supported in the experimental sandbox engine yet. Browse the same image under GVX Sandboxes instead."),
+	).Media(glyph(lucide.FolderSearch, 32).Color(colorGray)).Outline()).Height(470)
+}
+
 func explorerFilesView(m *Model) ggui.Widget {
-	state := ggui.Combine(m.ExploreLoading, m.ExploreErr, func(loading bool, err string) int {
-		switch {
-		case loading:
+	state := ggui.Derived(func() int {
+		if m.Settings.Get().SandboxEngine && m.ExploreSource.Get() == "Docker Engine" {
+			return 3
+		}
+		if m.ExploreLoading.Get() {
 			return 1
-		case err != "":
+		}
+		if m.ExploreErr.Get() != "" {
 			return 2
 		}
 		return 0
@@ -76,6 +86,8 @@ func explorerFilesView(m *Model) ggui.Widget {
 			return widget.Box(widget.Row(ui.Spinner(), ui.CaptionOf(msg)).Gap(10).Align(widget.AlignCenter)).Height(470)
 		case 2:
 			return widget.Box(ui.Alert(tr("Could not read image filesystem"), ggui.Peek(m.ExploreErr)).Destructive().Icon(icons.Alert)).Height(470)
+		case 3:
+			return explorerUnsupportedView()
 		}
 		return widget.Column(
 			explorerNavBar(m),
@@ -317,11 +329,14 @@ func explorerPreviewPane(m *Model) ggui.Widget {
 }
 
 func explorerLayersView(m *Model) ggui.Widget {
-	state := ggui.Combine(m.ExploreLoading, m.ExploreErr, func(loading bool, err string) int {
-		switch {
-		case loading:
+	state := ggui.Derived(func() int {
+		if m.Settings.Get().SandboxEngine && m.ExploreSource.Get() == "Docker Engine" {
+			return 3
+		}
+		if m.ExploreLoading.Get() {
 			return 1
-		case err != "":
+		}
+		if m.ExploreErr.Get() != "" {
 			return 2
 		}
 		return 0
@@ -332,6 +347,8 @@ func explorerLayersView(m *Model) ggui.Widget {
 			return widget.Box(widget.Row(ui.Spinner(), ui.Caption(tr("Reading layers…"))).Gap(10).Align(widget.AlignCenter)).Height(470)
 		case 2:
 			return widget.Box(ui.Alert(tr("Could not read layers"), ggui.Peek(m.ExploreErr)).Destructive().Icon(icons.Alert)).Height(470)
+		case 3:
+			return explorerUnsupportedView()
 		}
 		return ggui.View(m.ExploreLayers, func(ls []imagefs.Layer) ggui.Widget {
 			if len(ls) == 0 {

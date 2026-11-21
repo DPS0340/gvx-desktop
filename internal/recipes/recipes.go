@@ -42,6 +42,10 @@ const DockerBackendPublish = "unix:" + dockerBackendSocketPath + ":2375"
 // may exceed that limit.
 func DockerBackendSocket() string { return rungv.ExpandHome(dockerBackendSocketPath) }
 
+// EngineSocketDir is the short directory under ~/.gvx/engine holding the app's
+// private engine sockets (dockerd.sock, buildkit.sock, buildkitd.sock).
+func EngineSocketDir() string { return filepath.Dir(DockerBackendSocket()) }
+
 // DockerBackendHost is the DOCKER_HOST value the app's own client uses to
 // reach dockerd directly, bypassing the proxy.
 func DockerBackendHost() string { return "unix://" + filepath.ToSlash(DockerBackendSocket()) }

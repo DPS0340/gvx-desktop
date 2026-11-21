@@ -34,6 +34,12 @@ func (m *Model) containerShell() ggui.Readable[shellTarget] {
 		if m.Page.Get() != PageContainers || m.ContainerDetail.Get() != containerTerminalTab || !m.ContainersOpen.Get() || c.ID == "" {
 			return shellTarget{}
 		}
+		if m.Settings.Get().SandboxEngine {
+			return shellTarget{
+				Why:     tr("Not supported in the experimental sandbox engine"),
+				WhyText: tr("Container exec is not supported in the experimental sandbox engine yet. Use docker run -it for an interactive shell."),
+			}
+		}
 		if c.State != "running" {
 			return shellTarget{Why: tr("The container is not running"), WhyText: tr("Start it to open a shell in it.")}
 		}

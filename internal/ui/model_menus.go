@@ -26,7 +26,8 @@ type EngineState struct {
 // the same menus, so the menus are built again only when it changes: not
 // for a line of a log, nor for a container's uptime.
 type MenuState struct {
-	Docker, Kube EngineState
+	Docker, Kube  EngineState
+	SandboxEngine bool
 	// Containers are the ones the Docker menu lists, running first, and
 	// More the number left out.
 	Containers []dockerapi.Container
@@ -55,7 +56,7 @@ type MenuPod struct {
 // Equal makes MenuState comparable for signals. Containers and pods are
 // equal when the menu tells the same of them.
 func (s MenuState) Equal(o MenuState) bool {
-	return s.Docker == o.Docker && s.Kube == o.Kube && s.More == o.More && s.Listed == o.Listed && s.ListErr == o.ListErr &&
+	return s.Docker == o.Docker && s.Kube == o.Kube && s.SandboxEngine == o.SandboxEngine && s.More == o.More && s.Listed == o.Listed && s.ListErr == o.ListErr &&
 		s.PodsMore == o.PodsMore && s.PodsListed == o.PodsListed && s.PodsErr == o.PodsErr && s.PodsWaiting == o.PodsWaiting &&
 		slices.EqualFunc(s.Pods, o.Pods, func(a, b MenuPod) bool {
 			return a.Pod.Key() == b.Pod.Key() && a.Status == b.Status && a.Health == b.Health
@@ -81,13 +82,17 @@ func menuState(rows []Row, containers Listing[dockerapi.Container], pods Listing
 	if s.Kube.Status == sandbox.Running {
 		s.menuPods(pods, podsWaiting)
 	}
-	if s.Docker.Status != sandbox.Running {
-		return s
+	if s.Docker.Status == sandbox.Running {
+		s.menuContainers(containers)
 	}
+	return s
+}
+
+func (s *MenuState) menuContainers(containers Listing[dockerapi.Container]) {
 	s.ListErr = containers.Err != ""
 	s.Listed = containers.Loaded && !s.ListErr
 	if !s.Listed {
-		return s
+		return
 	}
 	list := slices.Clone(containers.Items)
 	slices.SortStableFunc(list, func(a, b dockerapi.Container) int {
@@ -104,7 +109,6 @@ func menuState(rows []Row, containers Listing[dockerapi.Container], pods Listing
 		list = list[:maxMenuContainers]
 	}
 	s.Containers = list
-	return s
 }
 
 // RecipeMenu is the menu of a recipe's engine, in the menu bar and the
@@ -119,29 +123,33 @@ func (m *Model) RecipeMenu(recipe string, show func()) []ggui.MenuItem {
 	}
 	id := e.ID
 	var items []ggui.MenuItem
-	switch {
-	case id == "":
-		items = append(items,
-			off(tr("%s is not set up", title)),
-			ggui.MenuAction(tr("Set Up and Start %s", title), "", func() { m.CreateFromRecipe(recipe) }),
-		)
-	case e.Status.Active():
-		items = append(items,
-			off(title+" · "+statusText(sandbox.State{Status: e.Status, ExitCode: e.ExitCode})),
-			ggui.MenuAction(tr("Stop %s", title), "", func() { m.StopSandbox(id) }).BindEnabled(ggui.Const(e.Status != sandbox.Stopping)),
-			ggui.MenuAction(tr("Restart %s", title), "", func() { m.RestartSandbox(id) }).BindEnabled(ggui.Const(e.Status == sandbox.Running)),
-		)
-	default:
-		items = append(items,
-			off(title+" · "+statusText(sandbox.State{Status: e.Status, ExitCode: e.ExitCode})),
-			ggui.MenuAction(tr("Start %s", title), "", func() { m.StartSandbox(id) }),
-		)
+	if recipe == recipes.Docker && s.SandboxEngine {
+		items = append(items, off(tr("Sandbox Engine (Experimental)")))
+	} else {
+		switch {
+		case id == "":
+			items = append(items,
+				off(tr("%s is not set up", title)),
+				ggui.MenuAction(tr("Set Up and Start %s", title), "", func() { m.CreateFromRecipe(recipe) }),
+			)
+		case e.Status.Active():
+			items = append(items,
+				off(title+" · "+statusText(sandbox.State{Status: e.Status, ExitCode: e.ExitCode})),
+				ggui.MenuAction(tr("Stop %s", title), "", func() { m.StopSandbox(id) }).BindEnabled(ggui.Const(e.Status != sandbox.Stopping)),
+				ggui.MenuAction(tr("Restart %s", title), "", func() { m.RestartSandbox(id) }).BindEnabled(ggui.Const(e.Status == sandbox.Running)),
+			)
+		default:
+			items = append(items,
+				off(title+" · "+statusText(sandbox.State{Status: e.Status, ExitCode: e.ExitCode})),
+				ggui.MenuAction(tr("Start %s", title), "", func() { m.StartSandbox(id) }),
+			)
+		}
 	}
 	items = append(items, ggui.MenuAction(tr("Open %s Page", title), "", func() { show(); m.Go(page) }))
 	if label, run := linkMenuAction(m, l, v); run != nil {
 		items = append(items, ggui.MenuSeparator(), ggui.MenuAction(label, "", run).BindEnabled(ggui.Const(!v.C.Busy)))
 	}
-	if recipe == recipes.Docker && e.Status == sandbox.Running {
+	if recipe == recipes.Docker && (s.SandboxEngine || e.Status == sandbox.Running) {
 		items = append(items, containerItems(m, s, show)...)
 	}
 	if recipe == recipes.Kubernetes && e.Status == sandbox.Running {
@@ -181,6 +189,9 @@ func containerItems(m *Model, s MenuState, show func()) []ggui.MenuItem {
 	items := []ggui.MenuItem{ggui.MenuSeparator()}
 	switch {
 	case s.ListErr:
+		if s.SandboxEngine {
+			return append(items, off(tr("Could not reach the sandbox engine")))
+		}
 		return append(items, off(tr("Could not reach dockerd")))
 	case !s.Listed:
 		return nil

@@ -51,7 +51,9 @@ func (s shot) live() bool { return strings.HasSuffix(s.name, "-terminal") }
 
 // tall reports whether the shot is drawn taller than the window, to show a
 // long page whole.
-func (s shot) tall() bool { return strings.HasSuffix(s.name, "-whole") }
+func (s shot) tall() bool {
+	return strings.HasSuffix(s.name, "-whole") || s.name == "settings-sandbox-engine"
+}
 
 func renderAll(tmp, out, lang string) error {
 	now := time.Date(2026, 11, 16, 15, 30, 0, 0, time.Local)
@@ -93,6 +95,17 @@ func renderAll(tmp, out, lang string) error {
 		{"containers-stopped", func(m *ui.Model) {
 			m.Go(ui.PageContainers)
 			stopEngine(m)
+		}},
+		// Experimental sandbox engine mode: Containers page stays open with
+		// the Docker Engine sandbox stopped, and Terminal explains exec is
+		// not supported.
+		{"containers-sandbox-engine", func(m *ui.Model) {
+			stopEngine(m)
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = true })
+			m.DockerContainers.Set(ui.Listing[dockerapi.Container]{Loaded: true, Items: demoContainers()})
+			m.ContainerLogs.Set(demoContainerLogs(ggui.Peek(m.Now)))
+			m.Go(ui.PageContainers)
+			m.ContainerDetail.Set(2)
 		}},
 		{"pods-logs", func(m *ui.Model) { m.Go(ui.PagePods); m.PodDetail.Set(0) }},
 		{"pods-info", func(m *ui.Model) { m.Go(ui.PagePods); m.PodDetail.Set(1) }},
@@ -169,6 +182,12 @@ func renderAll(tmp, out, lang string) error {
 		{"settings-whole", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
 		// The engine shares no folder.
 		{"settings-unshared-whole", func(m *ui.Model) { m.SetSharedFolders(nil); m.Page.Set(ui.PageSettings) }},
+		// Experimental sandbox engine switch on, with the Docker section in view.
+		{"settings-sandbox-engine", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = true })
+			m.BuildxStatus.Set(ui.BuildxStatus{Checked: true, Ready: true, Selected: true})
+			m.Page.Set(ui.PageSettings)
+		}},
 		{"settings-source", func(m *ui.Model) {
 			m.UpdateSettings(func(s *store.Settings) {
 				s.UpdateChannel = ui.ChannelSource

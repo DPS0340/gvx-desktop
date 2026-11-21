@@ -1270,3 +1270,209 @@ func TestRewriteChangesTheBodyBeforeCheck(t *testing.T) {
 		t.Errorf("backend saw %q, Check %q", seen, checked)
 	}
 }
+
+func TestSetLocalRoutesRequestsBypassesHooksAndFallsBack(t *testing.T) {
+	var backendHits atomic.Int32
+	var rewriteHits atomic.Int32
+	var checkHits atomic.Int32
+	var changedHits atomic.Int32
+
+	be := startFakeBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendHits.Add(1)
+		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("X-Origin", "backend")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(b)
+	}))
+
+	p, _, client := startProxy(t, be, func(p *Proxy) {
+		p.ChangedDebounce = 25 * time.Millisecond
+		p.Changed = func() { changedHits.Add(1) }
+		p.Rewrite = func(_ *http.Request, body []byte) []byte {
+			rewriteHits.Add(1)
+			return bytes.ReplaceAll(body, []byte("raw"), []byte("rewritten"))
+		}
+		p.Check = func(_ *http.Request, body []byte) error {
+			checkHits.Add(1)
+			if bytes.Contains(body, []byte("forbidden")) {
+				return fmt.Errorf("blocked")
+			}
+			return nil
+		}
+	})
+
+	var localHits atomic.Int32
+	local := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		localHits.Add(1)
+		w.Header().Set("X-Origin", "local")
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "ok")
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		if bytes.Contains(b, []byte("bad")) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"message":"bad"}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(b)
+	})
+
+	p.SetLocal(local)
+	if p.Local() == nil {
+		t.Fatal("Local() = nil after SetLocal")
+	}
+
+	// Non-mutating GET goes to local and does not trigger Changed.
+	resp, err := client.Get("http://docker/v1.52/_ping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Origin") != "local" || string(body) != "ok" {
+		t.Fatalf("GET: status=%d origin=%q body=%q", resp.StatusCode, resp.Header.Get("X-Origin"), body)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if changedHits.Load() != 0 {
+		t.Fatalf("GET triggered Changed (%d)", changedHits.Load())
+	}
+
+	// POST /containers/create goes straight to local, bypassing Check and Rewrite,
+	// and fires Changed on 201.
+	const payload = `{"Image":"raw","HostConfig":{"Binds":["/forbidden:/x"]}}`
+	resp, err = client.Post("http://docker/v1.52/containers/create", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || string(body) != payload {
+		t.Fatalf("local POST: status=%d body=%q", resp.StatusCode, body)
+	}
+	if backendHits.Load() != 0 || rewriteHits.Load() != 0 || checkHits.Load() != 0 {
+		t.Fatalf("local mode leaked to backend/hooks: backend=%d rewrite=%d check=%d",
+			backendHits.Load(), rewriteHits.Load(), checkHits.Load())
+	}
+	deadline := time.Now().Add(time.Second)
+	for changedHits.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if changedHits.Load() != 1 {
+		t.Fatalf("Changed hits = %d, want 1", changedHits.Load())
+	}
+
+	// Non-2xx mutating response on local does not trigger Changed.
+	resp, err = client.Post("http://docker/v1.52/containers/create", "application/json", strings.NewReader(`{"Image":"bad"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad POST status = %d", resp.StatusCode)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if changedHits.Load() != 1 {
+		t.Fatalf("400 response triggered Changed (%d)", changedHits.Load())
+	}
+
+	// SetLocal(nil) immediately returns traffic to the backend with Rewrite/Check active.
+	p.SetLocal(nil)
+	if p.Local() != nil {
+		t.Fatal("Local() != nil after SetLocal(nil)")
+	}
+	resp, err = client.Post("http://docker/v1.47/containers/create", "application/json", strings.NewReader(`{"Image":"raw"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || resp.Header.Get("X-Origin") != "backend" || string(body) != `{"Image":"rewritten"}` {
+		t.Fatalf("fallback POST: status=%d origin=%q body=%q", resp.StatusCode, resp.Header.Get("X-Origin"), body)
+	}
+	if backendHits.Load() != 1 || rewriteHits.Load() != 1 || checkHits.Load() != 1 {
+		t.Fatalf("fallback counts: backend=%d rewrite=%d check=%d",
+			backendHits.Load(), rewriteHits.Load(), checkHits.Load())
+	}
+	if localHits.Load() != 3 {
+		t.Fatalf("localHits = %d, want 3", localHits.Load())
+	}
+}
+
+func TestSetLocalHijack(t *testing.T) {
+	be := startFakeBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("backend should not be contacted while local handler is set")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	p, frontSock, _ := startProxy(t, be, nil)
+	p.SetLocal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		conn, rw, err := rc.Hijack()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\nLOCAL:")
+		_ = rw.Flush()
+		in, _ := io.ReadAll(rw.Reader)
+		_, _ = conn.Write(append(in, []byte(":DONE")...))
+		closeWrite(conn)
+	}))
+
+	conn, err := net.Dial("unix", frontSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	req := "POST /v1.52/containers/c1/attach?stdin=1&stdout=1&stream=1 HTTP/1.1\r\n" +
+		"Host: docker\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Upgrade: tcp\r\n\r\n" +
+		"hello"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+	if err := conn.(*net.UnixConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(br)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "LOCAL:hello:DONE" {
+		t.Fatalf("hijacked stream = %q, want %q", got, "LOCAL:hello:DONE")
+	}
+}
+
+func TestNotifyChangedCoalesces(t *testing.T) {
+	var hits atomic.Int32
+	p := New(DialAddress("unix", shortSock(t, "unused.sock")))
+	p.ChangedDebounce = 40 * time.Millisecond
+	p.Changed = func() { hits.Add(1) }
+	t.Cleanup(func() { _ = p.Close() })
+
+	for range 5 {
+		p.NotifyChanged()
+		time.Sleep(5 * time.Millisecond)
+	}
+	deadline := time.Now().Add(time.Second)
+	for hits.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("NotifyChanged fired %d times, want 1 coalesced call", got)
+	}
+}

@@ -22,9 +22,16 @@ import (
 func imagesPage(m *Model) ggui.Widget {
 	header := ggui.View(m.ImageView, func(view int) ggui.Widget {
 		if view == ImagesDocker {
-			summary := ui.CaptionOf(ggui.Combine(m.ContainersOpen, m.DockerImages, func(open bool, l Listing[dockerapi.Image]) string {
+			summary := ui.CaptionOf(ggui.Derived(func() string {
+				open, l, se := m.ContainersOpen.Get(), m.DockerImages.Get(), m.Settings.Get().SandboxEngine
 				if !open || !l.Loaded || l.Err != "" {
+					if se {
+						return tr("Images shared with gvx's image cache.")
+					}
 					return tr("Images built or pulled inside the Docker Engine sandbox.")
+				}
+				if se {
+					return tr("%d images · %s. Shared with gvx's image cache.", len(l.Items), formatBytes(dockerImagesTotalSize(l.Items)))
 				}
 				return tr("%d images · %s. Images built or pulled inside the Docker Engine sandbox.", len(l.Items), formatBytes(dockerImagesTotalSize(l.Items)))
 			}))
@@ -171,8 +178,10 @@ func dockerImagesView(m *Model) ggui.Widget {
 
 	table := ui.Table(visible, DockerImageRow.Key,
 		ui.Col(tr("Repository"), func(r ggui.Readable[DockerImageRow]) ggui.Widget {
-			return ggui.View(ggui.Combine(r, m.DockerContainers, func(img DockerImageRow, ctrs Listing[dockerapi.Container]) [2]string {
-				users := dockerImageUsers(ctrs.Items, img)
+			return ggui.View(ggui.Derived(func() [2]string {
+				img := r.Get()
+				ctrs := m.DockerContainers.Get()
+				users := dockerImageAllUsers(ctrs.Items, m.Rows.Get(), m.Settings.Get().SandboxEngine, img)
 				if len(users) > 0 {
 					return [2]string{img.Repository, strings.Join(users, ", ")}
 				}
@@ -248,7 +257,11 @@ func dockerImagesView(m *Model) ggui.Widget {
 		case 2:
 			return ui.Alert(tr("Could not list Docker images"), ggui.Peek(listing).Err).Destructive().Icon(icons.Alert)
 		case 3:
-			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking dockerd…"))).Gap(8)
+			msg := tr("Asking dockerd…")
+			if ggui.Peek(m.Settings).SandboxEngine {
+				msg = tr("Loading images…")
+			}
+			return widget.Row(ui.Spinner(), ui.Caption(msg)).Gap(8)
 		}
 		count := ggui.Combine(visible, all, func(v, a []DockerImageRow) string { return showing(len(v), len(a)) })
 		return tableCard(table.Toolbar(filterBar(m.DockerImageQuery, tr("Filter Docker images"), count)))
@@ -278,8 +291,9 @@ func volumesPage(m *Model) ggui.Widget {
 		}).Grow(2),
 		ui.TextCol(tr("Driver"), func(v rungv.Volume) string { return v.Driver }).W(100),
 		ui.Col(tr("Status"), func(r ggui.Readable[rungv.Volume]) ggui.Widget {
-			return ggui.View(ggui.Combine(r, m.Rows, func(v rungv.Volume, rows []Row) string {
-				users := VolumeUsers(rows, v.Name)
+			return ggui.View(ggui.Derived(func() string {
+				v := r.Get()
+				users := volumeUsersWithEngine(m.Rows.Get(), m.EngineVolumeUsers.Get(), v.Name)
 				if v.InUse {
 					return "in use"
 				}

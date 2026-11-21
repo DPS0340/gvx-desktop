@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,6 +66,8 @@ type Proxy struct {
 	// ChangedDebounce is the coalescing window for Changed notifications.
 	// Values <= 0 use the default of 300ms.
 	ChangedDebounce time.Duration
+
+	local atomic.Pointer[http.Handler]
 
 	dial      func(ctx context.Context) (net.Conn, error)
 	transport *http.Transport
@@ -284,10 +287,46 @@ func (p *Proxy) untrackConns(conns ...net.Conn) {
 	p.mu.Unlock()
 }
 
+// SetLocal makes the proxy hand every request to h, the app's own engine,
+// in place of the backend: hijacks too, and without Check or Rewrite, which
+// are the backend's concerns. Changed still follows the mutating requests h
+// answers with success. nil goes back to the backend. It takes effect with
+// the next request; the listener stays as it is.
+func (p *Proxy) SetLocal(h http.Handler) {
+	if h == nil {
+		p.local.Store(nil)
+		return
+	}
+	p.local.Store(&h)
+}
+
+// Local returns the handler set with SetLocal, or nil.
+func (p *Proxy) Local() http.Handler {
+	if h := p.local.Load(); h != nil {
+		return *h
+	}
+	return nil
+}
+
+// NotifyChanged schedules Changed as a mutating request does, coalesced
+// with the others: for changes that come from elsewhere, such as a
+// container of the local engine that ended by itself.
+func (p *Proxy) NotifyChanged() { p.notifyChanged() }
+
 // ServeHTTP handles Docker API requests, checking container creation bodies,
 // hijacking upgraded or raw-stream endpoints with half-close propagation, and
 // reverse-proxying ordinary streaming requests.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h := p.Local(); h != nil {
+		// The handler hijacks through http.ResponseController, which
+		// unwraps the recorder.
+		rec := &statusRecorder{ResponseWriter: w}
+		h.ServeHTTP(rec, r)
+		if rec.status >= 200 && rec.status < 300 && isMutating(r.Method, stripVersion(cleanMatchPath(r.URL.Path))) {
+			p.notifyChanged()
+		}
+		return
+	}
 	// Clean the path for route matching only; forward r.URL untouched.
 	stripped := stripVersion(cleanMatchPath(r.URL.Path))
 

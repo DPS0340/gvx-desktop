@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"runtime"
 	"slices"
+	"sync"
 	"syscall"
 	"time"
 
@@ -149,7 +150,10 @@ func run(st store.Store, dir string, hidden bool) error {
 	m.CloseExplorer()
 	// Whatever ended the app, no sandbox outlives it: gvx has no daemon to
 	// adopt them.
-	m.Supervisor().StopAll(10 * time.Second)
+	var stopWG sync.WaitGroup
+	stopWG.Go(func() { m.Supervisor().StopAll(10 * time.Second) })
+	stopWG.Go(func() { m.CloseSandboxEngine(10 * time.Second) })
+	stopWG.Wait()
 	// Last, an update the user restarted for goes in place and the new app
 	// starts; one downloaded and not asked for is removed.
 	if err := m.FinishUpdate(); err != nil {
@@ -161,7 +165,7 @@ func run(st store.Store, dir string, hidden bool) error {
 // requestQuit closes the app now when nothing runs, stops the sandboxes
 // first when the settings say so, and asks otherwise.
 func requestQuit(app *ggui.App, m *ui.Model) bool {
-	if len(m.Supervisor().Running()) == 0 {
+	if m.ActiveCount() == 0 {
 		return true
 	}
 	if ggui.Peek(m.Settings).StopOnQuit {
@@ -300,6 +304,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 		if len(rows) == 0 {
 			items = append(items, ggui.MenuAction(ui.T("No sandboxes"), "", nil).BindEnabled(ggui.Const(false)))
 		}
+		totalRunning := running + ggui.Peek(m.EngineRunning)
 		items = append(items,
 			ggui.MenuSeparator(),
 			ggui.Menu("Docker", m.RecipeMenu(recipes.Docker, show)...),
@@ -307,15 +312,15 @@ func installTray(app *ggui.App, m *ui.Model) {
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("New Sandbox…"), "", func() { show(); m.NewSandbox("") }),
 			ggui.MenuAction(ui.T("Pull Image…"), "", func() { show(); m.OpenPull("") }),
-			ggui.MenuAction(ui.T("Stop All"), "", m.StopAll).BindEnabled(ggui.Const(running > 0)),
+			ggui.MenuAction(ui.T("Stop All"), "", m.StopAll).BindEnabled(ggui.Const(totalRunning > 0)),
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("Settings…"), "", func() { show(); m.Go(ui.PageSettings) }),
 			ggui.MenuAction(ui.T("Quit GVX Desktop"), "", func() { quit(app, m) }),
 		)
 		tray.SetMenu(items...)
-		if running > 0 {
-			tray.SetTitle(fmt.Sprint(running))
-			tray.SetTooltip(fmt.Sprintf(ui.T("GVX Desktop · %d running"), running))
+		if totalRunning > 0 {
+			tray.SetTitle(fmt.Sprint(totalRunning))
+			tray.SetTooltip(fmt.Sprintf(ui.T("GVX Desktop · %d running"), totalRunning))
 		} else {
 			tray.SetTitle("")
 			tray.SetTooltip("GVX Desktop")
@@ -347,6 +352,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 		return out
 	}).WithEqual(slices.Equal[[]entry])
 	ggui.Watch(entries, func([]entry) { rebuild() })
+	ggui.Watch(m.EngineRunning, func(int) { rebuild() })
 	ggui.Watch(m.Menus, func(ui.MenuState) { rebuild() })
 	ggui.Watch(m.Engine, func(ui.Engine) { rebuild() })
 	ggui.Watch(m.Update, func(ui.Update) { rebuild() })

@@ -255,6 +255,10 @@ func (m *Model) ExploreDockerImage(img DockerImageRow, tab int) {
 	}()
 
 	// Index Docker image filesystem and layer history.
+	if ggui.Peek(m.Settings).SandboxEngine {
+		m.ExploreLoading.Set(false)
+		return
+	}
 	go func() {
 		var last time.Time
 		fs, err := imagefs.OpenDocker(ctx, host, img.ID, func(n int) {

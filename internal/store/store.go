@@ -52,9 +52,20 @@ type Settings struct {
 	// DockerContextBefore is the docker context that was in use when the app
 	// switched docker to gvx, to switch back to.
 	DockerContextBefore string `json:"dockerContextBefore,omitempty"`
+	// DockerBuilderBefore is the buildx builder selected for the gvx context
+	// before the experimental sandbox engine switched it to gvx-desktop.
+	DockerBuilderBefore string `json:"dockerBuilderBefore,omitempty"`
+	// DockerBuilderAliasInstalled records that the experimental sandbox engine
+	// ran `docker buildx install` (setting aliases.builder="buildx") so turning
+	// the mode off can undo it with `docker buildx uninstall`.
+	DockerBuilderAliasInstalled bool `json:"dockerBuilderAliasInstalled,omitempty"`
 	// KubeContextBefore is kubectl's current context when the app switched
 	// kubectl to gvx-k3s, to switch back to.
 	KubeContextBefore string `json:"kubeContextBefore,omitempty"`
+	// SandboxEngine is the experimental mode where the app itself serves
+	// the Docker API and runs every container as a sandbox of its own, with
+	// no Docker Engine.
+	SandboxEngine bool `json:"sandboxEngine,omitempty"`
 }
 
 // Equal makes Settings comparable for signals, which a list in it keeps

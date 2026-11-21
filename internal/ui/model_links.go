@@ -313,6 +313,9 @@ func (m *Model) SetUpLink(l *Link) {
 		return err
 	}, true, tr("Could not set up the %s context", l.Tool), func(back string) {
 		m.toastOK(tr("%s now uses %s", l.Tool, l.Name), m.backHint(l, back))
+		if l == m.DockerLink && ggui.Peek(m.Settings).SandboxEngine {
+			m.syncSandboxBuilder(true)
+		}
 	})
 }
 
@@ -331,6 +334,9 @@ func (m *Model) UseLink(l *Link) {
 		return err
 	}, true, tr("Could not switch %s to %s", l.Tool, l.Name), func(back string) {
 		m.toastOK(tr("%s now uses %s", l.Tool, l.Name), m.backHint(l, back))
+		if l == m.DockerLink && ggui.Peek(m.Settings).SandboxEngine {
+			m.syncSandboxBuilder(true)
+		}
 	})
 }
 

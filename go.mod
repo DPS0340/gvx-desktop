@@ -4,9 +4,9 @@ go 1.27.0
 
 require (
 	github.com/creack/pty v1.1.24
-	github.com/ironpark/ggfx v0.0.0-20261122084833-734958d0a729
-	github.com/ironpark/ggui v0.6.1
-	github.com/ironpark/ggui/icons/lucide v0.0.0-20261122085322-35e9aa842c02
+	github.com/ironpark/ggfx v0.0.0-20261122131222-c9829636a084
+	github.com/ironpark/ggui v0.6.3
+	github.com/ironpark/ggui/icons/lucide v0.0.0-20261122131439-63f16af0e037
 	github.com/ironpark/ggwd v0.0.0-20261120121552-0b5175d66b9d
 	github.com/ironpark/gostty v0.0.0-20261108124048-de82fbcca291
 	github.com/ironpark/gvx-desktop-vm v0.1.0

@@ -85,6 +85,7 @@ type Engine struct {
 	evt eventState     // workstream C: events.go
 	bld builderState   // builder.go
 	amd amd64State     // amd64.go (the amd64 builder, workstream C)
+	ovl overlayState   // overlay.go (networks between containers)
 }
 
 // New returns an engine over cfg.Runner. It serves nothing until Open.
@@ -113,6 +114,7 @@ func (e *Engine) Open(ctx context.Context) error {
 	if err := e.loadContainers(); err != nil {
 		return err
 	}
+	e.reconcileEndpoints()
 	e.openStreams()
 	if err := e.openBuilder(); err != nil {
 		e.closeStreams()
@@ -142,6 +144,7 @@ func (e *Engine) Close(timeout time.Duration) error {
 	e.closeAmd64(timeout)
 	e.closeBuilder(timeout)
 	e.stopContainers(timeout)
+	e.closeOverlay()
 	e.closeStreams()
 	e.notify()
 	return nil

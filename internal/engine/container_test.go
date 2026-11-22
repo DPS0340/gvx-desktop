@@ -1021,7 +1021,8 @@ func TestContainerNetworksPruneAndEvents(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("create n1: %d %s", status, raw)
 	}
-	// Second container on gvxd-net: gets inter-container networking warning.
+	// Second container on gvxd-net: no warning, containers there reach
+	// each other.
 	status, c2, raw := createTestContainer(t, te, "gvxd-n2", map[string]any{
 		"Image":      "alpine",
 		"HostConfig": map[string]any{"NetworkMode": "gvxd-net"},
@@ -1029,16 +1030,17 @@ func TestContainerNetworksPruneAndEvents(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("create n2: %d %s", status, raw)
 	}
-	if len(c2.Warnings) == 0 || !strings.Contains(c2.Warnings[0], "gvxd-net") {
-		t.Fatalf("expected multi-container network warning, got %v", c2.Warnings)
+	if len(c2.Warnings) != 0 {
+		t.Fatalf("create n2 warnings = %v", c2.Warnings)
 	}
 
-	// Inspect shows NetworkSettings.Networks["gvxd-net"] with aliases and 10.0.2.x.
+	// Inspect shows NetworkSettings.Networks["gvxd-net"] with aliases and
+	// the first address of the network's subnet.
 	_, raw = te.do(t, http.MethodGet, "/containers/"+c1.ID+"/json", nil)
 	var ins containerInspectResponse
 	_ = json.Unmarshal(raw, &ins)
 	ep, ok := ins.NetworkSettings.Networks["gvxd-net"]
-	if !ok || ep.IPAddress != "10.0.2.15" || ep.Gateway != "10.0.2.2" || !slices.Contains(ep.Aliases, "web") {
+	if !ok || ep.IPAddress != "10.89.1.2" || ep.Gateway != "10.89.1.1" || ep.IPPrefixLen != 24 || !slices.Contains(ep.Aliases, "web") {
 		t.Fatalf("unexpected network endpoint: %+v", ep)
 	}
 

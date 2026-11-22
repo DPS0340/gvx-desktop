@@ -18,10 +18,11 @@ of the engine's own over `rungv run`. Images are rungv's image cache and volumes
 rungv volumes. No dockerd runs anywhere. The mode is off by default. With it off, the app
 behaves exactly as today.
 
-Not in phase 1: exec, inter-container networking, commit/export,
+Not in phase 1: exec, commit/export,
 archive (cp), top, pause, update, swarm and plugins (all answer 501), and a TTY on
 Windows (falls back to pipes with a warning). Image builds are supported through the
-engine's lazy BuildKit builder sandbox (§9.1).
+engine's lazy BuildKit builder sandbox (§9.1). Containers on a user network reach each
+other by name through the overlay (§9.2).
 
 ## 2. rungv facts this design relies on (verified with rungv v0.18 on this machine)
 
@@ -47,8 +48,8 @@ Checked with `~/.gvx/bin/rungv <cmd> -h` and real runs in a temporary `-cache-di
   - **resize reaches the guest only when the PTY is rungv's controlling
     terminal**: `SysProcAttr{Setsid: true, Setctty: true}` with the slave on
     fd 0. Without it the guest kept the old size.
-- `-d` is refused. There is no exec, no build, and no network between sandboxes. Each run
-  has its own NAT: guest 10.0.2.15, host loopback 10.0.2.2.
+- `-d` is refused. There is no exec, no build, and no network between sandboxes (the engine
+  adds one, §9.2). Each run has its own NAT: guest 10.0.2.15, host loopback 10.0.2.2.
 - `images --no-trunc --format json` gives full `sha256:` IDs, but `Size` is a
   human string ("9.155MB"). `inspect REF...` gives a JSON array with `Id`, `RepoTags`,
   `RepoDigests`, `Created`, `Architecture`, `Os`,
@@ -257,11 +258,12 @@ files; methods on `*fakeRunner`/`*fakeProc` may be declared there too.
 The default NetworkMode (`""`, `default`, `bridge`) → the network `bridge`. A user network
 (NetworkMode, or the one entry of `NetworkingConfig.EndpointsConfig`) must exist.
 `network(ref)` returns a 404 for a missing one. `connectNetwork` records the membership with its
-aliases and may return a Warning: *Containers on the network "x" cannot reach each other yet
-in GVX Desktop's experimental sandbox engine*. Inspect shows
-`NetworkSettings.Networks[name] = {NetworkID, Gateway "10.0.2.2", IPAddress
-"10.0.2.15", IPPrefixLen 24, Aliases, DNSNames}`. Removing a container calls
-`disconnectNetworks`.
+aliases and, on a user network, gives the container an address of the network's subnet
+(`EndpointsConfig[n].IPAMConfig.IPv4Address` when the client asks for one). Inspect shows
+`NetworkSettings.Networks[name] = {NetworkID, Gateway, IPAddress, IPPrefixLen, Aliases,
+DNSNames}`: the subnet's first address and the container's on a user network, `10.0.2.2` and
+`10.0.2.15/24` (the sandbox's NAT) on the builtin bridge. Removing a container calls
+`disconnectNetworks`. See §9.2.
 
 ### 6.5 Lifecycle endpoints
 
@@ -442,13 +444,15 @@ States, events and port parsing. The `supervisor_test.go` tests keep passing unc
 - **Networks**: the builtins `bridge` (Driver bridge), `host` (Driver host) and `none`
   (Driver null) have fixed IDs (fakeHex-like constants), and the user networks come from
   `networks.json`. List and inspect shapes: `Name, Id, Created, Scope:"local", Driver,
-  EnableIPv6:false, IPAM{Driver:"default", Config:[{Subnet:"10.0.2.0/24",
-  Gateway:"10.0.2.2"}]}, Internal, Attachable, Ingress:false, Containers{id:{Name,
-  EndpointID, MacAddress, IPv4Address:"10.0.2.15/24"}}, Options, Labels`. List filters:
+  EnableIPv6:false, IPAM{Driver:"default", Config:[{Subnet, Gateway}]}, Internal,
+  Attachable, Ingress:false, Containers{id:{Name, EndpointID, MacAddress, IPv4Address}},
+  Options, Labels`. The builtin bridge shows the NAT (`10.0.2.0/24`, `10.0.2.15/24`); a
+  user network shows its subnet and the containers' addresses (§9.2). List filters:
   `name`, `id`, `label`, `driver`, `type` (custom|builtin), `dangling`. `create`
-  → 201 `{Id, Warning:""}`. A duplicate name → 409. `connect`/`disconnect` only record
-  the membership; the API has no warning for them, so a running container is
-  connected silently. `delete` of a builtin → 403. A network with containers → 403
+  → 201 `{Id, Warning:""}`, with `IPAM.Config[].Subnet/Gateway` honored (one IPv4
+  subnet; an overlapping one → 403). A duplicate name → 409. `connect` gives the
+  container an address and updates its record; `disconnect` takes them away. Both
+  reach a running container's names and reachability at once. `delete` of a builtin → 403. A network with containers → 403
   `error while removing network: network <name> id <id> has active endpoints`.
   `prune` removes the unused user networks.
 - **System**:
@@ -545,6 +549,79 @@ States, events and port parsing. The `supervisor_test.go` tests keep passing unc
   into rungv, tagging every `t=`, emitting `{"aux":{"ID":"sha256:..."}}` (or
   `{"errorDetail":...,"error":...}` on failure), and removing all temp dirs.
 
+### 9.2 Networks between containers (`overlay.go`, `internal/overlay`)
+
+Every sandbox has a NAT of its own (guest `10.0.2.15`, host loopback `10.0.2.2`), so
+containers cannot reach each other through it. Containers on a **user network** do through
+an overlay: a WireGuard link in each sandbox whose one peer is a hub in the app. The NAT stays
+as it was, so the internet, published ports and `host.docker.internal` do not go through the
+hub. Containers on the builtin bridge only (plain `docker run`) do not join it, as they have
+no names on Docker either.
+
+- **Addresses.** A user network gets a subnet at create: the client's
+  (`IPAM.Config[0]`, IPv4 only), or the first free /24 of `10.89.0.0/16` (Podman's range).
+  Its gateway is the first address, which nothing answers. A container gets the next free
+  address at connect, or the one it asked for. `networks.json` keeps `subnet`, `gateway`
+  and `ips` (container → address). Networks from before the overlay get a subnet when the
+  engine opens, and containers' records follow (`reconcileEndpoints`).
+- **Start.** A container with addresses joins the hub (`Fabric.Join`): a new key pair, a hub
+  peer whose allowed IPs are the container's addresses, and a DNS server on
+  `127.0.0.1:<port>`. The sandbox then runs **netinit**: the engine mounts it read-only at
+  `/.gvx-netinit`, makes it the entrypoint with the container's argv after it, passes its
+  config in `GVX_NET` (keys, hub endpoint `10.0.2.2:<port>`, addresses, the route
+  `10.89.0.0/16` and any custom subnet, MTU, keepalive 25 s, the container's user), clears
+  the spec's user, and adds `-host-dns 127.0.0.1:<port>` and `-tune net.nat.mtu=<MTU+80>`. The container's record and inspect
+  are untouched.
+- **netinit** (`internal/overlay/netinit`, static Linux binary, no dependencies) runs as root:
+  it creates `gvx0` with rtnetlink (`IFLA_LINKINFO` without `NLA_F_NESTED`, which gVisor
+  refuses), sets the key and the hub peer through the `wireguard` generic netlink family,
+  adds the addresses, brings the link up, adds the routes, appends the extra hosts to
+  `/etc/hosts`, takes the default route away from an isolated container, drops to the
+  container's user
+  (docker's rules: a name must exist, a bare uid gets gid 0, supplementary groups from
+  `/etc/group`, HOME from passwd unless the container set it), removes `GVX_NET`, and
+  executes the command, which becomes the sandbox's first process as before. A link that
+  cannot be made is a warning on stderr; the command runs without the network. This works
+  with `--privileged=false` (the default for containers).
+- **Hub** (`hub.go`): wireguard-go over a UDP socket on `127.0.0.1` only (no firewall
+  prompt) and a TUN of its own, the router. A packet a container sends comes out of the
+  device; the router keeps it when its source and destination share a network and hands it
+  back, and the device sends it to the destination's peer. WireGuard checks that a source
+  address belongs to the peer that sent it.
+- **DNS** (`dns.go`): rungv's guest relay at `10.0.2.3` sends every query to the container's
+  server. It answers, with TTL 10, the names (container name, aliases, short ID) of the
+  running containers that share a network with the asker, and an empty answer for their
+  other types. Every other query goes to the host's servers (`/etc/resolv.conf`; the
+  adapters' servers on Windows), or to Go's resolver for A/AAAA when there are none.
+- **Extra hosts.** `--add-host` / `extra_hosts` (`NAME:IP`, `NAME=IP`, `host-gateway` →
+  `10.0.2.2`) are checked at create (400 when malformed) and added by netinit at each
+  start. A container with extra hosts and no user network runs netinit without a link and
+  without `-host-dns`.
+- **Internal networks.** A container whose networks are all `--internal` (the builtin bridge
+  counts as public) is isolated: netinit replaces eth0's default route with routes to
+  `10.0.2.2` (the hub) and `10.0.2.3` (the DNS relay), and its DNS server answers the
+  containers' names and refuses every other name, as Docker's does since 26. Ports
+  published from it still work, as the NAT forwards them in.
+- **Restarts.** A container leaves the hub inside the exit's critical section, before its
+  record stops running, so a start that follows (restart, a restart policy) cannot have its
+  join undone by that exit.
+- **Changes.** `syncOverlay` gives the Fabric the containers' networks and names after
+  connect, disconnect, rename and remove. A container leaves the hub when its sandbox
+  exits or fails to start, and the hub stops when the engine closes. `docker network
+  connect` on a running container reaches it at once for names and reachability; its link
+  keeps its addresses until the next start, so its name answers one of those.
+- **MTU.** Every packet costs a trip through both sandboxes' NAT relays and a system call
+  in the hub, whatever its size (the hub's CPU goes to the UDP calls; ChaCha20 is under
+  1%). The links use MTU 60000 and eth0 60080. 200 MB between two containers (a Go
+  sender and sink, not busybox, which is the bottleneck itself) went across at 47 MB/s
+  with 1420, 160-180 MB/s with 8920, and about 250 MB/s with 60000, against about 200
+  MB/s from a container to the host through the NAT alone. A rungv without `-tune`
+  keeps eth0 at 1500 and the links at 1420. The hub's socket buffers are raised (macOS
+  starts a UDP socket with 9216 bytes), and the router queues at most 256 packets.
+- **Limits.** IPv4 only. An isolated container still reaches the host's loopback through
+  `10.0.2.2`, which the hub needs.
+  `host` and `container:` network modes are as before (NAT with a warning, refused).
+
 ## 10. App wiring and UI (D)
 
 - **Setting**: `store.Settings.SandboxEngine` (added). Default off.
@@ -579,8 +656,8 @@ States, events and port parsing. The `supervisor_test.go` tests keep passing unc
 - **Settings → Docker → Experimental**: a switch "Run containers as sandboxes,
   without a Docker Engine" plus an honest description. What works: run (-d, -i, -t,
   --rm), ps, logs, stop/start/rm, ports on 127.0.0.1, volumes, bind mounts,
-  pull/images, and single-service compose. What doesn't: exec, build, cp, networking between
-  containers, and Windows terminals. When a Docker Engine sandbox is running, a note says it
+  pull/images, networks between containers, and Compose with several services. What
+  doesn't: exec, cp, and Windows terminals. When a Docker Engine sandbox is running, a note says it
   keeps running but docker no longer reaches it.
 - **i18n**: every new string through `tr`/`trn` with English keys, translated in all six
   catalogs `internal/ui/i18n_{ko,ja,zh_hans,zh_hant,de,hi}.go`. `TestCatalogsAreComplete`
@@ -645,7 +722,7 @@ Desktop's experimental sandbox engine yet"}`. Unknown paths answer 404 `page not
 | GET | /networks | C | builtins + user networks |
 | POST | /networks/create | C | 201 `{Id, Warning}` |
 | GET, DELETE | /networks/{id} | C | |
-| POST | /networks/{id}/connect, /disconnect | C | record only |
+| POST | /networks/{id}/connect, /disconnect | C | address, names, reachability (§9.2) |
 | POST | /networks/prune | C | |
 | * | /swarm, /nodes, /services, /tasks, /secrets, /configs, /plugins (…) | – | 501 |
 

@@ -458,11 +458,11 @@ func sandboxEngineSettings(m *Model) ggui.Widget {
 	notes := widget.Box(widget.Column(
 		widget.Row(
 			widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
-			widget.Expanded(ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, and single-service Compose.")).Size(12)),
+			widget.Expanded(ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.")).Size(12)),
 		).Gap(8).Align(widget.AlignStart),
 		widget.Row(
 			widget.Padding(glyph(lucide.CircleMinus, 13).Color(colorGray), 2, 0, 0, 0),
-			widget.Expanded(ui.Caption(tr("Not yet supported: exec, cp, inter-container networking, and Windows terminals.")).Size(12)),
+			widget.Expanded(ui.Caption(tr("Not yet supported: exec, cp, and Windows terminals.")).Size(12)),
 		).Gap(8).Align(widget.AlignStart),
 		widget.Row(
 			widget.Padding(glyph(lucide.Info, 13).Color(colorBlue), 2, 0, 0, 0),

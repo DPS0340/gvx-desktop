@@ -40,6 +40,8 @@ type fakeRunner struct {
 	Script func(p *fakeProc) int
 	// StartErr, when set, fails Start.
 	StartErr error
+	// NoRunFlags names run flags this rungv lacks.
+	NoRunFlags []string
 
 	images  map[string]ImageInspect // by every RepoTag and by ID
 	volumes map[string]rungv.Volume
@@ -100,6 +102,13 @@ func (f *fakeRunner) proc(id string) *fakeProc {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.procs[id]
+}
+
+// HasRunFlag reports whether the fake rungv takes the run flag name.
+func (f *fakeRunner) HasRunFlag(name string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !slices.Contains(f.NoRunFlags, name)
 }
 
 // Started returns the specs Start was called with.

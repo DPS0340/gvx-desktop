@@ -1,0 +1,106 @@
+package guestcfg
+
+import (
+	"bytes"
+	"slices"
+	"testing"
+)
+
+func TestEncodeDecode(t *testing.T) {
+	c := Config{
+		PrivateKey:   bytes.Repeat([]byte{1}, 32),
+		HubPublicKey: bytes.Repeat([]byte{2}, 32),
+		Endpoint:     "10.0.2.2:5000",
+		Addresses:    []string{"10.89.1.2/24"},
+		Routes:       []string{"10.89.0.0/16"},
+		User:         "app:app",
+	}
+	s, err := c.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Decode(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Endpoint != c.Endpoint || !slices.Equal(got.Addresses, c.Addresses) || got.User != c.User || !bytes.Equal(got.PrivateKey, c.PrivateKey) {
+		t.Fatalf("round trip = %+v", got)
+	}
+	if _, err := Decode("bm90LWpzb24"); err == nil {
+		t.Fatal("Decode accepted garbage")
+	}
+}
+
+const passwd = `root:x:0:0:root:/root:/bin/sh
+# comment
+nobody:x:65534:65534:nobody:/:/sbin/nologin
+app:x:1000:1000::/home/app:/bin/sh
+`
+
+const group = `root:x:0:
+wheel:x:10:root,app
+app:x:1000:
+docker:x:999:app
+`
+
+func TestResolveUser(t *testing.T) {
+	cases := []struct {
+		spec string
+		want Identity
+		err  bool
+	}{
+		{"app", Identity{UID: 1000, GID: 1000, Groups: []uint32{10, 999}, Home: "/home/app"}, false},
+		{"1000", Identity{UID: 1000, GID: 1000, Groups: []uint32{10, 999}, Home: "/home/app"}, false},
+		{"app:docker", Identity{UID: 1000, GID: 999, Groups: []uint32{10}, Home: "/home/app"}, false},
+		{"1234", Identity{UID: 1234, GID: 0, Home: "/"}, false},
+		{"1234:5", Identity{UID: 1234, GID: 5, Home: "/"}, false},
+		{"nobody", Identity{UID: 65534, GID: 65534, Home: "/"}, false},
+		{"ghost", Identity{}, true},
+		{"app:ghosts", Identity{}, true},
+	}
+	for _, tc := range cases {
+		got, err := ResolveUser(tc.spec, passwd, group)
+		if tc.err {
+			if err == nil {
+				t.Errorf("%s: no error", tc.spec)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", tc.spec, err)
+			continue
+		}
+		if got.UID != tc.want.UID || got.GID != tc.want.GID || got.Home != tc.want.Home || !slices.Equal(got.Groups, tc.want.Groups) {
+			t.Errorf("%s = %+v, want %+v", tc.spec, got, tc.want)
+		}
+	}
+}
+
+func TestParseExtraHost(t *testing.T) {
+	cases := map[string]string{
+		"db:10.0.0.5":                       "10.0.0.5\tdb",
+		"db=10.0.0.5":                       "10.0.0.5\tdb",
+		"host.docker.internal:host-gateway": "10.0.2.2\thost.docker.internal",
+		"v6:::1":                            "::1\tv6",
+		"v6=[2001:db8::1]":                  "2001:db8::1\tv6",
+	}
+	for in, want := range cases {
+		got, err := ParseExtraHost(in, "10.0.2.2")
+		if err != nil || got != want {
+			t.Errorf("ParseExtraHost(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"db", ":1.2.3.4", "db:nope", "a b:1.2.3.4"} {
+		if _, err := ParseExtraHost(bad, "10.0.2.2"); err == nil {
+			t.Errorf("ParseExtraHost(%q) accepted", bad)
+		}
+	}
+}
+
+func TestDecodeWithoutLink(t *testing.T) {
+	s, _ := Config{Hosts: []string{"10.0.0.5\tdb"}}.Encode()
+	c, err := Decode(s)
+	if err != nil || c.HasLink() || len(c.Hosts) != 1 {
+		t.Fatalf("Decode = %+v, %v", c, err)
+	}
+}

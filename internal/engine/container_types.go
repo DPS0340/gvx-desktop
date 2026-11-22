@@ -302,7 +302,22 @@ type networkingConfig struct {
 }
 
 type endpointConfig struct {
-	Aliases []string `json:"Aliases"`
+	Aliases    []string `json:"Aliases"`
+	IPAMConfig *struct {
+		IPv4Address string `json:"IPv4Address"`
+	} `json:"IPAMConfig"`
+	IPAddress string `json:"IPAddress"`
+}
+
+// ipv4 is the address the client asked for, or "".
+func (c *endpointConfig) ipv4() string {
+	if c == nil {
+		return ""
+	}
+	if c.IPAMConfig != nil && c.IPAMConfig.IPv4Address != "" {
+		return c.IPAMConfig.IPv4Address
+	}
+	return c.IPAddress
 }
 
 type containerCreateResponse struct {

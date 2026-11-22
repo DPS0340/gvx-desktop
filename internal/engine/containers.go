@@ -190,6 +190,10 @@ func (e *Engine) containerEvent(ev sandbox.Event) {
 		c := e.ctr.byID[ev.ID]
 		if c != nil {
 			found = true
+			// Leave the overlay before the record stops running: a start
+			// may follow as soon as it does (restart, a restart policy), and
+			// its join must not be undone by this exit.
+			e.leaveOverlay(ev.ID)
 			exitCode := ev.State.ExitCode
 			if exitCode == -1 && ev.State.Signal != 0 {
 				exitCode = 128 + ev.State.Signal
@@ -241,6 +245,9 @@ func (e *Engine) containerEvent(ev sandbox.Event) {
 			}
 		}
 		e.ctr.mu.Unlock()
+		if testHookExitRecorded != nil {
+			testHookExitRecorded()
+		}
 
 		if !found {
 			return
@@ -255,6 +262,10 @@ func (e *Engine) containerEvent(ev sandbox.Event) {
 		}
 	}
 }
+
+// testHookExitRecorded, when set, runs after an exit is recorded and
+// before the rest of its handling; a test widens the window with it.
+var testHookExitRecorded func()
 
 func shouldRestart(p RestartPolicy, exitCode, restartCount int) bool {
 	switch p.Name {
@@ -602,7 +613,10 @@ func (e *Engine) startContainer(id string) error {
 
 	e.ctr.portMu.Unlock()
 
+	spec = e.joinOverlay(&snapshot, spec)
+
 	if err := e.runner.Start(spec); err != nil {
+		e.leaveOverlay(id)
 		e.handleStartFailure(id, gen, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, err)
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "volume") && (strings.Contains(msg, "in use") || strings.Contains(msg, "locked")) {
@@ -770,7 +784,9 @@ func (e *Engine) removeContainerCleanup(ctx context.Context, id string, stopFirs
 	}
 	e.runner.Forget(id)
 	e.dropLogs(id)
+	e.leaveOverlay(id)
 	e.disconnectNetworks(id)
+	e.syncOverlay()
 
 	e.ctr.mu.Lock()
 	delete(e.ctr.byID, id)
@@ -851,19 +867,21 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate ExtraHosts.
-	if len(hc.ExtraHosts) > 0 {
-		warnings = append(warnings, "ExtraHosts is ignored by GVX Desktop's experimental sandbox engine")
+	// Validate ExtraHosts; netinit adds them to /etc/hosts at each start.
+	if _, err := extraHostLines(hc.ExtraHosts); err != nil {
+		writeError(w, r, errInvalid("%v", err))
+		return
 	}
 
 	// Determine target networks and validate they exist.
 	type netTarget struct {
 		ref     string
 		aliases []string
+		ipv4    string
 	}
 	var targets []netTarget
 	seenNet := map[string]bool{}
-	addNet := func(ref string, aliases []string) {
+	addNet := func(ref string, ep *endpointConfig) {
 		if ref == "" || ref == "default" {
 			ref = "bridge"
 		}
@@ -871,7 +889,11 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seenNet[ref] = true
-		targets = append(targets, netTarget{ref: ref, aliases: slices.Clone(aliases)})
+		var aliases []string
+		if ep != nil {
+			aliases = ep.Aliases
+		}
+		targets = append(targets, netTarget{ref: ref, aliases: slices.Clone(aliases), ipv4: ep.ipv4()})
 	}
 
 	netMode := strings.TrimSpace(hc.NetworkMode)
@@ -899,35 +921,24 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 				hc.NetworkMode = "bridge"
 			}
 			for _, k := range keys {
-				var aliases []string
-				if ep := endpoints[k]; ep != nil {
-					aliases = ep.Aliases
-				}
-				addNet(k, aliases)
+				addNet(k, endpoints[k])
 			}
 		}
 	default:
 		hc.NetworkMode = netMode
-		var primaryAliases []string
-		if ep := endpoints[netMode]; ep != nil {
-			primaryAliases = ep.Aliases
-		}
-		addNet(netMode, primaryAliases)
+		addNet(netMode, endpoints[netMode])
 		for _, k := range slices.Sorted(maps.Keys(endpoints)) {
 			if k == netMode {
 				continue
 			}
-			var aliases []string
-			if ep := endpoints[k]; ep != nil {
-				aliases = ep.Aliases
-			}
-			addNet(k, aliases)
+			addNet(k, endpoints[k])
 		}
 	}
 
 	type resolvedNet struct {
 		net     Network
 		aliases []string
+		ipv4    string
 	}
 	resolvedNets := make([]resolvedNet, 0, len(targets))
 	for _, t := range targets {
@@ -936,7 +947,7 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, err)
 			return
 		}
-		resolvedNets = append(resolvedNets, resolvedNet{net: n, aliases: t.aliases})
+		resolvedNets = append(resolvedNets, resolvedNet{net: n, aliases: t.aliases, ipv4: t.ipv4})
 	}
 
 	// Validate ports after normalizing NetworkMode.
@@ -1040,7 +1051,7 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 	// Connect to networks (workstream C seam, holding no lock).
 	netSettings := make(map[string]EndpointSettings, len(resolvedNets))
 	for _, rn := range resolvedNets {
-		warn, err := e.connectNetwork(rn.net.Name, id, rn.aliases)
+		ep, err := e.connectNetwork(rn.net.Name, id, rn.aliases, rn.ipv4)
 		if err != nil {
 			e.disconnectNetworks(id)
 			e.ctr.mu.Lock()
@@ -1050,22 +1061,18 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, err)
 			return
 		}
-		if warn != "" {
-			warnings = append(warnings, warn)
-		}
-		ep := EndpointSettings{
-			Aliases:    slices.Clone(rn.aliases),
-			NetworkID:  rn.net.ID,
-			EndpointID: randomHex64(),
-			DNSNames:   buildDNSNames(name, id[:12], rn.aliases),
-		}
-		if rn.net.Name != "none" {
-			ep.Gateway = "10.0.2.2"
-			ep.IPAddress = "10.0.2.15"
-			ep.IPPrefixLen = 24
+		ep.EndpointID = randomHex64()
+		ep.DNSNames = buildDNSNames(name, id[:12], rn.aliases)
+		if ep.IPAddress != "" {
 			ep.MacAddress = containerMAC(id)
 		}
 		netSettings[rn.net.Name] = ep
+	}
+	for _, rn := range resolvedNets {
+		if w := overlayWarning(rn.net); w != "" {
+			warnings = append(warnings, w)
+			break
+		}
 	}
 
 	e.ctr.mu.Lock()
@@ -1593,6 +1600,7 @@ func (e *Engine) containerRename(w http.ResponseWriter, r *http.Request) {
 	}
 	e.ctr.mu.Unlock()
 
+	e.syncOverlay()
 	e.emit(Event{Type: "container", Action: "rename", ID: id, Attributes: attrs})
 	e.notify()
 	w.WriteHeader(http.StatusNoContent)

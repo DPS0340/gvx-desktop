@@ -73,14 +73,15 @@ func TestNetworksBuiltinsCRUDAndWarningSeam(t *testing.T) {
 		t.Fatalf("custom filter got %+v", nets)
 	}
 
-	// Connect two containers via seam: first has no warning, second produces warning.
-	w1, err := te.connectNetwork("gvxd-net", strings.Repeat("1", 64), []string{"web"})
-	if err != nil || w1 != "" {
-		t.Fatalf("first connect = (%q, %v), want no warning", w1, err)
+	// Connect two containers via seam: each gets the next address of the
+	// network's subnet.
+	ep1, err := te.connectNetwork("gvxd-net", strings.Repeat("1", 64), []string{"web"}, "")
+	if err != nil || ep1.IPAddress != "10.89.1.2" || ep1.Gateway != "10.89.1.1" || ep1.IPPrefixLen != 24 {
+		t.Fatalf("first connect = (%+v, %v)", ep1, err)
 	}
-	w2, err := te.connectNetwork("gvxd-net", strings.Repeat("2", 64), []string{"db"})
-	if err != nil || !strings.Contains(w2, `Containers on the network "gvxd-net" cannot reach each other yet`) {
-		t.Fatalf("second connect = (%q, %v), want inter-container warning", w2, err)
+	ep2, err := te.connectNetwork("gvxd-net", strings.Repeat("2", 64), []string{"db"}, "")
+	if err != nil || ep2.IPAddress != "10.89.1.3" {
+		t.Fatalf("second connect = (%+v, %v)", ep2, err)
 	}
 
 	// Delete while containers are connected → 403.

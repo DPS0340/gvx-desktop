@@ -191,7 +191,7 @@ func (e *Engine) info(w http.ResponseWriter, r *http.Request) {
 		CgroupDriver:      "none",
 		ExperimentalBuild: true,
 		Warnings: []string{
-			"GVX Desktop's experimental sandbox engine: exec, cp, and inter-container networking are not supported yet.",
+			"GVX Desktop's experimental sandbox engine: exec and cp are not supported yet.",
 		},
 	}
 	writeJSON(w, http.StatusOK, resp)

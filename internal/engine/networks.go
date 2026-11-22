@@ -8,16 +8,22 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/netip"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ironpark/gvx-desktop/internal/overlay"
 )
 
-// networkState is the engine's networks, as networks.json keeps them. A
-// network is a record only: every sandbox has a NAT of its own, and
-// containers on one network cannot reach each other yet.
+// networkState is the engine's networks, as networks.json keeps them.
+// Every sandbox has a NAT of its own; containers on a user network reach
+// each other through the overlay (overlay.go), at the addresses their
+// network gives them. The builtin bridge has no overlay, as containers
+// there have no names on Docker either.
 type networkState struct {
 	mu   sync.Mutex
 	byID map[string]*Network
@@ -36,7 +42,12 @@ type Network struct {
 	Attachable bool              `json:"attachable,omitempty"`
 	// Containers are the IDs of the containers on it, with their aliases.
 	Containers map[string][]string `json:"containers,omitempty"`
-	Builtin    bool                `json:"-"`
+	// Subnet and Gateway are a user network's IPv4 subnet and its first
+	// address, and IPs the containers' addresses on it, by container ID.
+	Subnet  string            `json:"subnet,omitempty"`
+	Gateway string            `json:"gateway,omitempty"`
+	IPs     map[string]string `json:"ips,omitempty"`
+	Builtin bool              `json:"-"`
 }
 
 type networksFile struct {
@@ -127,6 +138,7 @@ func cloneNetwork(n *Network) Network {
 	cp := *n
 	cp.Labels = maps.Clone(n.Labels)
 	cp.Options = maps.Clone(n.Options)
+	cp.IPs = maps.Clone(n.IPs)
 	if n.Containers != nil {
 		cp.Containers = make(map[string][]string, len(n.Containers))
 		for k, v := range n.Containers {
@@ -163,7 +175,146 @@ func (e *Engine) loadNetworks() error {
 		n.Builtin = false
 		e.net.byID[n.ID] = n
 	}
+	// Networks from before the overlay have no subnet, and their
+	// containers no addresses.
+	dirty := false
+	for _, n := range slices.SortedFunc(maps.Values(e.net.byID), func(a, b *Network) int { return strings.Compare(a.Name, b.Name) }) {
+		if n.Builtin || !hasSubnet(n.Driver) {
+			continue
+		}
+		if n.Subnet == "" {
+			sub, err := e.allocSubnetLocked("", "")
+			if err != nil {
+				continue
+			}
+			n.Subnet, n.Gateway = sub.subnet.String(), sub.gateway.String()
+			dirty = true
+		}
+		for _, cid := range slices.Sorted(maps.Keys(n.Containers)) {
+			if _, ok := n.IPs[cid]; !ok {
+				if _, err := allocAddr(n, cid, ""); err == nil {
+					dirty = true
+				}
+			}
+		}
+	}
+	if dirty {
+		return e.saveNetworksLocked()
+	}
 	return nil
+}
+
+// hasSubnet reports whether a user network of the driver gets a subnet
+// and addresses: bridge does, as on Docker; so do the drivers Docker has
+// and the engine treats as bridge.
+func hasSubnet(driver string) bool {
+	switch driver {
+	case "host", "null", "none":
+		return false
+	}
+	return true
+}
+
+type subnetAlloc struct {
+	subnet  netip.Prefix
+	gateway netip.Addr
+}
+
+// allocSubnetLocked returns a subnet for a new network: want, when the
+// client asked for one, or the first free /24 of overlay.Pool. Caller holds
+// e.net.mu.
+func (e *Engine) allocSubnetLocked(want, wantGateway string) (subnetAlloc, error) {
+	var taken []netip.Prefix
+	for _, n := range e.net.byID {
+		if p, err := netip.ParsePrefix(n.Subnet); err == nil {
+			taken = append(taken, p)
+		}
+	}
+	overlaps := func(p netip.Prefix) bool {
+		return slices.ContainsFunc(taken, func(t netip.Prefix) bool { return t.Overlaps(p) })
+	}
+	if want != "" {
+		p, err := netip.ParsePrefix(want)
+		if err != nil || !p.Addr().Is4() || p.Bits() > 30 || p.Bits() < 8 {
+			return subnetAlloc{}, errInvalid("invalid subnet %q: an IPv4 subnet from /8 to /30 is supported", want)
+		}
+		p = p.Masked()
+		if overlaps(p) {
+			return subnetAlloc{}, &apiError{http.StatusForbidden, "Pool overlaps with other one on this address space"}
+		}
+		gw := p.Addr().Next()
+		if wantGateway != "" {
+			g, err := netip.ParseAddr(wantGateway)
+			if err != nil || !p.Contains(g) {
+				return subnetAlloc{}, errInvalid("invalid gateway %q for subnet %s", wantGateway, p)
+			}
+			gw = g
+		}
+		return subnetAlloc{p, gw}, nil
+	}
+	base := overlay.Pool.Addr().As4()
+	for i := 1; i < 256; i++ {
+		p := netip.PrefixFrom(netip.AddrFrom4([4]byte{base[0], base[1], byte(i), 0}), 24)
+		if !overlaps(p) {
+			return subnetAlloc{p, p.Addr().Next()}, nil
+		}
+	}
+	return subnetAlloc{}, &apiError{http.StatusForbidden, "could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network"}
+}
+
+// allocAddr gives cid an address on n: want, when the client asked for
+// one, or the first free one after the gateway. Caller holds e.net.mu.
+func allocAddr(n *Network, cid, want string) (netip.Addr, error) {
+	sub, err := netip.ParsePrefix(n.Subnet)
+	if err != nil {
+		return netip.Addr{}, errInvalid("network %s has no subnet", n.Name)
+	}
+	gw, _ := netip.ParseAddr(n.Gateway)
+	used := map[netip.Addr]string{}
+	for id, s := range n.IPs {
+		if a, err := netip.ParseAddr(s); err == nil {
+			used[a] = id
+		}
+	}
+	if n.IPs == nil {
+		n.IPs = map[string]string{}
+	}
+	if cur, ok := n.IPs[cid]; ok && want == "" {
+		if a, err := netip.ParseAddr(cur); err == nil {
+			return a, nil
+		}
+	}
+	last := lastAddr(sub)
+	if want != "" {
+		a, err := netip.ParseAddr(want)
+		if err != nil || !sub.Contains(a) || a == sub.Addr() || a == last || a == gw {
+			return netip.Addr{}, errInvalid("invalid IPv4 address %q for network %s (subnet %s)", want, n.Name, sub)
+		}
+		if owner, ok := used[a]; ok && owner != cid {
+			return netip.Addr{}, errConflict("Address already in use")
+		}
+		n.IPs[cid] = a.String()
+		return a, nil
+	}
+	for a := sub.Addr().Next(); a.IsValid() && sub.Contains(a) && a != last; a = a.Next() {
+		if a == gw {
+			continue
+		}
+		if _, ok := used[a]; ok {
+			continue
+		}
+		n.IPs[cid] = a.String()
+		return a, nil
+	}
+	return netip.Addr{}, &apiError{http.StatusForbidden, fmt.Sprintf("no available IPv4 addresses on network %s", n.Name)}
+}
+
+// lastAddr is the broadcast address of p.
+func lastAddr(p netip.Prefix) netip.Addr {
+	a := p.Masked().Addr().As4()
+	v := uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3])
+	v |= (1 << (32 - p.Bits())) - 1
+	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
 }
 
 // saveNetworksLocked writes user networks to networks.json. Caller holds e.net.mu.
@@ -224,26 +375,33 @@ func (e *Engine) network(ref string) (Network, error) {
 	return cloneNetwork(n), nil
 }
 
-// connectNetwork records a container on a network. warning, when not "",
-// is for the create's Warnings: the network has other containers, which
-// this one cannot reach.
-func (e *Engine) connectNetwork(ref, containerID string, aliases []string) (warning string, err error) {
+// connectNetwork records a container on a network with its aliases, and
+// gives it an address on a user network: ipv4 when the client asked for
+// one. It returns the container's endpoint, without EndpointID, MacAddress
+// and DNSNames, which the caller fills.
+func (e *Engine) connectNetwork(ref, containerID string, aliases []string, ipv4 string) (EndpointSettings, error) {
 	e.net.mu.Lock()
 	n, err := e.findNetworkLocked(ref)
 	if err != nil {
 		e.net.mu.Unlock()
-		return "", err
+		return EndpointSettings{}, err
 	}
 	if n.Containers == nil {
 		n.Containers = map[string][]string{}
 	}
-	if !n.Builtin {
-		for other := range n.Containers {
-			if other != containerID {
-				warning = fmt.Sprintf("Containers on the network %q cannot reach each other yet in GVX Desktop's experimental sandbox engine", n.Name)
-				break
-			}
+	ep := EndpointSettings{Aliases: slices.Clone(aliases), NetworkID: n.ID}
+	switch {
+	case n.Builtin && n.Name == "bridge":
+		ep.Gateway, ep.IPAddress, ep.IPPrefixLen = "10.0.2.2", "10.0.2.15", 24
+	case n.Builtin:
+	case n.Subnet != "":
+		a, err := allocAddr(n, containerID, ipv4)
+		if err != nil {
+			e.net.mu.Unlock()
+			return EndpointSettings{}, err
 		}
+		sub, _ := netip.ParsePrefix(n.Subnet)
+		ep.Gateway, ep.IPAddress, ep.IPPrefixLen = n.Gateway, a.String(), sub.Bits()
 	}
 	n.Containers[containerID] = slices.Clone(aliases)
 	netID, netName, netDriver := n.ID, n.Name, n.Driver
@@ -252,7 +410,7 @@ func (e *Engine) connectNetwork(ref, containerID string, aliases []string) (warn
 	}
 	e.net.mu.Unlock()
 	if err != nil {
-		return "", err
+		return EndpointSettings{}, err
 	}
 
 	e.emit(Event{
@@ -266,7 +424,7 @@ func (e *Engine) connectNetwork(ref, containerID string, aliases []string) (warn
 		},
 	})
 	e.notify()
-	return warning, nil
+	return ep, nil
 }
 
 // disconnectNetworks takes a removed container off every network.
@@ -281,6 +439,7 @@ func (e *Engine) disconnectNetworks(containerID string) {
 	for _, n := range e.net.byID {
 		if _, ok := n.Containers[containerID]; ok {
 			delete(n.Containers, containerID)
+			delete(n.IPs, containerID)
 			removed = append(removed, disconnected{n.ID, n.Name, n.Driver})
 			if !n.Builtin {
 				dirty = true
@@ -323,8 +482,15 @@ func (e *Engine) toDockerNetwork(n Network, ctrs map[string]Container) dockerNet
 		Options: map[string]string{},
 		Config:  []networkIPAMConfig{},
 	}
-	if n.Driver == "bridge" {
+	switch {
+	case n.Builtin && n.Name == "bridge":
 		ipam.Config = []networkIPAMConfig{{Subnet: "10.0.2.0/24", Gateway: "10.0.2.2"}}
+	case n.Subnet != "":
+		ipam.Config = []networkIPAMConfig{{Subnet: n.Subnet, Gateway: n.Gateway}}
+	}
+	bits := 24
+	if p, err := netip.ParsePrefix(n.Subnet); err == nil {
+		bits = p.Bits()
 	}
 
 	endpoints := map[string]networkEndpoint{}
@@ -337,9 +503,13 @@ func (e *Engine) toDockerNetwork(n Network, ctrs map[string]Container) dockerNet
 			Name:       name,
 			EndpointID: deterministicHex64(n.ID + ":" + cid),
 		}
-		if n.Driver == "bridge" {
+		switch {
+		case n.Builtin && n.Name == "bridge":
 			ep.MacAddress = "02:42:0a:00:02:0f"
 			ep.IPv4Address = "10.0.2.15/24"
+		case n.IPs[cid] != "":
+			ep.MacAddress = containerMAC(cid)
+			ep.IPv4Address = n.IPs[cid] + "/" + strconv.Itoa(bits)
 		}
 		endpoints[cid] = ep
 	}
@@ -460,10 +630,30 @@ func (e *Engine) networkCreate(w http.ResponseWriter, r *http.Request) {
 		Attachable bool              `json:"Attachable"`
 		Options    map[string]string `json:"Options"`
 		Labels     map[string]string `json:"Labels"`
+		EnableIPv6 *bool             `json:"EnableIPv6"`
+		IPAM       *struct {
+			Config []struct {
+				Subnet  string `json:"Subnet"`
+				Gateway string `json:"Gateway"`
+			} `json:"Config"`
+		} `json:"IPAM"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		writeError(w, r, err)
 		return
+	}
+	var wantSubnet, wantGateway string
+	if req.IPAM != nil {
+		for _, c := range req.IPAM.Config {
+			if p, err := netip.ParsePrefix(c.Subnet); err == nil && p.Addr().Is6() {
+				continue // IPv6 is not supported; the IPv4 subnet is kept
+			}
+			if wantSubnet != "" {
+				writeError(w, r, errInvalid("only one IPv4 subnet per network is supported"))
+				return
+			}
+			wantSubnet, wantGateway = c.Subnet, c.Gateway
+		}
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -499,6 +689,15 @@ func (e *Engine) networkCreate(w http.ResponseWriter, r *http.Request) {
 		Internal:   req.Internal,
 		Attachable: req.Attachable,
 		Containers: map[string][]string{},
+	}
+	if hasSubnet(driver) {
+		sub, err := e.allocSubnetLocked(wantSubnet, wantGateway)
+		if err != nil {
+			e.net.mu.Unlock()
+			writeError(w, r, err)
+			return
+		}
+		n.Subnet, n.Gateway = sub.subnet.String(), sub.gateway.String()
 	}
 	e.net.byID[n.ID] = n
 	err := e.saveNetworksLocked()
@@ -593,10 +792,8 @@ func (e *Engine) networkDelete(w http.ResponseWriter, r *http.Request) {
 func (e *Engine) networkConnect(w http.ResponseWriter, r *http.Request) {
 	ref := r.PathValue("id")
 	var req struct {
-		Container      string `json:"Container"`
-		EndpointConfig *struct {
-			Aliases []string `json:"Aliases"`
-		} `json:"EndpointConfig"`
+		Container      string          `json:"Container"`
+		EndpointConfig *endpointConfig `json:"EndpointConfig"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		writeError(w, r, err)
@@ -613,14 +810,47 @@ func (e *Engine) networkConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cid = c.ID
-	var aliases []string
-	if req.EndpointConfig != nil {
-		aliases = req.EndpointConfig.Aliases
-	}
-	if _, err := e.connectNetwork(ref, cid, aliases); err != nil {
+	n, err := e.network(ref)
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
+	if _, ok := c.Networks[n.Name]; ok {
+		writeError(w, r, &apiError{http.StatusForbidden, fmt.Sprintf("endpoint with name %s already exists in network %s", c.Name, n.Name)})
+		return
+	}
+	if c.HostConfig.NetworkMode == "none" || n.Name == "none" {
+		writeError(w, r, &apiError{http.StatusForbidden, "container cannot be disconnected from network none or connected to it"})
+		return
+	}
+	var aliases []string
+	ipv4 := ""
+	if req.EndpointConfig != nil {
+		aliases = req.EndpointConfig.Aliases
+		ipv4 = req.EndpointConfig.ipv4()
+	}
+	ep, err := e.connectNetwork(n.ID, cid, aliases, ipv4)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ep.EndpointID = randomHex64()
+	ep.DNSNames = buildDNSNames(c.Name, cid[:12], aliases)
+	if ep.IPAddress != "" {
+		ep.MacAddress = containerMAC(cid)
+	}
+	e.ctr.mu.Lock()
+	if cur := e.ctr.byID[cid]; cur != nil {
+		if cur.Networks == nil {
+			cur.Networks = map[string]EndpointSettings{}
+		}
+		cur.Networks[n.Name] = ep
+		if err := e.saveContainersLocked(); err != nil {
+			e.logf("engine: save containers.json: %v", err)
+		}
+	}
+	e.ctr.mu.Unlock()
+	e.syncOverlay()
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -661,6 +891,7 @@ func (e *Engine) networkDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(n.Containers, cid)
+	delete(n.IPs, cid)
 	netID, netName, netDriver := n.ID, n.Name, n.Driver
 	if !n.Builtin {
 		err = e.saveNetworksLocked()
@@ -670,6 +901,17 @@ func (e *Engine) networkDisconnect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	e.ctr.mu.Lock()
+	if cur := e.ctr.byID[cid]; cur != nil {
+		if _, ok := cur.Networks[netName]; ok {
+			delete(cur.Networks, netName)
+			if err := e.saveContainersLocked(); err != nil {
+				e.logf("engine: save containers.json: %v", err)
+			}
+		}
+	}
+	e.ctr.mu.Unlock()
+	e.syncOverlay()
 
 	if connected {
 		e.emit(Event{

@@ -136,11 +136,14 @@ func TestHarnessSystemC(t *testing.T) {
 
 	buildDir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(buildDir, "Dockerfile"), []byte("FROM alpine:3.20\n"), 0o600)
+	imgsBefore, _, _ := h.docker(t, "", "images")
 	_, errOut, code = h.docker(t, "", "build", buildDir)
 	if code == 0 || !strings.Contains(errOut, "docker buildx use --default "+BuilderName) {
 		t.Errorf("docker build = (%d) %q, want 501 message pointing to %s", code, errOut, BuilderName)
 	}
-	if imgsOut, _, _ := h.docker(t, "", "images"); strings.Contains(imgsOut, "buildkit") {
+	// The builder's own buildkit image may be in the shared cache already;
+	// docker build must not add one.
+	if imgsOut, _, _ := h.docker(t, "", "images"); strings.Contains(imgsOut, "buildkit") && !strings.Contains(imgsBefore, "buildkit") {
 		t.Errorf("docker build should not pull buildkit image:\n%s", imgsOut)
 	}
 	if psaOut, _, _ := h.docker(t, "", "ps", "-a"); strings.Contains(psaOut, "buildx") {
@@ -362,11 +365,14 @@ func TestHarnessEndToEnd(t *testing.T) {
 
 		buildDir := t.TempDir()
 		_ = os.WriteFile(filepath.Join(buildDir, "Dockerfile"), []byte("FROM alpine:3.20\n"), 0o600)
+		imgsBefore, _, _ := h.docker(t, "", "images")
 		_, errOut, code = h.docker(t, "", "build", buildDir)
 		if code == 0 || !strings.Contains(errOut, "docker buildx use --default "+BuilderName) {
 			t.Errorf("build (%d): %q", code, errOut)
 		}
-		if imgsOut, _, _ := h.docker(t, "", "images"); strings.Contains(imgsOut, "buildkit") {
+		// The builder's own buildkit image may be in the shared cache already;
+		// docker build must not add one.
+		if imgsOut, _, _ := h.docker(t, "", "images"); strings.Contains(imgsOut, "buildkit") && !strings.Contains(imgsBefore, "buildkit") {
 			t.Errorf("docker build should not pull buildkit image:\n%s", imgsOut)
 		}
 		if psaOut, _, _ := h.docker(t, "", "ps", "-a"); strings.Contains(psaOut, "buildx") {

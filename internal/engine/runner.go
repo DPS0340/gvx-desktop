@@ -83,6 +83,12 @@ func NewRunner(client func() *rungv.Client, dir string) Runner {
 	}
 }
 
+// HasRunFlag reports whether the rungv the runner drives takes the run
+// flag name.
+func (r *rungvRunner) HasRunFlag(name string) bool {
+	return r.client().HasRunFlag(context.Background(), name)
+}
+
 func (r *rungvRunner) SetHandlers(event func(sandbox.Event), output func(id string, o sandbox.Output)) {
 	r.sup.Notify = event
 	r.sup.Output = output

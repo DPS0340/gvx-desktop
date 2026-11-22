@@ -505,10 +505,11 @@ func NewModel(st store.Store, dataDir string) *Model {
 	}
 	ggui.OnCleanup(m.Toasts.Close)
 	m.sup = &sandbox.Supervisor{
-		Client:  m.Client,
-		DataDir: dataDir,
-		Notify:  m.onEvent,
-		Prepare: recipes.Prepare,
+		Client:    m.Client,
+		DataDir:   dataDir,
+		Notify:    m.onEvent,
+		Prepare:   recipes.Prepare,
+		StopGrace: recipes.StopGrace,
 	}
 	m.Lang = ggui.Map(m.Settings, func(s store.Settings) string { return ResolveLanguage(s.Language) })
 	m.Rows = ggui.Combine(m.Specs, m.States, func(specs []sandbox.Spec, states map[string]sandbox.State) []Row {

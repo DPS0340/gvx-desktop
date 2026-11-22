@@ -97,10 +97,10 @@ type State struct {
 	// Paused reports a run whose guest Supervisor.Pause froze; Status
 	// stays Running. Owner: W1.
 	Paused bool
-	// Busy are the host addresses -auto-publish could not take, because
+	// Busy are the host ports -auto-publish could not take, because
 	// something on this computer has them, until the guest lets the port
 	// go or it is published after all.
-	Busy []string
+	Busy []PublishedPort
 }
 
 // Equal makes State comparable for signals.
@@ -108,14 +108,11 @@ func (s State) Equal(o State) bool {
 	if !slices.Equal(s.Ports, o.Ports) || !slices.Equal(s.Busy, o.Busy) {
 		return false
 	}
-	a, b := s, o
-	a.Ports, b.Ports = nil, nil
-	a.Busy, b.Busy = nil, nil
-	return a.Status == b.Status && a.PID == b.PID && a.StartedAt.Equal(b.StartedAt) &&
-		a.ReadyAt.Equal(b.ReadyAt) && a.ExitedAt.Equal(b.ExitedAt) && a.ExitCode == b.ExitCode &&
-		a.Error == b.Error && a.Advice == b.Advice && a.Platform == b.Platform &&
-		a.Restored == b.Restored && a.LogSeq == b.LogSeq && a.Signal == b.Signal &&
-		a.Control == b.Control && a.Paused == b.Paused
+	return s.Status == o.Status && s.PID == o.PID && s.StartedAt.Equal(o.StartedAt) &&
+		s.ReadyAt.Equal(o.ReadyAt) && s.ExitedAt.Equal(o.ExitedAt) && s.ExitCode == o.ExitCode &&
+		s.Error == o.Error && s.Advice == o.Advice && s.Platform == o.Platform &&
+		s.Restored == o.Restored && s.LogSeq == o.LogSeq && s.Signal == o.Signal &&
+		s.Control == o.Control && s.Paused == o.Paused
 }
 
 // Event is a change the supervisor reports.
@@ -149,6 +146,11 @@ type Supervisor struct {
 	// Prepare, when set, writes what a spec reads from this computer as it
 	// starts, before rungv runs: the files a recipe gives its guest.
 	Prepare func(Spec) error
+	// StopGrace, when set, says which sandboxes Stop ends as docker stop
+	// ends a container (Shutdown with SIGTERM) and how long they get,
+	// given the stop timeout: those whose daemon keeps state. The others,
+	// and runs without a control socket, end with an interrupt.
+	StopGrace func(spec Spec, timeout time.Duration) (grace time.Duration, ok bool)
 	// Output, when set, receives what the guest of every run writes, as it
 	// comes and without rungv's own lines, from the goroutines reading it.
 	// It must not block. The log buffers get the same output either way.
@@ -228,7 +230,7 @@ func (s *Supervisor) State(id string) State {
 	if p := s.procs[id]; p != nil {
 		st := p.state
 		st.Ports = append([]PublishedPort(nil), st.Ports...)
-		st.Busy = append([]string(nil), st.Busy...)
+		st.Busy = append([]PublishedPort(nil), st.Busy...)
 		st.LogSeq = s.logsLocked(id).Seq()
 		return st
 	}
@@ -605,7 +607,9 @@ func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sy
 				if busy != "" {
 					ev.Kind, ev.Port = EventPortBusy, busy
 				}
-				s.syncPortsLocked(id, p)
+				if p.state.Status != Starting { // the sync at ready covers those
+					s.syncPortsLocked(id, p)
+				}
 			} else if v, ok := strings.CutPrefix(line, "rungv: platform="); ok {
 				p.state.Platform = strings.TrimSpace(v)
 			}
@@ -716,10 +720,10 @@ func (s *Supervisor) exited(id string, p *proc, err error) {
 }
 
 // Stop asks a sandbox to end with an interrupt, as Ctrl-C in a terminal
-// does, and kills it when it has not ended after timeout. A recipe's
-// sandbox with a control socket ends as docker stop ends a container
-// instead (Shutdown): its daemon, dockerd or k3s, gets SIGTERM and time
-// to stop what it runs and save its state.
+// does, and kills it when it has not ended after timeout. A sandbox
+// StopGrace picks, with a control socket, ends as docker stop ends a
+// container instead (Shutdown): its daemon gets SIGTERM and time to stop
+// what it runs and save its state.
 func (s *Supervisor) Stop(id string, timeout time.Duration) error {
 	s.mu.Lock()
 	p := s.procs[id]
@@ -727,9 +731,11 @@ func (s *Supervisor) Stop(id string, timeout time.Duration) error {
 		s.mu.Unlock()
 		return nil
 	}
-	if grace, ok := p.spec.gracefulStop(timeout); ok && p.state.Control && p.paths.ControlSocket != "" {
-		s.mu.Unlock()
-		return s.Shutdown(id, "SIGTERM", grace)
+	if s.StopGrace != nil && p.state.Control && p.paths.ControlSocket != "" {
+		if grace, ok := s.StopGrace(p.spec, timeout); ok {
+			s.mu.Unlock()
+			return s.Shutdown(id, "SIGTERM", grace)
+		}
 	}
 	p.stopping = true
 	p.state.Status = Stopping

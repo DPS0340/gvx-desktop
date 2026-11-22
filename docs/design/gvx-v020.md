@@ -671,7 +671,8 @@ guest's PID 1 is `docker-init` (tini), which forwards signals to dockerd.
 
 ### 12.1 Graceful stop of recipe sandboxes
 
-`Spec.gracefulStop`: a sandbox with a `Recipe` (dockerd, k3s, the registry) stops as `docker stop`
+`Supervisor.StopGrace`, wired to `recipes.StopGrace` (as `Prepare` is to `recipes.Prepare`): a
+sandbox with a `Recipe` (dockerd, k3s, the registry) stops as `docker stop`
 stops a container: SIGTERM to PID 1 through the control socket, SIGKILL after the grace, then the
 SIGINT path. The grace is the stop timeout; dockerd gets at least 20 s (its own
 `shutdown-timeout` is 15 s for its containers, plus cleanup). Every caller of `Stop` (Stop,
@@ -694,7 +695,7 @@ control socket (v0.19), and user sandboxes, keep the SIGINT stop (decision 4).
   applies only at start (anything outside `debug, labels, live-restore, max-concurrent-*,
   max-download-attempts, default-runtime, runtimes, authorization-plugins, insecure-registries,
   registry-mirrors, shutdown-timeout, features`) → a toast offering Restart; otherwise
-  `rungv kill -s SIGHUP` and the engine's log is read for dockerd's verdict:
+  `recipes.ReloadDockerd`: `rungv kill -s SIGHUP` and the engine's log is read for dockerd's verdict:
   `msg="Reloaded configuration"`, or `level=error msg="Error reloading configuration"
   error="…"`, whose `error` is shown. A paused engine, or a run without the mount or the control
   socket, gets a toast instead.

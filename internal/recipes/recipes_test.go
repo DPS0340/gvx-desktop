@@ -201,3 +201,23 @@ func TestNodePorts(t *testing.T) {
 		t.Errorf("ranges %s", got)
 	}
 }
+
+func TestStopGrace(t *testing.T) {
+	for _, tc := range []struct {
+		recipe string
+		in     time.Duration
+		grace  time.Duration
+		ok     bool
+	}{
+		{"", 15 * time.Second, 0, false},
+		{Docker, 10 * time.Second, dockerdStopGrace, true},
+		{Docker, 60 * time.Second, 60 * time.Second, true},
+		{Kubernetes, 15 * time.Second, 15 * time.Second, true},
+		{Registry, 5 * time.Second, 5 * time.Second, true},
+	} {
+		grace, ok := StopGrace(sandbox.Spec{Recipe: tc.recipe}, tc.in)
+		if grace != tc.grace || ok != tc.ok {
+			t.Errorf("%q %v: %v %v", tc.recipe, tc.in, grace, ok)
+		}
+	}
+}

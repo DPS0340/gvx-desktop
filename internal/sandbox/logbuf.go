@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"cmp"
+	"slices"
 	"sync"
 	"time"
 )
@@ -64,6 +66,14 @@ func (b *LogBuffer) Snapshot() []LogLine {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]LogLine(nil), b.lines...)
+}
+
+// Since copies the lines after seq.
+func (b *LogBuffer) Since(seq int64) []LogLine {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	i, _ := slices.BinarySearchFunc(b.lines, seq+1, func(l LogLine, s int64) int { return cmp.Compare(l.Seq, s) })
+	return slices.Clone(b.lines[i:])
 }
 
 // Clear removes every line.

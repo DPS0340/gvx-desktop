@@ -100,7 +100,7 @@ func renderAll(tmp, out, lang string) error {
 			states := maps.Clone(ggui.Peek(m.States))
 			st := states[demoIDs[1]]
 			st.Ports = slices.DeleteFunc(slices.Clone(st.Ports), func(p sandbox.PublishedPort) bool { return p.Host == "127.0.0.1:9000" })
-			st.Busy = []string{"127.0.0.1:9000"}
+			st.Busy = []sandbox.PublishedPort{{Host: "127.0.0.1:9000", Guest: 9000, Proto: "tcp", Source: "auto"}}
 			states[demoIDs[1]] = st
 			m.States.Set(states)
 			m.ContainerDetail.Set(1)
@@ -112,7 +112,7 @@ func renderAll(tmp, out, lang string) error {
 			states := maps.Clone(ggui.Peek(m.States))
 			st := states[demoIDs[1]]
 			st.Ports = append(slices.Clone(st.Ports), sandbox.PublishedPort{Host: "127.0.0.1:3000", Guest: 3000, Proto: "tcp", Source: "auto"})
-			st.Busy = []string{"127.0.0.1:5432"}
+			st.Busy = []sandbox.PublishedPort{{Host: "127.0.0.1:5432", Guest: 5432, Proto: "tcp", Source: "auto"}}
 			states[demoIDs[1]] = st
 			m.States.Set(states)
 			m.ShowSandbox(demoIDs[1], 1)

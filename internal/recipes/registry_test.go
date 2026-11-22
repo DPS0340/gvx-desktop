@@ -3,6 +3,7 @@ package recipes
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -42,7 +43,7 @@ mirrors:
 // everything else of it.
 func TestUpgrade(t *testing.T) {
 	old := DockerEngine()
-	old.Mounts = old.Mounts[:1] // saved before daemon.json
+	old.Mounts = slices.DeleteFunc(old.Mounts, isDockerConfigMount) // saved before daemon.json
 	old.Command = "--tls=false --debug --insecure-registry=host.docker.internal:5001"
 	old.Memory = "4g"
 	up, changed := Upgrade(old)

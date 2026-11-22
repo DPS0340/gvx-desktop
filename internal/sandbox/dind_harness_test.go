@@ -46,6 +46,8 @@ func TestDockerEngineHarness(t *testing.T) {
 	sup := &Supervisor{
 		Client:  func() *rungv.Client { return client },
 		DataDir: t.TempDir(),
+		// As recipes.StopGrace has the Docker Engine end.
+		StopGrace: func(Spec, time.Duration) (time.Duration, bool) { return 20 * time.Second, true },
 		Notify: func(e Event) {
 			evMu.Lock()
 			events = append(events, e)
@@ -95,18 +97,25 @@ func TestDockerEngineHarness(t *testing.T) {
 			}
 		}
 	}
-	docker := func(args ...string) string {
-		t.Helper()
+	dockerRun := func(args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		cmd := client.ExecCommand(ctx, ctl.Target(), rungv.ExecOptions{Argv: append([]string{"docker"}, args...)})
 		var out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("docker %v: %v\n%s", args, err, out.String())
-		}
-		return out.String()
+		err := cmd.Run()
+		return out.String(), err
 	}
+	docker := func(args ...string) string {
+		t.Helper()
+		out, err := dockerRun(args...)
+		if err != nil {
+			t.Fatalf("docker %v: %v\n%s", args, err, out)
+		}
+		return out
+	}
+	// The volume outlives a run when GVX_SANDBOX_CACHE is reused.
+	_, _ = dockerRun("rm", "-f", "gvxd-web", "gvxd-busy")
 
 	// SIGHUP: dockerd reads daemon.json again, replaced whole on this
 	// computer as the app replaces it.
@@ -162,7 +171,7 @@ func TestDockerEngineHarness(t *testing.T) {
 		pub := slices.ContainsFunc(st.Ports, func(p PublishedPort) bool {
 			return p.Host == "127.0.0.1:15695" && p.Source == "auto" && p.Proto == "tcp"
 		})
-		return pub && slices.Contains(st.Busy, "127.0.0.1:15696")
+		return pub && slices.ContainsFunc(st.Busy, func(p PublishedPort) bool { return p.Host == "127.0.0.1:15696" })
 	})
 	t.Logf("ports %+v busy %v", sup.State(spec.ID).Ports, sup.State(spec.ID).Busy)
 	evMu.Lock()

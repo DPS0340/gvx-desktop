@@ -413,11 +413,11 @@ func connectView(m *Model, r Row) ggui.Widget {
 			}
 			parts = append(parts, widget.Row(glyph(lucide.Plug, 14).Color(colorGreen), widget.Expanded(ui.Mono(label).Size(12)), act).Gap(10).Align(widget.AlignCenter))
 		}
-		for _, host := range r.State.Busy {
+		for _, b := range r.State.Busy {
 			parts = append(parts, widget.Row(
 				glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber),
 				widget.Expanded(widget.Column(
-					ui.Mono(host).Size(12),
+					ui.Mono(fmt.Sprintf("%s/%s", b.Host, b.Proto)).Size(12),
 					ui.Caption(tr("The guest listens on it, but something on this computer has the port. It is published once that lets it go and the guest listens again.")).Size(11),
 				).Gap(1)),
 			).Gap(10).Align(widget.AlignStart))

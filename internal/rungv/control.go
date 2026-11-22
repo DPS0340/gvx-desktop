@@ -563,17 +563,7 @@ func (c *Client) Ports(ctx context.Context, t Target) ([]PortRule, error) {
 	if err != nil {
 		return nil, err
 	}
-	var rules []PortRule
-	dec := json.NewDecoder(bytes.NewReader(out))
-	for {
-		var r PortRule
-		if err := dec.Decode(&r); err == io.EOF {
-			return rules, nil
-		} else if err != nil {
-			return nil, err
-		}
-		rules = append(rules, r)
-	}
+	return decodeLines[PortRule](out)
 }
 
 // Status is the part of rungv status -f json the app reads.

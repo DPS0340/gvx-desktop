@@ -1,9 +1,9 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 
@@ -11,38 +11,36 @@ import (
 	"github.com/ironpark/ggui/ui"
 
 	"github.com/ironpark/gvx-desktop/internal/recipes"
-	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
 // dockerEngineSpec is the Docker Engine's sandbox: the spec it runs with
 // while it runs, its saved one otherwise.
-func (m *Model) dockerEngineSpec() (sandbox.Spec, bool) {
+func (m *Model) dockerEngineSpec() sandbox.Spec {
 	r, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
 	if !ok {
-		return recipes.DockerEngine(), false
+		return recipes.DockerEngine()
 	}
 	if spec, ok := m.activeSpec(r.Spec.ID); ok {
-		return spec, true
+		return spec
 	}
-	return r.Spec, true
+	return r.Spec
 }
 
 // OpenDockerConfig shows the engine's daemon.json in the editor: the file
 // on this computer, or what the engine starts with when there is none.
 func (m *Model) OpenDockerConfig() {
-	spec, _ := m.dockerEngineSpec()
 	text, err := recipes.ReadDockerConfig()
 	if err != nil {
 		m.toastError(tr("Could not read %s", tildePath(recipes.DockerConfigFile())), err)
 		return
 	}
-	if strings.TrimSpace(text) == "" {
-		if out, err := recipes.NormalizeDockerConfig(spec, nil); err == nil {
-			text = string(out)
+	if len(bytes.TrimSpace(text)) == 0 {
+		if out, err := recipes.NormalizeDockerConfig(m.dockerEngineSpec(), nil); err == nil {
+			text = out
 		}
 	}
-	m.DockerConfigText.Set(text)
+	m.DockerConfigText.Set(string(text))
 	m.DockerConfigErr.Set("")
 	m.DockerConfigOpen.Set(true)
 }
@@ -51,17 +49,17 @@ func (m *Model) OpenDockerConfig() {
 // read it again (SIGHUP) when dockerd can apply every change so; it offers
 // a restart otherwise.
 func (m *Model) SaveDockerConfig() {
-	text := ggui.Peek(m.DockerConfigText)
-	if _, err := recipes.ParseDockerConfig([]byte(text)); err != nil {
-		m.DockerConfigErr.Set(tr("Not valid JSON: %s", strings.TrimPrefix(err.Error(), "daemon.json: ")))
+	text := []byte(ggui.Peek(m.DockerConfigText))
+	if _, err := recipes.ParseDockerConfig(text); err != nil {
+		m.DockerConfigErr.Set(tr("Not valid JSON: %s", err.Error()))
 		return
 	}
-	spec, _ := m.dockerEngineSpec()
-	before, _ := recipes.ReadDockerConfig()
-	var written []byte
+	spec := m.dockerEngineSpec()
+	var before, written []byte
 	m.async(func(context.Context) error {
+		before, _ = recipes.ReadDockerConfig()
 		var err error
-		written, err = recipes.WriteDockerConfig(spec, []byte(text))
+		written, err = recipes.WriteDockerConfig(spec, text)
 		return err
 	}, func(err error) {
 		if err != nil {
@@ -69,7 +67,7 @@ func (m *Model) SaveDockerConfig() {
 			return
 		}
 		m.DockerConfigOpen.Set(false)
-		m.applyDockerConfig([]byte(before), written)
+		m.applyDockerConfig(before, written)
 	})
 }
 
@@ -112,89 +110,15 @@ func (m *Model) applyDockerConfig(before, after []byte) {
 		return
 	}
 	m.async(func(ctx context.Context) error {
-		return reloadDockerd(ctx, ctl, m.sup.Logs(id))
+		return recipes.ReloadDockerd(ctx, ctl, m.sup.Logs(id))
 	}, func(err error) {
+		if errors.Is(err, recipes.ErrNoReloadWord) {
+			err = errors.New(tr("dockerd said nothing of a reload; see the Docker Engine's logs"))
+		}
 		if err != nil {
 			m.toastError(tr("dockerd did not apply daemon.json"), err)
 			return
 		}
 		m.toastOK(tr("daemon.json applied"), tr("dockerd read it again without a restart: %s.", strings.Join(changed, ", ")))
 	})
-}
-
-// dockerdReloadWait is how long reloadDockerd waits for dockerd to say how
-// the reload went.
-var dockerdReloadWait = 8 * time.Second
-
-// reloadDockerd sends SIGHUP to dockerd, the engine's first process, and
-// waits for what it logs of the reload.
-func reloadDockerd(ctx context.Context, ctl sandbox.Control, logs *sandbox.LogBuffer) error {
-	seq := logs.Seq()
-	if err := ctl.Kill(ctx, rungv.KillOptions{Signal: "SIGHUP"}); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(dockerdReloadWait)
-	for time.Now().Before(deadline) {
-		for _, l := range logs.Snapshot() {
-			if l.Seq <= seq || l.Stream == sandbox.System {
-				continue
-			}
-			if ok, err := dockerdReloadResult(l.Text); ok || err != nil {
-				return err
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	return errors.New(tr("dockerd said nothing of a reload; see the Docker Engine's logs"))
-}
-
-// dockerdReloadResult reads a line of dockerd's after a SIGHUP: ok when it
-// applied the file, an error when it would not.
-func dockerdReloadResult(line string) (ok bool, err error) {
-	switch {
-	case strings.Contains(line, "Reloaded configuration"):
-		return true, nil
-	case strings.Contains(line, "level=error") || strings.Contains(line, "level=fatal"):
-		// time=… level=error msg="Error reloading configuration" error="unable to …"
-		if v, ok := logfmtValue(line, "error"); ok {
-			return false, errors.New(v)
-		}
-		if v, ok := logfmtValue(line, "msg"); ok {
-			return false, errors.New(v)
-		}
-		return false, errors.New(line)
-	}
-	return false, nil
-}
-
-// logfmtValue is the value of key in a logfmt line, as dockerd writes its
-// log: key=word or key="quoted \"text\"".
-func logfmtValue(line, key string) (string, bool) {
-	for i := 0; i < len(line); {
-		j := strings.Index(line[i:], key+"=")
-		if j < 0 {
-			return "", false
-		}
-		j += i
-		if j > 0 && line[j-1] != ' ' {
-			i = j + len(key) + 1
-			continue
-		}
-		rest := line[j+len(key)+1:]
-		if !strings.HasPrefix(rest, `"`) {
-			v, _, _ := strings.Cut(rest, " ")
-			return v, true
-		}
-		if v, err := strconv.QuotedPrefix(rest); err == nil {
-			if u, err := strconv.Unquote(v); err == nil {
-				return u, true
-			}
-		}
-		return strings.Trim(rest, `"`), true
-	}
-	return "", false
 }

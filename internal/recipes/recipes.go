@@ -300,3 +300,22 @@ func All() []Recipe {
 		},
 	}
 }
+
+// dockerdStopGrace is what dockerd takes at most to end: it gives its
+// containers 15 seconds (its shutdown-timeout) to stop, then cleans up.
+const dockerdStopGrace = 20 * time.Second
+
+// StopGrace is the supervisor's StopGrace: a recipe's sandbox ends with
+// SIGTERM to its daemon (dockerd, k3s, the registry), which saves its state
+// as it ends, and gets the stop timeout to; dockerd gets at least what it
+// takes itself. A user's sandbox keeps the interrupt: a PID 1 that ignores
+// SIGTERM would hold it for the whole timeout.
+func StopGrace(spec sandbox.Spec, timeout time.Duration) (time.Duration, bool) {
+	switch spec.Recipe {
+	case "":
+		return 0, false
+	case Docker:
+		return max(timeout, dockerdStopGrace), true
+	}
+	return timeout, true
+}

@@ -3,7 +3,6 @@ package sandbox
 import (
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
@@ -32,7 +31,7 @@ func TestPortLines(t *testing.T) {
 	if !slices.Equal(st.Ports, want) {
 		t.Errorf("ports %+v", st.Ports)
 	}
-	if !slices.Equal(st.Busy, []string{"127.0.0.1:5432"}) {
+	if !slices.Equal(st.Busy, []PublishedPort{{Host: "127.0.0.1:5432", Guest: 5432, Proto: "tcp", Source: "auto"}}) {
 		t.Errorf("busy %v", st.Busy)
 	}
 
@@ -76,29 +75,24 @@ func TestPortsFromRules(t *testing.T) {
 	}
 }
 
-func TestGracefulStop(t *testing.T) {
-	for _, tc := range []struct {
-		recipe string
-		in     time.Duration
-		grace  time.Duration
-		ok     bool
-	}{
-		{"", 15 * time.Second, 0, false},
-		{"docker", 10 * time.Second, dockerdStopGrace, true},
-		{"docker", 60 * time.Second, 60 * time.Second, true},
-		{"k3s", 15 * time.Second, 15 * time.Second, true},
-		{"registry", 5 * time.Second, 5 * time.Second, true},
-	} {
-		grace, ok := Spec{Recipe: tc.recipe}.gracefulStop(tc.in)
-		if grace != tc.grace || ok != tc.ok {
-			t.Errorf("%q %v: %v %v", tc.recipe, tc.in, grace, ok)
-		}
+func TestStateEqualBusy(t *testing.T) {
+	busy := []PublishedPort{{Host: "127.0.0.1:80", Guest: 80, Proto: "tcp", Source: "auto"}}
+	a := State{Busy: busy}
+	if a.Equal(State{}) || !a.Equal(State{Busy: slices.Clone(busy)}) {
+		t.Error("Busy is not compared")
 	}
 }
 
-func TestStateEqualBusy(t *testing.T) {
-	a := State{Busy: []string{"127.0.0.1:80"}}
-	if a.Equal(State{}) || !a.Equal(State{Busy: []string{"127.0.0.1:80"}}) {
-		t.Error("Busy is not compared")
+func TestLogBufferSince(t *testing.T) {
+	b := NewLogBuffer(10)
+	for i := range 25 {
+		b.Add(Stdout, string(rune('a'+i)))
+	}
+	got := b.Since(22)
+	if len(got) != 3 || got[0].Seq != 23 || got[2].Text != "y" {
+		t.Errorf("since 22: %+v", got)
+	}
+	if len(b.Since(0)) != len(b.Snapshot()) || len(b.Since(25)) != 0 {
+		t.Error("ends")
 	}
 }

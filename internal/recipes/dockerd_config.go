@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
-	"strings"
 
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
@@ -54,25 +55,25 @@ func insecureRegistryFlagged(spec sandbox.Spec) bool {
 	if err != nil {
 		return false
 	}
-	return slices.ContainsFunc(args, func(a string) bool {
-		return a == "--insecure-registry" || strings.HasPrefix(a, "--insecure-registry=")
-	})
+	_, ok := flagValue(args, "--insecure-registry")
+	return ok
 }
-
-// ErrDockerConfig wraps what is wrong with a daemon.json.
-var ErrDockerConfig = errors.New("daemon.json")
 
 // ParseDockerConfig reads a daemon.json: a JSON object, or nothing at all.
 func ParseDockerConfig(data []byte) (map[string]json.RawMessage, error) {
-	cfg := map[string]json.RawMessage{}
+	return parseDockerConfig[json.RawMessage](data)
+}
+
+func parseDockerConfig[V any](data []byte) (map[string]V, error) {
+	cfg := map[string]V{}
 	if len(bytes.TrimSpace(data)) == 0 {
 		return cfg, nil
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDockerConfig, err)
+		return nil, err
 	}
 	if cfg == nil {
-		return nil, fmt.Errorf("%w: the file holds null, not an object", ErrDockerConfig)
+		return nil, errors.New("the file holds null, not an object")
 	}
 	return cfg, nil
 }
@@ -95,7 +96,7 @@ func NormalizeDockerConfig(spec sandbox.Spec, data []byte) ([]byte, error) {
 	var regs []string
 	if raw, ok := cfg["insecure-registries"]; ok {
 		if err := json.Unmarshal(raw, &regs); err != nil {
-			return nil, fmt.Errorf("%w: insecure-registries must be a list of strings", ErrDockerConfig)
+			return nil, errors.New("insecure-registries must be a list of strings")
 		}
 	}
 	if slices.Contains(regs, RegistryHost()) {
@@ -111,13 +112,13 @@ func NormalizeDockerConfig(spec sandbox.Spec, data []byte) ([]byte, error) {
 }
 
 // ReadDockerConfig is the engine's daemon.json as it is on this computer,
-// "" when there is none yet.
-func ReadDockerConfig() (string, error) {
+// nothing when there is none yet.
+func ReadDockerConfig() ([]byte, error) {
 	data, err := os.ReadFile(DockerConfigFile())
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return nil, nil
 	}
-	return string(data), err
+	return data, err
 }
 
 // WriteDockerConfig saves the engine's daemon.json, normalized for spec,
@@ -163,8 +164,8 @@ func prepareDockerConfig(spec sandbox.Spec) error {
 	if !HasDockerConfig(spec) {
 		return nil
 	}
-	data, err := os.ReadFile(DockerConfigFile())
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	data, err := ReadDockerConfig()
+	if err != nil {
 		return err
 	}
 	if _, err := WriteDockerConfig(spec, data); err != nil {
@@ -194,24 +195,19 @@ var dockerReloadable = map[string]bool{
 
 // DockerConfigChanges are the settings that differ between two
 // daemon.json files, and those of them dockerd applies only as it starts.
+// A broken file before counts as having none.
 func DockerConfigChanges(before, after []byte) (changed, needRestart []string, err error) {
-	a, err := ParseDockerConfig(before)
-	if err != nil {
-		a = map[string]json.RawMessage{}
-	}
-	b, err := ParseDockerConfig(after)
+	a, _ := parseDockerConfig[any](before)
+	b, err := parseDockerConfig[any](after)
 	if err != nil {
 		return nil, nil, err
 	}
-	keys := map[string]bool{}
-	for k := range a {
-		keys[k] = true
+	keys := maps.Clone(b)
+	for k, v := range a {
+		keys[k] = v
 	}
-	for k := range b {
-		keys[k] = true
-	}
-	for k := range keys {
-		if jsonEqual(a[k], b[k]) {
+	for _, k := range slices.Sorted(maps.Keys(keys)) {
+		if reflect.DeepEqual(a[k], b[k]) {
 			continue
 		}
 		changed = append(changed, k)
@@ -219,23 +215,5 @@ func DockerConfigChanges(before, after []byte) (changed, needRestart []string, e
 			needRestart = append(needRestart, k)
 		}
 	}
-	slices.Sort(changed)
-	slices.Sort(needRestart)
 	return changed, needRestart, nil
-}
-
-func jsonEqual(a, b json.RawMessage) bool {
-	if (a == nil) != (b == nil) {
-		return false
-	}
-	if a == nil {
-		return true
-	}
-	var x, y any
-	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
-		return bytes.Equal(a, b)
-	}
-	xa, _ := json.Marshal(x)
-	ya, _ := json.Marshal(y)
-	return bytes.Equal(xa, ya)
 }

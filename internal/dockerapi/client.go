@@ -310,6 +310,16 @@ func (c *Client) Restart(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/restart?t=10", nil)
 }
 
+// Pause freezes a running container.
+func (c *Client) Pause(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/pause", nil)
+}
+
+// Unpause thaws a paused container.
+func (c *Client) Unpause(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/unpause", nil)
+}
+
 // Remove deletes a container, stopping it first with force.
 func (c *Client) Remove(ctx context.Context, id string, force bool) error {
 	q := ""

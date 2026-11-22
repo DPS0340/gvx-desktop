@@ -291,7 +291,17 @@ func rangeLen(s string) (int, error) {
 
 // Paths are the host files a run of a sandbox uses besides its spec.
 type Paths struct {
-	ControlSocket string // set when the spec has Checkpoint
+	// ControlSocket is set when the spec has Checkpoint (as with rungv
+	// v0.19) and, with a rungv whose Features have Control, for every run:
+	// passed as -control-socket. See docs/design/gvx-v020.md §4.1.
+	ControlSocket string
+	// TokenFile is set with ControlSocket where the socket needs a token
+	// (a Unix socket on Windows): --control-token-file on run and restore,
+	// --token-file on every client command (rungv.Target). Owner: W1.
+	TokenFile string
+	// Control reports that the run's socket speaks gvx-ctrl/2: the rungv
+	// that starts it has Features.Control. Owner: W1.
+	Control       bool
 	CheckpointDir string // set when the spec has Checkpoint
 }
 
@@ -312,6 +322,9 @@ func (s Spec) RestoreArgs(dir string, p Paths) []string {
 	// A restore takes a new listener and directory for the next snapshot.
 	if p.ControlSocket != "" {
 		args = append(args, "-control-socket", p.ControlSocket)
+	}
+	if p.TokenFile != "" {
+		args = append(args, "--control-token-file", p.TokenFile)
 	}
 	return append(args, s.flags(Paths{}, true)...)
 }
@@ -393,6 +406,9 @@ func (s Spec) flags(p Paths, restore bool) []string {
 	}
 	if !restore && p.ControlSocket != "" {
 		add("-control-socket", p.ControlSocket)
+	}
+	if !restore && p.TokenFile != "" {
+		add("--control-token-file", p.TokenFile)
 	}
 	if !restore && p.CheckpointDir != "" {
 		add("-checkpoint-dir", p.CheckpointDir)

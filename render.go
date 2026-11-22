@@ -50,7 +50,9 @@ type shot struct {
 
 // live reports whether what the shot shows comes in from goroutines, as a
 // terminal's made-up shell prints: its frames wait a moment each.
-func (s shot) live() bool { return strings.HasSuffix(s.name, "-terminal") }
+func (s shot) live() bool {
+	return strings.HasSuffix(s.name, "-terminal") || s.name == "containers-sandbox-engine"
+}
 
 // tall reports whether the shot is drawn taller than the window, to show a
 // long page whole.
@@ -77,6 +79,8 @@ func renderAll(tmp, out, lang string) error {
 		{"sandboxes-logs", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(0) }},
 		{"sandboxes-connect", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(1) }},
 		{"sandboxes-config", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(2) }},
+		{"sandboxes-terminal", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.Detail.Set(ui.SandboxTerminalTab) }},
+		{"sandboxes-paused", func(m *ui.Model) { m.ShowSandbox(demoIDs[4], 0) }},
 		{"containers-logs", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(0) }},
 		{"containers-connect", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerDetail.Set(1) }},
 		// A terminal's shell is a made-up one: the model starts no process.
@@ -119,9 +123,19 @@ func renderAll(tmp, out, lang string) error {
 			m.Go(ui.PageContainers)
 			stopEngine(m)
 		}},
+		// The engine paused while its containers were on screen: the page
+		// offers Resume instead of polling the frozen VM.
+		{"containers-paused-engine", func(m *ui.Model) {
+			m.Go(ui.PageContainers)
+			states := maps.Clone(ggui.Peek(m.States))
+			st := states[demoIDs[1]]
+			st.Paused = true
+			states[demoIDs[1]] = st
+			m.States.Set(states)
+		}},
 		// Experimental sandbox engine mode: Containers page stays open with
-		// the Docker Engine sandbox stopped, and Terminal explains exec is
-		// not supported.
+		// the Docker Engine sandbox stopped, and Terminal runs an interactive
+		// shell in the container via rungv exec.
 		{"containers-sandbox-engine", func(m *ui.Model) {
 			stopEngine(m)
 			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = true })
@@ -304,6 +318,15 @@ func renderAll(tmp, out, lang string) error {
 			m.Page.Set(ui.PageSettings)
 		}},
 		{"editor", func(m *ui.Model) { m.Page.Set(ui.PageSandboxes); m.NewSandbox("postgres:17-alpine") }},
+		{"editor-live", func(m *ui.Model) {
+			m.Page.Set(ui.PageSandboxes)
+			m.EditSandbox(demoIDs[0])
+			m.Draft.Update(func(d ui.Draft) ui.Draft {
+				d.Memory = "512m"
+				d.CPUs = "2"
+				return d
+			})
+		}},
 		{"pull-search", func(m *ui.Model) {
 			m.Page.Set(ui.PageImages)
 			m.OpenPull("nginx")
@@ -429,15 +452,16 @@ func demoState(m *ui.Model, now time.Time) {
 			Images: 5, Volumes: 3},
 		Checked: true,
 	})
+	m.RungvFeatures.Set(rungv.Features{Control: true})
 	m.States.Set(map[string]sandbox.State{
-		demoIDs[0]: {Status: sandbox.Running, PID: 41234, StartedAt: now.Add(-42 * time.Minute), Platform: "hvf",
+		demoIDs[0]: {Status: sandbox.Running, PID: 41234, StartedAt: now.Add(-42 * time.Minute), Platform: "hvf", Control: true,
 			Ports: []sandbox.PublishedPort{{Host: "127.0.0.1:8080", Guest: 80, Proto: "tcp"}}},
-		demoIDs[1]: {Status: sandbox.Running, PID: 41301, StartedAt: now.Add(-3*time.Hour - 12*time.Minute), Platform: "hvf",
+		demoIDs[1]: {Status: sandbox.Running, PID: 41301, StartedAt: now.Add(-3*time.Hour - 12*time.Minute), Platform: "hvf", Control: true,
 			Ports: []sandbox.PublishedPort{{Host: "/Users/me/.gvx/engine/dockerd.sock", Guest: 2375, Proto: "tcp"},
 				{Host: "127.0.0.1:9000", Guest: 9000, Proto: "tcp"}, {Host: "127.0.0.1:9001", Guest: 9001, Proto: "tcp"}}},
-		demoIDs[2]: {Status: sandbox.Running, PID: 41377, StartedAt: now.Add(-2*time.Hour - 10*time.Minute), Platform: "hvf",
+		demoIDs[2]: {Status: sandbox.Running, PID: 41377, StartedAt: now.Add(-2*time.Hour - 10*time.Minute), Platform: "hvf", Control: true,
 			Ports: []sandbox.PublishedPort{{Host: "127.0.0.1:6443", Guest: 6443, Proto: "tcp"}, {Host: "127.0.0.1:30000", Guest: 30000, Proto: "tcp"}}},
-		demoIDs[4]: {Status: sandbox.Running, PID: 41420, StartedAt: now.Add(-50 * time.Minute), Platform: "hvf",
+		demoIDs[4]: {Status: sandbox.Running, PID: 41420, StartedAt: now.Add(-50 * time.Minute), Platform: "hvf", Control: true, Paused: true,
 			Ports: []sandbox.PublishedPort{{Host: "127.0.0.1:5001", Guest: 5000, Proto: "tcp"}}},
 		demoIDs[3]: {Status: sandbox.Failed, ExitCode: 1, ExitedAt: now.Add(-5 * time.Minute),
 			Error:  "rungv run: listen tcp 127.0.0.1:5432: bind: address already in use",

@@ -296,18 +296,30 @@ func installTray(app *ggui.App, m *ui.Model) {
 		}
 		items = append(items, ggui.MenuSeparator())
 		rows := ggui.Peek(m.Rows)
-		running := 0
+		running, active := 0, 0
 		for _, r := range rows {
 			id, name := r.Spec.ID, r.Spec.Name
 			label := "○ " + name
 			actions := []ggui.MenuItem{ggui.MenuAction(ui.T("Start"), "", func() { m.StartSandbox(id) })}
 			if r.State.Status.Active() {
-				running++
+				active++
 				label = "● " + name
-				actions = []ggui.MenuItem{
+				if r.State.Paused {
+					label += " · " + ui.T("Paused")
+				} else {
+					running++
+				}
+				actions = nil
+				switch {
+				case r.State.Paused:
+					actions = append(actions, ggui.MenuAction(ui.T("Resume"), "", func() { m.ResumeSandbox(id) }))
+				case r.State.Control:
+					actions = append(actions, ggui.MenuAction(ui.T("Pause"), "", func() { m.PauseSandbox(id) }))
+				}
+				actions = append(actions,
 					ggui.MenuAction(ui.T("Stop"), "", func() { m.StopSandbox(id) }),
 					ggui.MenuAction(ui.T("Restart"), "", func() { m.RestartSandbox(id) }),
-				}
+				)
 			}
 			actions = append(actions, ggui.MenuAction(ui.T("Show Logs"), "", func() { show(); m.ShowSandbox(id, 0) }))
 			items = append(items, ggui.Menu(label, actions...))
@@ -315,7 +327,9 @@ func installTray(app *ggui.App, m *ui.Model) {
 		if len(rows) == 0 {
 			items = append(items, ggui.MenuAction(ui.T("No sandboxes"), "", nil).BindEnabled(ggui.Const(false)))
 		}
-		totalRunning := running + ggui.Peek(m.EngineRunning)
+		engRunning := ggui.Peek(m.EngineRunning)
+		totalRunning := running + engRunning
+		totalActive := active + engRunning
 		items = append(items,
 			ggui.MenuSeparator(),
 			ggui.Menu("Docker", m.RecipeMenu(recipes.Docker, show)...),
@@ -323,7 +337,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("New Sandbox…"), "", func() { show(); m.NewSandbox("") }),
 			ggui.MenuAction(ui.T("Pull Image…"), "", func() { show(); m.OpenPull("") }),
-			ggui.MenuAction(ui.T("Stop All"), "", m.StopAll).BindEnabled(ggui.Const(totalRunning > 0)),
+			ggui.MenuAction(ui.T("Stop All"), "", m.StopAll).BindEnabled(ggui.Const(totalActive > 0)),
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("Settings…"), "", func() { show(); m.Go(ui.PageSettings) }),
 			ggui.MenuAction(ui.T("Quit GVX Desktop"), "", func() { quit(app, m) }),
@@ -354,11 +368,13 @@ func installTray(app *ggui.App, m *ui.Model) {
 	type entry struct {
 		id, name string
 		active   bool
+		control  bool
+		paused   bool
 	}
 	entries := ggui.Map(m.Rows, func(rows []ui.Row) []entry {
 		out := make([]entry, len(rows))
 		for i, r := range rows {
-			out[i] = entry{r.Spec.ID, r.Spec.Name, r.State.Status.Active()}
+			out[i] = entry{r.Spec.ID, r.Spec.Name, r.State.Status.Active(), r.State.Control, r.State.Paused}
 		}
 		return out
 	}).WithEqual(slices.Equal[[]entry])

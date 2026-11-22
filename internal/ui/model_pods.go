@@ -24,6 +24,7 @@ const (
 	PodsNoCluster                   // the Kubernetes recipe is not set up
 	PodsStarting                    // the cluster's sandbox runs and k3s is not up yet
 	PodsStopped                     // the cluster is stopped, stopping, exited or failed
+	PodsPaused                      // the cluster's sandbox is paused
 )
 
 // podsAccess reads it from the sandboxes.
@@ -40,6 +41,8 @@ func (a PodsAccess) Reason() string {
 		return tr("Kubernetes is starting")
 	case PodsStopped:
 		return tr("Start Kubernetes to manage its pods")
+	case PodsPaused:
+		return tr("Resume Kubernetes to manage its pods")
 	}
 	return ""
 }
@@ -192,10 +195,12 @@ func (m *Model) LoadPods() {
 		return // the pods shown are made up
 	}
 	row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Kubernetes)
-	if !ok || row.State.Status != sandbox.Running {
+	if !ok || row.State.Status != sandbox.Running || row.State.Paused {
 		m.clearCluster()
 		m.PodsWaiting.Set(false)
-		m.podsAnswered = false
+		if !ok || row.State.Status != sandbox.Running {
+			m.podsAnswered = false
+		}
 		return
 	}
 	if m.podsLoading {
@@ -230,8 +235,8 @@ func (m *Model) LoadPods() {
 			m.LoadPods()
 			return
 		}
-		if row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Kubernetes); !ok || row.State.Status != sandbox.Running {
-			return // the cluster stopped meanwhile, and its list was emptied
+		if row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Kubernetes); !ok || row.State.Status != sandbox.Running || row.State.Paused {
+			return // the cluster stopped or paused meanwhile, and its list was emptied
 		}
 		m.KubeconfigReady.Set(!noConfig)
 		warming := !m.podsAnswered && (started.IsZero() || time.Since(started) < podsWarmUp)

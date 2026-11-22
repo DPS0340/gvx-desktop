@@ -851,6 +851,7 @@ func (e *Engine) networkConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	e.ctr.mu.Unlock()
 	e.syncOverlay()
+	e.applyOverlayLive(cid)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -912,6 +913,7 @@ func (e *Engine) networkDisconnect(w http.ResponseWriter, r *http.Request) {
 	}
 	e.ctr.mu.Unlock()
 	e.syncOverlay()
+	e.applyOverlayLive(cid)
 
 	if connected {
 		e.emit(Event{

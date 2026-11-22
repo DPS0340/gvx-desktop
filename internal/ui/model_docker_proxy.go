@@ -20,6 +20,7 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/dockerproxy"
 	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
+	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 	"github.com/ironpark/gvx-desktop/internal/store"
 )
@@ -39,6 +40,46 @@ type sandboxEngine interface {
 	Amd64Socket() string
 	Amd64State() engine.Amd64State
 	ResetAmd64Disk(ctx context.Context) error
+	Features() rungv.Features
+	CanControl(ref string) bool
+}
+
+// engineFeatures returns what the sandbox engine's rungv supports, subscribing
+// to m.RungvFeatures so reactive callers update when rungv detection finishes.
+// For the real *engine.Engine it never calls Engine.Features() on the UI thread
+// (which would run `rungv run -help` if uncached), using m.RungvFeatures
+// computed off-thread in DetectEngine instead.
+func (m *Model) engineFeatures() rungv.Features {
+	rf := m.RungvFeatures.Get()
+	if m.sandboxEngine != nil {
+		if _, real := m.sandboxEngine.(*engine.Engine); !real {
+			return m.sandboxEngine.Features()
+		}
+	}
+	return rf
+}
+
+// peekEngineFeatures is engineFeatures without subscribing to signals.
+func (m *Model) peekEngineFeatures() rungv.Features {
+	rf := ggui.Peek(m.RungvFeatures)
+	if m.sandboxEngine != nil {
+		if _, real := m.sandboxEngine.(*engine.Engine); !real {
+			return m.sandboxEngine.Features()
+		}
+	}
+	return rf
+}
+
+// canControlContainer reports whether container ref in the sandbox engine has
+// an active control socket.
+func (m *Model) canControlContainer(ref string) bool {
+	if m.sandboxEngine == nil {
+		return false
+	}
+	if _, real := m.sandboxEngine.(*engine.Engine); real && m.Offline {
+		return ggui.Peek(m.RungvFeatures).Control
+	}
+	return m.sandboxEngine.CanControl(ref)
 }
 
 // initDockerProxy constructs the Model's Docker API proxy and in-app sandbox

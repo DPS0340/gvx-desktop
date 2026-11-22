@@ -145,6 +145,20 @@ func shortHost(h string) string {
 	return strings.TrimPrefix(h, "127.0.0.1:")
 }
 
+// sandboxPauseAction returns "pause", "resume", or "" for a sandbox's state.
+func sandboxPauseAction(st sandbox.State) string {
+	if !st.Status.Active() || st.Status == sandbox.Stopping {
+		return ""
+	}
+	if st.Paused {
+		return "resume"
+	}
+	if st.Control {
+		return "pause"
+	}
+	return ""
+}
+
 func rowMenu(m *Model, r Row) ggui.Widget {
 	id := r.Spec.ID
 	active := r.State.Status.Active()
@@ -153,6 +167,12 @@ func rowMenu(m *Model, r Row) ggui.Widget {
 		ui.MenuItem(tr("Edit…"), func() { m.EditSandbox(id) }),
 		ui.MenuItem(tr("Duplicate…"), func() { m.Duplicate(id) }),
 		ui.MenuItem(tr("Copy command line"), func() { m.Copy(r.Spec.CommandLine(sandbox.Paths{}), tr("rungv command line")) }),
+	}
+	switch sandboxPauseAction(r.State) {
+	case "pause":
+		entries = append(entries, ui.MenuItem(tr("Pause"), func() { m.PauseSandbox(id) }))
+	case "resume":
+		entries = append(entries, ui.MenuItem(tr("Resume"), func() { m.ResumeSandbox(id) }))
 	}
 	if active {
 		entries = append(entries, ui.MenuItem(tr("Restart"), func() { m.RestartSandbox(id) }))
@@ -181,6 +201,7 @@ func detailPanel(m *Model) ggui.Widget {
 				ui.Tab(tr("Connect"), ggui.View(current, func(r Row) ggui.Widget { return connectView(m, r) })),
 				ui.Tab(tr("Configuration"), ggui.View(ggui.Map(current, func(r Row) sandbox.Spec { return r.Spec }).WithEqual(sandbox.Spec.Equal), func(s sandbox.Spec) ggui.Widget { return configView(m, s) })),
 				ui.Tab(tr("Snapshots"), ggui.View(current, func(r Row) ggui.Widget { return sandboxSnapshots(m, r) })),
+				ui.Tab(tr("Terminal"), sandboxTerminal(m)),
 			).Line().Name(tr("Sandbox details"))
 			return ui.Card(widget.Column(header, tabs).Gap(12).Stretch())
 		}).Else(func() ggui.Widget {
@@ -196,7 +217,15 @@ func detailHeader(m *Model, r Row) ggui.Widget {
 	switch {
 	case st.Status == sandbox.Stopping:
 		actions = append(actions, ui.Button(tr("Stopping…"), nil).Outline().Disabled(true))
+	case st.Status.Active() && st.Paused:
+		actions = append(actions,
+			ui.Button(tr("Resume"), func() { m.ResumeSandbox(id) }).Icon(glyph(lucide.Play, 14)),
+			ui.Button(tr("Stop"), func() { m.StopSandbox(id) }).Outline().Icon(glyph(lucide.Square, 14)),
+		)
 	case st.Status.Active():
+		if st.Control {
+			actions = append(actions, ui.Button(tr("Pause"), func() { m.PauseSandbox(id) }).Outline().Icon(glyph(lucide.Pause, 14)))
+		}
 		actions = append(actions,
 			ui.Button(tr("Stop"), func() { m.StopSandbox(id) }).Outline().Icon(glyph(lucide.Square, 14)),
 			ui.Button(tr("Restart"), func() { m.RestartSandbox(id) }).Outline().Icon(glyph(lucide.RotateCcw, 14)),
@@ -395,7 +424,10 @@ func connectView(m *Model, r Row) ggui.Widget {
 
 func dockerConnect(m *Model, r Row) ggui.Widget {
 	status := tr("Start the sandbox, then point the docker CLI at it.")
-	if r.State.Status == sandbox.Running {
+	switch {
+	case r.State.Status == sandbox.Running && r.State.Paused:
+		status = tr("The Docker Engine is paused. Resume it so the docker CLI on this machine can use it.")
+	case r.State.Status == sandbox.Running:
 		status = tr("dockerd is listening. The docker CLI on this machine can use it.")
 	}
 	return widget.Column(
@@ -439,7 +471,7 @@ func registryConnect(m *Model, r Row) ggui.Widget {
 		copyable(m, "kubectl create deployment app --image="+host+"/app:dev", tr("example deployment")),
 		sectionTitle(tr("From tools on this computer"), tr("Tools that run here, not in a sandbox, reach the registry as %s.", local)),
 		widget.Row(
-			ui.Button(tr("List images"), func() { m.Open(catalog) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.ExternalLink, 14)).Disabled(r.State.Status != sandbox.Running),
+			ui.Button(tr("List images"), func() { m.Open(catalog) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.ExternalLink, 14)).Disabled(r.State.Status != sandbox.Running || r.State.Paused),
 		).Gap(8),
 		ui.Divider(),
 	).Gap(10).Stretch()
@@ -535,7 +567,7 @@ func sandboxSnapshots(m *Model, r Row) ggui.Widget {
 				m.OpenEditor(spec)
 			}).Size(ui.ButtonExtraSmall).Outline()), 8, 0)
 	}
-	running := r.State.Status.Active() && r.State.Status != sandbox.Stopping
+	running := r.State.Status.Active() && r.State.Status != sandbox.Stopping && !r.State.Paused
 	snaps := ggui.Map(m.Snapshots, func(all []sandbox.Snapshot) []sandbox.Snapshot {
 		var out []sandbox.Snapshot
 		for _, s := range all {
@@ -577,4 +609,9 @@ func snapshotList(m *Model, snaps ggui.Readable[[]sandbox.Snapshot], showSandbox
 	}).Gap(8).Else(func() ggui.Widget {
 		return ui.Caption(tr("No snapshots yet."))
 	})
+}
+
+// sandboxTerminal is a shell in the chosen sandbox, as rungv exec -it runs one.
+func sandboxTerminal(m *Model) ggui.Widget {
+	return terminalTab(m, m.sandboxShell(), tr("A shell in the sandbox, as rungv exec -it runs one."))
 }

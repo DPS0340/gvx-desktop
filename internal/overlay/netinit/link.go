@@ -15,31 +15,38 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/overlay/guestcfg"
 )
 
-// setupLink makes the WireGuard link of cfg with rtnetlink and the
-// wireguard generic netlink family, as ip(8) and wg(8) would.
-func setupLink(cfg guestcfg.Config) error {
-	endpoint, err := netip.ParseAddrPort(cfg.Endpoint)
+func parseLinkConfig(cfg guestcfg.Config) (endpoint netip.AddrPort, addrs, routes []netip.Prefix, mtu int, err error) {
+	endpoint, err = netip.ParseAddrPort(cfg.Endpoint)
 	if err != nil || !endpoint.Addr().Is4() {
-		return fmt.Errorf("hub endpoint %q is not an IPv4 address and port", cfg.Endpoint)
+		return netip.AddrPort{}, nil, nil, 0, fmt.Errorf("hub endpoint %q is not an IPv4 address and port", cfg.Endpoint)
 	}
-	var addrs, routes []netip.Prefix
 	for _, a := range cfg.Addresses {
 		p, err := netip.ParsePrefix(a)
 		if err != nil || !p.Addr().Is4() {
-			return fmt.Errorf("address %q is not an IPv4 prefix", a)
+			return netip.AddrPort{}, nil, nil, 0, fmt.Errorf("address %q is not an IPv4 prefix", a)
 		}
 		addrs = append(addrs, p)
 	}
 	for _, r := range cfg.Routes {
 		p, err := netip.ParsePrefix(r)
 		if err != nil || !p.Addr().Is4() {
-			return fmt.Errorf("route %q is not an IPv4 prefix", r)
+			return netip.AddrPort{}, nil, nil, 0, fmt.Errorf("route %q is not an IPv4 prefix", r)
 		}
 		routes = append(routes, p.Masked())
 	}
-	mtu := cfg.MTU
+	mtu = cfg.MTU
 	if mtu == 0 {
 		mtu = 1420
+	}
+	return endpoint, addrs, routes, mtu, nil
+}
+
+// setupLink makes the WireGuard link of cfg with rtnetlink and the
+// wireguard generic netlink family, as ip(8) and wg(8) would.
+func setupLink(cfg guestcfg.Config) error {
+	endpoint, addrs, routes, mtu, err := parseLinkConfig(cfg)
+	if err != nil {
+		return err
 	}
 
 	rt, err := dial(unix.NETLINK_ROUTE)
@@ -73,21 +80,58 @@ func setupLink(cfg guestcfg.Config) error {
 
 	// ip addr add A/N dev gvx0
 	for _, p := range addrs {
-		msg := make([]byte, unix.SizeofIfAddrmsg)
-		msg[0] = unix.AF_INET
-		msg[1] = byte(p.Bits())
-		msg[3] = unix.RT_SCOPE_UNIVERSE
-		binary.NativeEndian.PutUint32(msg[4:], index)
-		var a attrs
-		ip := p.Addr().As4()
-		a.bytes(unix.IFA_LOCAL, ip[:])
-		a.bytes(unix.IFA_ADDRESS, ip[:])
-		if err := rt.do(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_REPLACE, append(msg, a...)); err != nil {
-			return fmt.Errorf("add address %s: %w", p, err)
+		if err := addAddr(rt, index, p); err != nil {
+			return err
 		}
 	}
 
 	// ip link set gvx0 up
+	if err := setLinkUp(rt, index); err != nil {
+		return err
+	}
+
+	// ip route add P dev gvx0
+	for _, p := range guestcfg.UncoveredRoutes(addrs, routes) {
+		if err := addRoute(rt, p, index); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addAddr(rt *nlsock, index uint32, p netip.Prefix) error {
+	msg := make([]byte, unix.SizeofIfAddrmsg)
+	msg[0] = unix.AF_INET
+	msg[1] = byte(p.Bits())
+	msg[3] = unix.RT_SCOPE_UNIVERSE
+	binary.NativeEndian.PutUint32(msg[4:], index)
+	var a attrs
+	ip := p.Addr().As4()
+	a.bytes(unix.IFA_LOCAL, ip[:])
+	a.bytes(unix.IFA_ADDRESS, ip[:])
+	if err := rt.do(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_REPLACE, append(msg, a...)); err != nil {
+		return fmt.Errorf("add address %s: %w", p, err)
+	}
+	return nil
+}
+
+func delAddr(rt *nlsock, index uint32, p netip.Prefix) error {
+	msg := make([]byte, unix.SizeofIfAddrmsg)
+	msg[0] = unix.AF_INET
+	msg[1] = byte(p.Bits())
+	msg[3] = unix.RT_SCOPE_UNIVERSE
+	binary.NativeEndian.PutUint32(msg[4:], index)
+	var a attrs
+	ip := p.Addr().As4()
+	a.bytes(unix.IFA_LOCAL, ip[:])
+	a.bytes(unix.IFA_ADDRESS, ip[:])
+	if err := rt.do(unix.RTM_DELADDR, 0, append(msg, a...)); err != nil && !errors.Is(err, syscall.EADDRNOTAVAIL) {
+		return fmt.Errorf("remove address %s: %w", p, err)
+	}
+	return nil
+}
+
+func setLinkUp(rt *nlsock, index uint32) error {
 	up := make([]byte, unix.SizeofIfInfomsg)
 	binary.NativeEndian.PutUint32(up[4:], index)
 	binary.NativeEndian.PutUint32(up[8:], unix.IFF_UP)
@@ -95,21 +139,16 @@ func setupLink(cfg guestcfg.Config) error {
 	if err := rt.do(unix.RTM_NEWLINK, 0, up); err != nil {
 		return fmt.Errorf("set link %s up: %w", guestcfg.LinkName, err)
 	}
+	return nil
+}
 
-	// ip route add P dev gvx0
-	for _, p := range routes {
-		covered := false
-		for _, a := range addrs {
-			if a.Masked() == p {
-				covered = true
-			}
-		}
-		if covered {
-			continue
-		}
-		if err := addRoute(rt, p, index); err != nil {
-			return err
-		}
+func setLinkDown(rt *nlsock, index uint32) error {
+	down := make([]byte, unix.SizeofIfInfomsg)
+	binary.NativeEndian.PutUint32(down[4:], index)
+	binary.NativeEndian.PutUint32(down[8:], 0)
+	binary.NativeEndian.PutUint32(down[12:], unix.IFF_UP)
+	if err := rt.do(unix.RTM_NEWLINK, 0, down); err != nil {
+		return fmt.Errorf("set link %s down: %w", guestcfg.LinkName, err)
 	}
 	return nil
 }
@@ -131,6 +170,73 @@ func addRoute(rt *nlsock, p netip.Prefix, index uint32) error {
 		return fmt.Errorf("add route %s: %w", p, err)
 	}
 	return nil
+}
+
+// delRoute removes "ip route del P dev INDEX" installed with RTPROT_BOOT.
+func delRoute(rt *nlsock, p netip.Prefix, index uint32) error {
+	msg := make([]byte, unix.SizeofRtMsg)
+	msg[0] = unix.AF_INET
+	msg[1] = byte(p.Bits())
+	msg[4] = unix.RT_TABLE_MAIN
+	msg[5] = unix.RTPROT_BOOT
+	msg[6] = unix.RT_SCOPE_LINK
+	msg[7] = unix.RTN_UNICAST
+	var a attrs
+	ip := p.Addr().As4()
+	a.bytes(unix.RTA_DST, ip[:])
+	a.u32(unix.RTA_OIF, index)
+	if err := rt.do(unix.RTM_DELROUTE, 0, append(msg, a...)); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.ENOENT) {
+		return fmt.Errorf("remove route %s: %w", p, err)
+	}
+	return nil
+}
+
+// listBootRoutes returns the IPv4 RTPROT_BOOT unicast routes pointing at
+// interface index in the main routing table.
+func listBootRoutes(rt *nlsock, index uint32) ([]netip.Prefix, error) {
+	req := make([]byte, unix.SizeofRtMsg)
+	req[0] = unix.AF_INET
+	req[4] = unix.RT_TABLE_MAIN
+	replies, err := rt.request(unix.RTM_GETROUTE, unix.NLM_F_DUMP, req)
+	if err != nil {
+		return nil, fmt.Errorf("list routes: %w", err)
+	}
+	var out []netip.Prefix
+	for _, body := range replies {
+		if len(body) < unix.SizeofRtMsg {
+			continue
+		}
+		family := body[0]
+		dstLen := int(body[1])
+		table := body[4]
+		proto := body[5]
+		rType := body[7]
+		if family != unix.AF_INET || table != unix.RT_TABLE_MAIN || proto != unix.RTPROT_BOOT || rType != unix.RTN_UNICAST || dstLen == 0 || dstLen > 32 {
+			continue
+		}
+		var (
+			oif   uint32
+			hasIF bool
+			dst   netip.Addr
+		)
+		for typ, val := range parseAttrs(body[unix.SizeofRtMsg:]) {
+			switch typ {
+			case unix.RTA_OIF:
+				if len(val) >= 4 {
+					oif = binary.NativeEndian.Uint32(val)
+					hasIF = true
+				}
+			case unix.RTA_DST:
+				if len(val) == 4 {
+					dst = netip.AddrFrom4([4]byte(val))
+				}
+			}
+		}
+		if hasIF && oif == index && dst.IsValid() {
+			out = append(out, netip.PrefixFrom(dst, dstLen).Masked())
+		}
+	}
+	return out, nil
 }
 
 // isolate takes the default route of eth0 away and keeps routes to the
@@ -194,13 +300,7 @@ func configureWireGuard(index uint32, cfg guestcfg.Config, endpoint netip.AddrPo
 		return fmt.Errorf("the wireguard netlink family: %w", err)
 	}
 
-	allowed := map[netip.Prefix]bool{}
-	for _, p := range addrs {
-		allowed[p.Masked()] = true
-	}
-	for _, p := range routes {
-		allowed[p] = true
-	}
+	allowed := guestcfg.AllowedIPs(addrs, routes)
 
 	var b attrs
 	b.u32(wgDeviceAIfindex, index)
@@ -220,7 +320,7 @@ func configureWireGuard(index uint32, cfg guestcfg.Config, endpoint netip.AddrPo
 				b.u16(wgPeerAKeepalive, uint16(cfg.Keepalive))
 			}
 			b.nest(wgPeerAAllowedIPs, func(b *attrs) {
-				for p := range allowed {
+				for _, p := range allowed {
 					b.nest(0, func(b *attrs) {
 						b.u16(wgAllowedIPAFamily, unix.AF_INET)
 						ip := p.Addr().As4()

@@ -28,6 +28,7 @@ const (
 	ContainersNoEngine                         // the Docker Engine recipe is not set up
 	ContainersStarting                         // the engine's sandbox runs and dockerd is not ready yet
 	ContainersStopped                          // the engine is stopped, stopping, exited or failed
+	ContainersPaused                           // the engine's sandbox is paused
 )
 
 // containersAccess reads it from the sandboxes and settings.
@@ -47,6 +48,8 @@ func (a ContainersAccess) Reason() string {
 		return tr("The Docker Engine is starting")
 	case ContainersStopped:
 		return tr("Start the Docker Engine to manage its containers")
+	case ContainersPaused:
+		return tr("Resume the Docker Engine to manage its containers")
 	}
 	return ""
 }
@@ -173,15 +176,16 @@ func (m *Model) ToggleProject(project string) {
 }
 
 // projectTargets are the containers of a project an action on it acts on:
-// start those that are not running, stop those that are, and restart or
-// remove all of them, as docker compose does.
+// start those that are not running (including paused, which are unpaused),
+// stop those that are running or paused, and restart or remove all of them,
+// as docker compose does.
 func projectTargets(action string, members []dockerapi.Container) []dockerapi.Container {
 	var out []dockerapi.Container
 	for _, c := range members {
 		running := c.State == "running" || c.State == "restarting"
 		switch {
 		case action == "start" && !running && c.State != "removing",
-			action == "stop" && running,
+			action == "stop" && (running || c.State == "paused"),
 			action == "restart", action == "remove":
 			out = append(out, c)
 		}
@@ -210,10 +214,16 @@ func (m *Model) ProjectAction(action, project string, members []dockerapi.Contai
 		var errs []error
 		for _, t := range targets {
 			wg.Go(func() {
-				if err := dockerDo(ctx, c, action, t.ID); err != nil {
+				act := action
+				if act == "start" && t.State == "paused" {
+					act = "unpause"
+				}
+				if err := dockerDo(ctx, c, act, t.ID); err != nil {
 					mu.Lock()
 					errs = append(errs, fmt.Errorf("%s: %w", t.Name(), err))
 					mu.Unlock()
+				} else if act == "unpause" {
+					m.drainContainerSweeps(ctx, c, t.ID)
 				}
 			})
 		}

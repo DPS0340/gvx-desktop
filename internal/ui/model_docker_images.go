@@ -439,6 +439,11 @@ func (m *Model) PushToRegistry(img DockerImageRow) {
 	case row.State.Status == sandbox.Starting:
 		m.Toasts.Push(ui.Toast(tr("The image registry is starting"), tr("Push again once it is ready.")).Info())
 		return
+	case row.State.Status == sandbox.Running && row.State.Paused:
+		m.Offer(tr("Resume the image registry?"),
+			tr("Images reach the cluster through the registry, which is paused. Resume it, then push again."),
+			tr("Resume"), func() { m.ResumeSandbox(row.Spec.ID) })
+		return
 	case row.State.Status != sandbox.Running:
 		m.Offer(tr("Start the image registry?"),
 			tr("Images reach the cluster through the registry, which is not running. Start it, then push again once it is ready."),

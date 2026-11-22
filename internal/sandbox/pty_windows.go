@@ -20,7 +20,12 @@ func openPTY(cmd *exec.Cmd) (*term, io.Reader, func(), error) {
 	return nil, nil, nil, errWindowsPTY
 }
 
+func openExecPTY(cmd *exec.Cmd, rows, cols uint16) (*term, func(), error) {
+	return nil, nil, errWindowsPTY
+}
+
 func (t *term) writer() io.Writer              { return nil }
+func (t *term) reader() io.Reader              { return nil }
 func (t *term) closeStdin() error              { return errWindowsPTY }
 func (t *term) resize(rows, cols uint16) error { return errWindowsPTY }
 func (t *term) close() error                   { return nil }
@@ -33,4 +38,10 @@ func signalProc(proc *os.Process, sig syscall.Signal) error {
 		return proc.Kill()
 	}
 	return proc.Signal(sig)
+}
+
+func killExecClient(proc *os.Process, _ bool) {
+	if proc != nil {
+		_ = proc.Kill()
+	}
 }

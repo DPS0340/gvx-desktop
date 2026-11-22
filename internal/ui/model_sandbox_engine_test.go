@@ -41,6 +41,8 @@ type fakeSandboxEngine struct {
 	setAmd64Err  error
 	resetDisks   int
 	resetDiskErr error
+	features     rungv.Features
+	canControl   map[string]bool
 }
 
 func (f *fakeSandboxEngine) Open(context.Context) error {
@@ -152,6 +154,18 @@ func (f *fakeSandboxEngine) ResetAmd64Disk(context.Context) error {
 	}
 	f.amd64State.DiskBytes = 0
 	return nil
+}
+
+func (f *fakeSandboxEngine) Features() rungv.Features {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.features
+}
+
+func (f *fakeSandboxEngine) CanControl(ref string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.canControl[ref]
 }
 
 func (f *fakeSandboxEngine) counts() (opens, closes, stopRuns int, timeout time.Duration) {
@@ -813,8 +827,8 @@ func TestSandboxEngineUIAndGating(t *testing.T) {
 	if ggui.Peek(m.Page) != PageContainers {
 		t.Fatalf("Go(PageContainers) did not open page in sandbox-engine mode")
 	}
-	if !shows("Not supported in the experimental sandbox engine") {
-		t.Errorf("Terminal tab missing unsupported message:\n%s", p.Semantics())
+	if !shows("Needs rungv v0.20 or later") {
+		t.Errorf("Terminal tab missing v0.20 requirement message:\n%s", p.Semantics())
 	}
 	m.terms.mu.Lock()
 	liveTerms := len(m.terms.set)

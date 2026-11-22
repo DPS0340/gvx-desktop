@@ -457,7 +457,14 @@ func BuildFromSource(ctx context.Context, src Source, dir, target string, phase 
 		return "", err
 	}
 	phase(PhaseInstall)
-	return commit, replaceFile(fresh, target)
+	if err := replaceFile(fresh, target); err != nil {
+		return commit, err
+	}
+	ForgetFeatures(target)
+	if abs, err := filepath.Abs(target); err == nil && abs != target {
+		ForgetFeatures(abs)
+	}
+	return commit, nil
 }
 
 // Phase is a step of BuildFromSource.

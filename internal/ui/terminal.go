@@ -24,6 +24,10 @@ type shellTarget struct {
 	// Key names the shell: one runs while the key stays, and a new key
 	// starts a new one. Empty, none runs.
 	Key string
+	// TargetID identifies the sandbox or container ("sandbox:<id>" or
+	// "container:<id>") so pausing it can close and sweep active shells
+	// before freezing the guest.
+	TargetID string
 	// Why and WhyText say why no shell can run, when one cannot.
 	Why, WhyText string
 	// Start starts the shell on a terminal cols by rows, off the UI thread.
@@ -32,7 +36,7 @@ type shellTarget struct {
 }
 
 func (t shellTarget) Equal(o shellTarget) bool {
-	return t.Key == o.Key && t.Why == o.Why && t.WhyText == o.WhyText
+	return t.Key == o.Key && t.TargetID == o.TargetID && t.Why == o.Why && t.WhyText == o.WhyText
 }
 
 // unavailable is why a shell cannot start, as a terminal tab says it.
@@ -123,7 +127,7 @@ func shellView(m *Model, t shellTarget, restart func()) ggui.Widget {
 				return
 			}
 			sess = s
-			m.openTerminal(s)
+			m.openTerminal(s, t.TargetID)
 			st.Set(shellState{s: s})
 			go func() {
 				<-s.Done()
@@ -171,20 +175,22 @@ func shellView(m *Model, t shellTarget, restart func()) ggui.Widget {
 }
 
 // liveTerminals are the shells running in the app's terminals, which the
-// app ends as it quits.
+// app ends as it quits, plus marks whose sweep was skipped because the
+// target was already paused (swept on the next resume/unpause).
 type liveTerminals struct {
-	mu  sync.Mutex
-	set map[*term.Session]struct{}
+	mu            sync.Mutex
+	set           map[*term.Session]string
+	pendingSweeps map[string][]string
 }
 
-// openTerminal notes a shell started.
-func (m *Model) openTerminal(s *term.Session) {
+// openTerminal notes a shell started for targetID.
+func (m *Model) openTerminal(s *term.Session, targetID string) {
 	m.terms.mu.Lock()
 	defer m.terms.mu.Unlock()
 	if m.terms.set == nil {
-		m.terms.set = map[*term.Session]struct{}{}
+		m.terms.set = map[*term.Session]string{}
 	}
-	m.terms.set[s] = struct{}{}
+	m.terms.set[s] = targetID
 }
 
 // closeTerminal ends a shell, in the background: ending one in a container
@@ -196,6 +202,55 @@ func (m *Model) closeTerminal(s *term.Session) {
 		delete(m.terms.set, s)
 		m.terms.mu.Unlock()
 	}()
+}
+
+// closeTerminalsFor closes every active shell targeting targetID and waits for
+// them (and their sweeps) to finish. Call off the UI thread before pausing the
+// target so sweeps run while the guest can still exec.
+func (m *Model) closeTerminalsFor(targetID string) {
+	if targetID == "" {
+		return
+	}
+	m.terms.mu.Lock()
+	var list []*term.Session
+	for s, tid := range m.terms.set {
+		if tid == targetID {
+			list = append(list, s)
+			delete(m.terms.set, s)
+		}
+	}
+	m.terms.mu.Unlock()
+	var wg sync.WaitGroup
+	for _, s := range list {
+		wg.Go(func() { s.Close() })
+	}
+	wg.Wait()
+}
+
+// recordPendingSweep remembers a shell mark whose sweep failed because
+// targetID was paused, so it can be swept once targetID resumes.
+func (m *Model) recordPendingSweep(targetID, mark string) {
+	if targetID == "" || mark == "" {
+		return
+	}
+	m.terms.mu.Lock()
+	defer m.terms.mu.Unlock()
+	if m.terms.pendingSweeps == nil {
+		m.terms.pendingSweeps = map[string][]string{}
+	}
+	m.terms.pendingSweeps[targetID] = append(m.terms.pendingSweeps[targetID], mark)
+}
+
+// takePendingSweeps pops and returns any deferred sweep marks for targetID.
+func (m *Model) takePendingSweeps(targetID string) []string {
+	if targetID == "" {
+		return nil
+	}
+	m.terms.mu.Lock()
+	defer m.terms.mu.Unlock()
+	marks := m.terms.pendingSweeps[targetID]
+	delete(m.terms.pendingSweeps, targetID)
+	return marks
 }
 
 // CloseTerminals ends every shell the app's terminals run, and waits for

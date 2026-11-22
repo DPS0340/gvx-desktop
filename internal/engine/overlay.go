@@ -7,8 +7,10 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/netip"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ironpark/gvx-desktop/internal/overlay"
 	"github.com/ironpark/gvx-desktop/internal/overlay/guest"
@@ -25,8 +28,10 @@ import (
 )
 
 type overlayState struct {
-	mu  sync.Mutex
-	fab *overlay.Fabric
+	mu      sync.Mutex
+	fab     *overlay.Fabric
+	netinit map[string]bool        // containers whose active run started with netinit
+	applyMu map[string]*sync.Mutex // per-container serialization for live apply
 
 	binOnce sync.Once
 	binPath string
@@ -64,10 +69,41 @@ func (e *Engine) closeOverlay() {
 	e.ovl.mu.Lock()
 	fab := e.ovl.fab
 	e.ovl.fab = nil
+	clear(e.ovl.netinit)
+	clear(e.ovl.applyMu)
 	e.ovl.mu.Unlock()
 	if fab != nil {
 		fab.Close()
 	}
+}
+
+func (e *Engine) overlayApplyLock(cid string) *sync.Mutex {
+	e.ovl.mu.Lock()
+	defer e.ovl.mu.Unlock()
+	if e.ovl.applyMu == nil {
+		e.ovl.applyMu = map[string]*sync.Mutex{}
+	}
+	mu := e.ovl.applyMu[cid]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		e.ovl.applyMu[cid] = mu
+	}
+	return mu
+}
+
+func (e *Engine) markStartedWithNetinit(id string) {
+	e.ovl.mu.Lock()
+	if e.ovl.netinit == nil {
+		e.ovl.netinit = map[string]bool{}
+	}
+	e.ovl.netinit[id] = true
+	e.ovl.mu.Unlock()
+}
+
+func (e *Engine) startedWithNetinit(id string) bool {
+	e.ovl.mu.Lock()
+	defer e.ovl.mu.Unlock()
+	return e.ovl.netinit[id]
 }
 
 // netinitPath writes netinit into the engine's directory, once, for the
@@ -193,6 +229,7 @@ func (e *Engine) joinOverlay(c *Container, spec sandbox.Spec) sandbox.Spec {
 		e.logf("engine: container %s starts without its networks and extra hosts: %v", shortHex(c.ID), err)
 		return spec
 	}
+	e.markStartedWithNetinit(c.ID)
 	if joined {
 		e.syncOverlay()
 	}
@@ -264,9 +301,108 @@ func (e *Engine) linkMTU() int {
 func (e *Engine) leaveOverlay(id string) {
 	e.ovl.mu.Lock()
 	fab := e.ovl.fab
+	delete(e.ovl.netinit, id)
 	e.ovl.mu.Unlock()
 	if fab != nil {
 		fab.Leave(id)
+	}
+}
+
+// applyOverlayLive updates the WireGuard link of a running container that
+// joined the overlay at start, via netinit's --gvx-apply mode (§5.6).
+// Calls for the same container are serialized, read committed addresses inside
+// the critical section, use a background-derived timeout so client disconnects
+// cannot cancel an in-flight apply, and roll back only if neither the peer
+// generation nor the committed addresses have moved on.
+func (e *Engine) applyOverlayLive(cid string) {
+	mu := e.overlayApplyLock(cid)
+	mu.Lock()
+	defer mu.Unlock()
+
+	c, err := e.lookup(cid)
+	if err != nil || c.State.Status != StatusRunning {
+		return
+	}
+	if e.isContainerPaused(c) {
+		return
+	}
+	ctl := e.runner.Control(cid)
+	if ctl == nil {
+		return
+	}
+	e.ovl.mu.Lock()
+	fab := e.ovl.fab
+	e.ovl.mu.Unlock()
+	if fab == nil {
+		return
+	}
+	prevAddrs, joined := fab.PeerAddrs(cid)
+	if !joined {
+		return
+	}
+	addrs, _ := e.overlayAddrs(&c)
+	cfg, gen, ok, err := fab.SetAddrs(cid, addrs)
+	if err != nil {
+		e.logf("engine: overlay set addrs %s: %v", shortHex(cid), err)
+		return
+	}
+	if !ok {
+		return
+	}
+	revertIfUnchanged := func() {
+		if latest, lerr := e.lookup(cid); lerr == nil && latest.State.Status == StatusRunning {
+			curAddrs, _ := e.overlayAddrs(&latest)
+			if !slices.Equal(curAddrs, addrs) {
+				return
+			}
+		}
+		fab.RevertAddrs(cid, gen, prevAddrs)
+	}
+	enc, err := cfg.Encode()
+	if err != nil {
+		revertIfUnchanged()
+		e.logf("engine: overlay encode %s: %v", shortHex(cid), err)
+		return
+	}
+
+	execCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	priv := true
+	proc, err := ctl.Exec(execCtx, sandbox.ExecOptions{
+		ExecOptions: rungv.ExecOptions{
+			Argv:       []string{guestcfg.Path, guestcfg.ApplyArg},
+			Env:        []string{guestcfg.EnvVar + "=" + enc},
+			User:       "0",
+			Privileged: &priv,
+		},
+	})
+	if err != nil {
+		revertIfUnchanged()
+		e.logf("engine: live network apply %s: %v", shortHex(cid), err)
+		return
+	}
+	var stderr bytes.Buffer
+	var wg sync.WaitGroup
+	if r := proc.Stdout(); r != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = io.Copy(io.Discard, r)
+		}()
+	}
+	if r := proc.Stderr(); r != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = io.Copy(&stderr, io.LimitReader(r, 8*1024))
+		}()
+	}
+	code, waitErr := proc.Wait()
+	wg.Wait()
+	_ = proc.Close()
+	if waitErr != nil || code != 0 {
+		revertIfUnchanged()
+		e.logf("engine: live network apply %s failed (code=%d err=%v stderr=%q)", shortHex(cid), code, waitErr, strings.TrimSpace(stderr.String()))
 	}
 }
 

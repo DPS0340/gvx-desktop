@@ -630,6 +630,7 @@ func SetQuit(fn func()) { quitApp = fn }
 type paletteSandbox struct {
 	id, name, image string
 	status          sandbox.Status
+	paused          bool
 }
 
 type paletteState struct {
@@ -688,10 +689,15 @@ func palette(m *Model) ggui.Widget {
 		}
 		for _, sb := range st.sandboxes {
 			id := sb.id
+			state := sandbox.State{Status: sb.status, Paused: sb.paused}
+			kw := sb.status.String()
+			if sb.paused {
+				kw = "paused"
+			}
 			out = append(out, ui.CommandItem(sb.name, close(func() { m.ShowSandbox(id, 0) })).
-				Icon(widget.Box(dot(statusColor(sb.status), 8)).Pad(3)).
+				Icon(widget.Box(dot(stateColor(state), 8)).Pad(3)).
 				Group(tr("Open sandbox")).
-				Keywords(sb.image, sb.status.String()))
+				Keywords(sb.image, statusText(state), kw))
 		}
 		return out
 	}
@@ -702,7 +708,7 @@ func palette(m *Model) ggui.Widget {
 		rows := m.Rows.Get()
 		sbs := make([]paletteSandbox, len(rows))
 		for i, r := range rows {
-			sbs[i] = paletteSandbox{id: r.Spec.ID, name: r.Spec.Name, image: r.Spec.Image, status: r.State.Status}
+			sbs[i] = paletteSandbox{id: r.Spec.ID, name: r.Spec.Name, image: r.Spec.Image, status: r.State.Status, paused: r.State.Paused}
 		}
 		return paletteState{containers: m.ContainersOpen.Get(), pods: m.PodsOpen.Get(), sandboxes: sbs}
 	}).WithEqual(paletteState.equal)

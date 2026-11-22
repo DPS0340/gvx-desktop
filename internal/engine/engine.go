@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
@@ -86,6 +87,7 @@ type Engine struct {
 	bld builderState   // builder.go
 	amd amd64State     // amd64.go (the amd64 builder, workstream C)
 	ovl overlayState   // overlay.go (networks between containers)
+	exc execState      // exec.go (rungv v0.20 exec instances)
 }
 
 // New returns an engine over cfg.Runner. It serves nothing until Open.
@@ -115,6 +117,7 @@ func (e *Engine) Open(ctx context.Context) error {
 		return err
 	}
 	e.reconcileEndpoints()
+	e.openExecs()
 	e.openStreams()
 	if err := e.openBuilder(); err != nil {
 		e.closeStreams()
@@ -143,11 +146,35 @@ func (e *Engine) Close(timeout time.Duration) error {
 	e.opened = false
 	e.closeAmd64(timeout)
 	e.closeBuilder(timeout)
+	e.closeExecs()
 	e.stopContainers(timeout)
 	e.closeOverlay()
 	e.closeStreams()
 	e.notify()
 	return nil
+}
+
+// Features are what the engine's rungv can do (docs/design/gvx-v020.md
+// §5): with a zero Features (rungv v0.19) exec, cp, pause, top and update
+// answer 501 as before. A frozen seam for the UI (W3); body W2's.
+func (e *Engine) Features() rungv.Features {
+	return e.runner.Features()
+}
+
+// CanControl reports whether the container ref runs with a control
+// socket, so exec, cp, pause, top, update and guest stats work on it: the
+// UI's Terminal tab and Pause action follow it. False when the engine is
+// closed, ref is unknown or not running, or rungv is older than v0.20. A
+// frozen seam for the UI (W3); body W2's.
+func (e *Engine) CanControl(ref string) bool {
+	if !e.isOpen() {
+		return false
+	}
+	c, err := e.lookup(ref)
+	if err != nil || c.State.Status != StatusRunning {
+		return false
+	}
+	return e.runner.Control(c.ID) != nil
 }
 
 // RunningCount is how many containers run or wait to restart while the
@@ -181,7 +208,7 @@ func (e *Engine) StopRunning(timeout time.Duration) {
 	var wg sync.WaitGroup
 	for _, id := range ids {
 		wg.Go(func() {
-			_ = e.stopContainerByRef(context.Background(), id, timeout, true)
+			_ = e.stopContainerByRef(context.Background(), id, "", timeout, true)
 		})
 	}
 	wg.Wait()

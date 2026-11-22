@@ -20,6 +20,8 @@ type EngineState struct {
 	ID       string // empty when the recipe is not set up
 	Status   sandbox.Status
 	ExitCode int
+	Paused   bool
+	Control  bool
 }
 
 // MenuState is what the Docker and Kubernetes menus tell. Equal states make
@@ -73,16 +75,22 @@ func menuState(rows []Row, containers Listing[dockerapi.Container], pods Listing
 	engine := func(recipe string) EngineState {
 		for _, r := range rows {
 			if r.Spec.Recipe == recipe {
-				return EngineState{ID: r.Spec.ID, Status: r.State.Status, ExitCode: r.State.ExitCode}
+				return EngineState{
+					ID:       r.Spec.ID,
+					Status:   r.State.Status,
+					ExitCode: r.State.ExitCode,
+					Paused:   r.State.Paused,
+					Control:  r.State.Control,
+				}
 			}
 		}
 		return EngineState{}
 	}
 	s := MenuState{Docker: engine(recipes.Docker), Kube: engine(recipes.Kubernetes), DockerLink: docker, KubeLink: kube}
-	if s.Kube.Status == sandbox.Running {
+	if s.Kube.Status == sandbox.Running && !s.Kube.Paused {
 		s.menuPods(pods, podsWaiting)
 	}
-	if s.Docker.Status == sandbox.Running {
+	if s.Docker.Status == sandbox.Running && !s.Docker.Paused {
 		s.menuContainers(containers)
 	}
 	return s
@@ -95,14 +103,17 @@ func (s *MenuState) menuContainers(containers Listing[dockerapi.Container]) {
 		return
 	}
 	list := slices.Clone(containers.Items)
-	slices.SortStableFunc(list, func(a, b dockerapi.Container) int {
-		switch ar, br := a.State == "running", b.State == "running"; {
-		case ar && !br:
-			return -1
-		case br && !ar:
+	rank := func(state string) int {
+		switch state {
+		case "running":
+			return 0
+		case "paused":
 			return 1
 		}
-		return 0
+		return 2
+	}
+	slices.SortStableFunc(list, func(a, b dockerapi.Container) int {
+		return rank(a.State) - rank(b.State)
 	})
 	if len(list) > maxMenuContainers {
 		s.More = len(list) - maxMenuContainers
@@ -132,9 +143,20 @@ func (m *Model) RecipeMenu(recipe string, show func()) []ggui.MenuItem {
 				off(tr("%s is not set up", title)),
 				ggui.MenuAction(tr("Set Up and Start %s", title), "", func() { m.CreateFromRecipe(recipe) }),
 			)
+		case e.Status.Active() && e.Paused:
+			items = append(items,
+				off(title+" · "+statusText(sandbox.State{Status: e.Status, ExitCode: e.ExitCode, Paused: true})),
+				ggui.MenuAction(tr("Resume %s", title), "", func() { m.ResumeSandbox(id) }),
+				ggui.MenuAction(tr("Stop %s", title), "", func() { m.StopSandbox(id) }),
+			)
 		case e.Status.Active():
 			items = append(items,
 				off(title+" · "+statusText(sandbox.State{Status: e.Status, ExitCode: e.ExitCode})),
+			)
+			if e.Control && e.Status != sandbox.Stopping {
+				items = append(items, ggui.MenuAction(tr("Pause %s", title), "", func() { m.PauseSandbox(id) }))
+			}
+			items = append(items,
 				ggui.MenuAction(tr("Stop %s", title), "", func() { m.StopSandbox(id) }).BindEnabled(ggui.Const(e.Status != sandbox.Stopping)),
 				ggui.MenuAction(tr("Restart %s", title), "", func() { m.RestartSandbox(id) }).BindEnabled(ggui.Const(e.Status == sandbox.Running)),
 			)
@@ -149,10 +171,10 @@ func (m *Model) RecipeMenu(recipe string, show func()) []ggui.MenuItem {
 	if label, run := linkMenuAction(m, l, v); run != nil {
 		items = append(items, ggui.MenuSeparator(), ggui.MenuAction(label, "", run).BindEnabled(ggui.Const(!v.C.Busy)))
 	}
-	if recipe == recipes.Docker && (s.SandboxEngine || e.Status == sandbox.Running) {
+	if recipe == recipes.Docker && (s.SandboxEngine || (e.Status == sandbox.Running && !e.Paused)) {
 		items = append(items, containerItems(m, s, show)...)
 	}
-	if recipe == recipes.Kubernetes && e.Status == sandbox.Running {
+	if recipe == recipes.Kubernetes && e.Status == sandbox.Running && !e.Paused {
 		items = append(items, podItems(m, s, show)...)
 		items = append(items, forwardItems(m, s)...)
 	}
@@ -202,13 +224,23 @@ func containerItems(m *Model, s MenuState, show func()) []ggui.MenuItem {
 	for _, c := range s.Containers {
 		label := "○ " + c.Name()
 		var acts []ggui.MenuItem
-		if c.State == "running" {
+		switch c.State {
+		case "running":
 			label = "● " + c.Name()
+			if !s.SandboxEngine || m.canControlContainer(c.ID) {
+				acts = append(acts, ggui.MenuAction(tr("Pause"), "", func() { m.DockerAction("pause", c) }))
+			}
 			acts = append(acts,
 				ggui.MenuAction(tr("Stop"), "", func() { m.DockerAction("stop", c) }),
 				ggui.MenuAction(tr("Restart"), "", func() { m.DockerAction("restart", c) }),
 			)
-		} else {
+		case "paused":
+			label = "● " + c.Name() + " · " + tr("Paused")
+			if !s.SandboxEngine || m.canControlContainer(c.ID) {
+				acts = append(acts, ggui.MenuAction(tr("Resume"), "", func() { m.DockerAction("unpause", c) }))
+			}
+			acts = append(acts, ggui.MenuAction(tr("Stop"), "", func() { m.DockerAction("stop", c) }))
+		default:
 			acts = append(acts, ggui.MenuAction(tr("Start"), "", func() { m.DockerAction("start", c) }))
 		}
 		acts = append(acts,

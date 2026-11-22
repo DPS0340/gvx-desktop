@@ -51,8 +51,18 @@ func dot(c color.Color, size float64) *widget.BoxWidget {
 	return widget.Box().Size(size, size).Radius(size / 2).Fill(c)
 }
 
+func stateColor(st sandbox.State) color.Color {
+	if st.Status.Active() && st.Status != sandbox.Stopping && st.Paused {
+		return colorAmber
+	}
+	return statusColor(st.Status)
+}
+
 // statusText is a sandbox's status in words.
 func statusText(st sandbox.State) string {
+	if st.Status.Active() && st.Status != sandbox.Stopping && st.Paused {
+		return tr("Paused")
+	}
 	switch st.Status {
 	case sandbox.Starting:
 		return tr("Starting")
@@ -74,10 +84,10 @@ func statusText(st sandbox.State) string {
 // statusMark is a sandbox's status as a colored dot, which turns while the
 // status is changing.
 func statusMark(st sandbox.State) ggui.Widget {
-	if st.Status == sandbox.Starting || st.Status == sandbox.Stopping {
+	if (st.Status == sandbox.Starting && !st.Paused) || st.Status == sandbox.Stopping {
 		return ui.Spinner().Size(12).Color(statusColor(st.Status))
 	}
-	return widget.Box(dot(statusColor(st.Status), 8)).Pad(2)
+	return widget.Box(dot(stateColor(st), 8)).Pad(2)
 }
 
 // statusLabel is the mark and the words together.

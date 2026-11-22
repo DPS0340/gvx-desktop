@@ -42,3 +42,14 @@ func parseSignal(raw string) (syscall.Signal, error) {
 	}
 	return 0, errInvalid("Invalid signal: %s", raw)
 }
+
+// signalName returns the portable POSIX signal name (e.g. "SIGTERM") for
+// guest delivery via rungv kill.
+func signalName(sig syscall.Signal) string {
+	for name, s := range signalNames {
+		if s == sig {
+			return "SIG" + name
+		}
+	}
+	return strconv.Itoa(int(sig))
+}

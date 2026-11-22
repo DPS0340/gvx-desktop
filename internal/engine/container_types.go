@@ -82,6 +82,7 @@ func (c *Container) clone() Container {
 const (
 	StatusCreated    = "created"
 	StatusRunning    = "running"
+	StatusPaused     = "paused"
 	StatusRestarting = "restarting"
 	StatusRemoving   = "removing"
 	StatusExited     = "exited"
@@ -96,6 +97,7 @@ type ContainerState struct {
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
 	OOMKilled  bool      `json:"oomKilled,omitempty"`
+	Paused     bool      `json:"-"`
 	Pid        int       `json:"-"`
 	// StoppedByUser is set by stop and kill, and cleared by start: the
 	// restart policies leave such a container stopped.
@@ -165,6 +167,9 @@ type HostConfig struct {
 	Tmpfs           map[string]string        `json:"Tmpfs,omitempty"`
 	Memory          int64                    `json:"Memory"`
 	NanoCpus        int64                    `json:"NanoCpus"`
+	CpuQuota        int64                    `json:"CpuQuota,omitempty"`
+	CpuPeriod       int64                    `json:"CpuPeriod,omitempty"`
+	PidsLimit       *int64                   `json:"PidsLimit,omitempty"`
 }
 
 func (h HostConfig) clone() HostConfig {
@@ -188,6 +193,10 @@ func (h HostConfig) clone() HostConfig {
 	}
 	cp.ExtraHosts = slices.Clone(h.ExtraHosts)
 	cp.Tmpfs = maps.Clone(h.Tmpfs)
+	if h.PidsLimit != nil {
+		v := *h.PidsLimit
+		cp.PidsLimit = &v
+	}
 	return cp
 }
 

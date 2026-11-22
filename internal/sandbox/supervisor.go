@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -87,6 +89,13 @@ type State struct {
 	// Signal is the signal that ended the process, 0 when it exited by
 	// itself; ExitCode is then -1.
 	Signal int
+	// Control reports a run with a control socket (rungv v0.20): exec,
+	// cp, pause, stats, top, update and a graceful stop work on it
+	// (Supervisor.Control). Owner: W1.
+	Control bool
+	// Paused reports a run whose guest Supervisor.Pause froze; Status
+	// stays Running. Owner: W1.
+	Paused bool
 }
 
 // Equal makes State comparable for signals.
@@ -104,7 +113,8 @@ func (s State) Equal(o State) bool {
 	return a.Status == b.Status && a.PID == b.PID && a.StartedAt.Equal(b.StartedAt) &&
 		a.ReadyAt.Equal(b.ReadyAt) && a.ExitedAt.Equal(b.ExitedAt) && a.ExitCode == b.ExitCode &&
 		a.Error == b.Error && a.Advice == b.Advice && a.Platform == b.Platform &&
-		a.Restored == b.Restored && a.LogSeq == b.LogSeq && a.Signal == b.Signal
+		a.Restored == b.Restored && a.LogSeq == b.LogSeq && a.Signal == b.Signal &&
+		a.Control == b.Control && a.Paused == b.Paused
 }
 
 // Event is a change the supervisor reports.
@@ -150,9 +160,11 @@ type Supervisor struct {
 
 type proc struct {
 	cmd         *exec.Cmd
+	client      *rungv.Client
 	state       State
 	spec        Spec
 	paths       Paths
+	socketIsTCP bool
 	done        chan struct{}
 	stopping    bool
 	interactive bool
@@ -258,33 +270,135 @@ func (s *Supervisor) SnapshotRoot(id string) string {
 // maxSocketPath keeps a socket path inside sockaddr_un on every host.
 const maxSocketPath = 100
 
-// pathsFor allocates the control socket and a fresh bundle directory.
-func (s *Supervisor) pathsFor(spec Spec) (Paths, error) {
-	if !spec.Checkpoint {
+// sockName returns the file stem for a sandbox's control socket: the ID
+// directly when short (such as user 8-hex IDs), or the first 16 hex digits of
+// sha256(id) for longer IDs (such as 64-hex engine container IDs).
+func sockName(id string) string {
+	if len(id) > 0 && len(id) <= 16 && !strings.ContainsAny(id, `/\:`) {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:8])
+}
+
+func joinForOS(goos string, elem ...string) string {
+	if goos == "windows" {
+		parts := make([]string, 0, len(elem))
+		for _, e := range elem {
+			if e == "" {
+				continue
+			}
+			e = strings.TrimRight(e, `\/`)
+			if len(parts) > 0 {
+				e = strings.TrimLeft(e, `\/`)
+			}
+			if e != "" {
+				parts = append(parts, e)
+			}
+		}
+		return strings.Join(parts, `\`)
+	}
+	return filepath.Join(elem...)
+}
+
+type pathsEnv struct {
+	goos           string
+	dataDir        string
+	euid           int
+	tempDir        string
+	mkdir          func(dir string) error
+	ensurePrivate  func(dir string) error
+	removeExisting func(sock, token string)
+}
+
+func computePaths(env pathsEnv, spec Spec, feat rungv.Features, snapshotDir string) (Paths, error) {
+	if !feat.Control && !spec.Checkpoint {
 		return Paths{}, nil
 	}
-	runDir := filepath.Join(s.DataDir, "run")
-	if err := os.MkdirAll(runDir, 0o700); err != nil {
-		return Paths{}, err
-	}
-	dir := filepath.Join(s.SnapshotRoot(spec.ID), time.Now().Format("20060102-150405"))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Paths{}, err
-	}
-	sock := filepath.Join(runDir, spec.ID+".sock")
-	if len(sock) > maxSocketPath {
-		// A Unix socket path has a small limit (104 bytes on macOS).
-		short := filepath.Join(os.TempDir(), "gvxd")
-		if err := os.MkdirAll(short, 0o700); err != nil {
-			return Paths{}, err
+	var ckptDir string
+	if spec.Checkpoint {
+		ckptDir = snapshotDir
+		if env.mkdir != nil {
+			if err := env.mkdir(ckptDir); err != nil {
+				return Paths{}, err
+			}
 		}
-		sock = filepath.Join(short, spec.ID+".sock")
 	}
-	if runtime.GOOS == "windows" {
-		sock = "127.0.0.1:0"
+	if !feat.Control && env.goos == "windows" {
+		// v0.19 checkpoint on Windows uses loopback TCP.
+		return Paths{ControlSocket: "127.0.0.1:0", CheckpointDir: ckptDir}, nil
 	}
-	_ = os.Remove(sock)
-	return Paths{ControlSocket: sock, CheckpointDir: dir}, nil
+
+	name := sockName(spec.ID)
+	var sock string
+	if env.dataDir != "" {
+		runDir := joinForOS(env.goos, env.dataDir, "run")
+		cand := joinForOS(env.goos, runDir, name+".sock")
+		if len(cand) <= maxSocketPath {
+			if env.mkdir != nil {
+				if err := env.mkdir(runDir); err != nil {
+					return Paths{}, err
+				}
+			}
+			sock = cand
+		}
+	}
+	if sock == "" {
+		var short string
+		if env.goos == "windows" {
+			short = joinForOS(env.goos, env.tempDir, "gvxd")
+			if env.mkdir != nil {
+				if err := env.mkdir(short); err != nil {
+					return Paths{}, err
+				}
+			}
+		} else {
+			short = fmt.Sprintf("/tmp/gvxd-%d", env.euid)
+			if env.ensurePrivate != nil {
+				if err := env.ensurePrivate(short); err != nil {
+					return Paths{}, err
+				}
+			}
+		}
+		sock = joinForOS(env.goos, short, name+".sock")
+	}
+
+	var tokenFile string
+	if feat.Control && env.goos == "windows" {
+		tokenFile = sock + ".token"
+	}
+	if env.removeExisting != nil {
+		env.removeExisting(sock, tokenFile)
+	}
+	return Paths{
+		ControlSocket: sock,
+		TokenFile:     tokenFile,
+		Control:       feat.Control,
+		CheckpointDir: ckptDir,
+	}, nil
+}
+
+// pathsFor allocates the control socket, optional token file, and (for
+// Checkpoint specs) a fresh bundle directory.
+func (s *Supervisor) pathsFor(spec Spec, feat rungv.Features) (Paths, error) {
+	snapDir := ""
+	if spec.Checkpoint {
+		snapDir = filepath.Join(s.SnapshotRoot(spec.ID), time.Now().Format("20060102-150405"))
+	}
+	return computePaths(pathsEnv{
+		goos:    runtime.GOOS,
+		dataDir: s.DataDir,
+		euid:    currentEUID(),
+		tempDir: os.TempDir(),
+		mkdir: func(dir string) error {
+			return os.MkdirAll(dir, 0o700)
+		},
+		ensurePrivate: ensurePrivateSocketDir,
+		removeExisting: func(sock, token string) {
+			removeSocketFile(sock)
+			removeTokenFile(token)
+		},
+	}, spec, feat, snapDir)
 }
 
 // Start runs the spec. It fails when the sandbox already runs.
@@ -324,7 +438,8 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 			return err
 		}
 	}
-	paths, err := s.pathsFor(spec)
+	feat := client.Features(context.Background())
+	paths, err := s.pathsFor(spec, feat)
 	if err != nil {
 		return err
 	}
@@ -404,7 +519,7 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 		what = "Restoring " + filepath.Base(restoreDir)
 	}
 	logs.Add(System, fmt.Sprintf("── %s %s · %s", what, spec.Name, time.Now().Format("2006-01-02 15:04:05")))
-	logs.Add(System, "$ rungv "+rungv.FormatArgs(args))
+	logs.Add(System, "$ rungv "+rungv.FormatArgs(redactArgs(args)))
 
 	if err := cmd.Start(); err != nil {
 		closeOnFail()
@@ -415,13 +530,21 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 
 	p := &proc{
 		cmd:         cmd,
+		client:      client,
 		spec:        spec.Clone(),
 		paths:       paths,
+		socketIsTCP: paths.ControlSocket == "127.0.0.1:0",
 		done:        make(chan struct{}),
 		interactive: spec.Interactive,
 		stdinW:      stdinW,
 		term:        ptyTerm,
-		state:       State{Status: Starting, PID: cmd.Process.Pid, StartedAt: time.Now(), Restored: restoreDir},
+		state: State{
+			Status:    Starting,
+			PID:       cmd.Process.Pid,
+			StartedAt: time.Now(),
+			Restored:  restoreDir,
+			Control:   paths.Control,
+		},
 	}
 	if spec.ReadyPattern == "" {
 		p.state.Status = Running
@@ -495,6 +618,7 @@ func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sy
 			ev.Kind = EventReady
 		}
 		s.mu.Unlock()
+		ev.State = s.State(id)
 		s.notify(ev)
 	}
 	emitOutput := func(data []byte) {
@@ -544,6 +668,7 @@ func (s *Supervisor) exited(id string, p *proc, err error) {
 	p.state.Signal = waitSignal(p.cmd.ProcessState)
 	p.state.ExitedAt = time.Now()
 	p.state.PID = 0
+	p.state.Paused = false
 	switch {
 	case p.stopping:
 		p.state.Status = Stopped
@@ -565,8 +690,11 @@ func (s *Supervisor) exited(id string, p *proc, err error) {
 		p.state.Error = msg
 		p.state.Advice = rungv.Diagnose(strings.Join(tail, "\n"), code)
 	}
-	if p.paths.ControlSocket != "" && !strings.Contains(p.paths.ControlSocket, ":") {
-		_ = os.Remove(p.paths.ControlSocket)
+	if p.paths.ControlSocket != "" && !p.socketIsTCP {
+		removeSocketFile(p.paths.ControlSocket)
+	}
+	if p.paths.TokenFile != "" {
+		removeTokenFile(p.paths.TokenFile)
 	}
 	// rungv opens the bundle files before the lockdown; drop the bundle
 	// directory of a run that never wrote a snapshot into it.
@@ -602,7 +730,7 @@ func (s *Supervisor) Stop(id string, timeout time.Duration) error {
 	proc := p.cmd.Process
 	done := p.done
 	s.mu.Unlock()
-	s.notify(Event{ID: id, Kind: EventChanged})
+	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
 	s.Logs(id).Add(System, "── Stopping…")
 
 	if runtime.GOOS == "windows" {
@@ -655,9 +783,13 @@ func (s *Supervisor) Checkpoint(ctx context.Context, id string, leaveRunning boo
 		s.mu.Unlock()
 		return "", errors.New("the sandbox is not running")
 	}
-	if p.paths.ControlSocket == "" {
+	if p.paths.ControlSocket == "" || p.paths.CheckpointDir == "" {
 		s.mu.Unlock()
 		return "", ErrNoCheckpoint
+	}
+	if p.state.Paused {
+		s.mu.Unlock()
+		return "", errors.New("Resume the sandbox first")
 	}
 	paths := p.paths
 	if !leaveRunning {
@@ -665,7 +797,8 @@ func (s *Supervisor) Checkpoint(ctx context.Context, id string, leaveRunning boo
 	}
 	s.mu.Unlock()
 	s.Logs(id).Add(System, "── Writing snapshot to "+paths.CheckpointDir)
-	err := s.Client().Checkpoint(ctx, paths.ControlSocket, paths.CheckpointDir, leaveRunning)
+	target := rungv.Target{Socket: paths.ControlSocket, TokenFile: paths.TokenFile}
+	err := s.Client().CheckpointTarget(ctx, target, paths.CheckpointDir, leaveRunning)
 	if err != nil {
 		s.mu.Lock()
 		p.stopping = false
@@ -674,8 +807,43 @@ func (s *Supervisor) Checkpoint(ctx context.Context, id string, leaveRunning boo
 		return "", err
 	}
 	s.Logs(id).Add(System, "── Snapshot written")
-	s.notify(Event{ID: id, Kind: EventChanged})
+	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
 	return paths.CheckpointDir, nil
+}
+
+// redactArgs returns a copy of args with sensitive values (GVX_NET=... and
+// --token/-token values) replaced before logging a command line.
+func redactArgs(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i := 0; i < len(out); i++ {
+		a := out[i]
+		switch {
+		case a == "--token" || a == "-token":
+			if i+1 < len(out) {
+				out[i+1] = "<redacted>"
+				i++
+			}
+		case strings.HasPrefix(a, "--token="):
+			out[i] = "--token=<redacted>"
+		case strings.HasPrefix(a, "-token="):
+			out[i] = "-token=<redacted>"
+		case a == "-e" || a == "--env" || a == "-env":
+			if i+1 < len(out) && strings.HasPrefix(out[i+1], "GVX_NET=") && len(out[i+1]) > len("GVX_NET=") {
+				out[i+1] = "GVX_NET=<redacted>"
+				i++
+			}
+		case strings.HasPrefix(a, "-e=GVX_NET=") && len(a) > len("-e=GVX_NET="):
+			out[i] = "-e=GVX_NET=<redacted>"
+		case strings.HasPrefix(a, "--env=GVX_NET=") && len(a) > len("--env=GVX_NET="):
+			out[i] = "--env=GVX_NET=<redacted>"
+		case strings.HasPrefix(a, "-env=GVX_NET=") && len(a) > len("-env=GVX_NET="):
+			out[i] = "-env=GVX_NET=<redacted>"
+		case strings.HasPrefix(a, "GVX_NET=") && len(a) > len("GVX_NET="):
+			out[i] = "GVX_NET=<redacted>"
+		}
+	}
+	return out
 }
 
 // Snapshot is a checkpoint bundle on disk.

@@ -455,20 +455,41 @@ func sandboxEngineSettings(m *Model) ggui.Widget {
 	builderStatus := ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func() ggui.Widget {
 		return sandboxBuilderStatus(m)
 	})
-	notes := widget.Box(widget.Column(
-		widget.Row(
-			widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
-			widget.Expanded(ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.")).Size(12)),
-		).Gap(8).Align(widget.AlignStart),
-		widget.Row(
-			widget.Padding(glyph(lucide.CircleMinus, 13).Color(colorGray), 2, 0, 0, 0),
-			widget.Expanded(ui.Caption(tr("Not yet supported: exec, cp, and Windows terminals.")).Size(12)),
-		).Gap(8).Align(widget.AlignStart),
-		widget.Row(
+	notes := ggui.View(m.RungvFeatures, func(f rungv.Features) ggui.Widget {
+		var rows []ggui.Widget
+		if f.Control {
+			rows = append(rows,
+				widget.Row(
+					widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
+					widget.Expanded(ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), exec, cp, pause, top, update, stats, build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.")).Size(12)),
+				).Gap(8).Align(widget.AlignStart),
+				widget.Row(
+					widget.Padding(glyph(lucide.CircleMinus, 13).Color(colorGray), 2, 0, 0, 0),
+					widget.Expanded(ui.Caption(tr("Not yet supported: commit, export, diff, and Windows terminals.")).Size(12)),
+				).Gap(8).Align(widget.AlignStart),
+			)
+		} else {
+			rows = append(rows,
+				widget.Row(
+					widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
+					widget.Expanded(ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.")).Size(12)),
+				).Gap(8).Align(widget.AlignStart),
+				widget.Row(
+					widget.Padding(glyph(lucide.CircleMinus, 13).Color(colorGray), 2, 0, 0, 0),
+					widget.Expanded(ui.Caption(tr("Not yet supported: exec, cp, and Windows terminals.")).Size(12)),
+				).Gap(8).Align(widget.AlignStart),
+				widget.Row(
+					widget.Padding(glyph(lucide.Info, 13).Color(colorAmber), 2, 0, 0, 0),
+					widget.Expanded(ui.Caption(tr("Update rungv to v0.20 or later for exec, cp, pause, top and update.")).Size(12)),
+				).Gap(8).Align(widget.AlignStart),
+			)
+		}
+		rows = append(rows, widget.Row(
 			widget.Padding(glyph(lucide.Info, 13).Color(colorBlue), 2, 0, 0, 0),
 			widget.Expanded(ui.Caption(tr("Turning this on routes docker build through buildx (docker buildx install) and selects the gvx-desktop builder for the gvx context and engine endpoint; turning it off puts both back.")).Size(12)),
-		).Gap(8).Align(widget.AlignStart),
-	).Gap(6).Stretch()).Pad(10, 12).Radius(8).Fill(colorSurfaceInset).Border(1, colorBorder)
+		).Gap(8).Align(widget.AlignStart))
+		return widget.Box(widget.Column(rows...).Gap(6).Stretch()).Pad(10, 12).Radius(8).Fill(colorSurfaceInset).Border(1, colorBorder)
+	})
 	return widget.Column(
 		widget.Row(
 			glyph(lucide.FlaskConical, 14).Color(colorAmber),

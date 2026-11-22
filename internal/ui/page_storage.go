@@ -169,7 +169,9 @@ func dockerImagesGate() gateWords {
 			tr("Set it up to build and pull images with the docker CLI. They show here while it runs.")},
 		starting: [2]string{tr("The Docker Engine is starting"), tr("Its images show here once dockerd is ready.")},
 		stopped:  [2]string{tr("The Docker Engine is not running"), tr("Start it to see and manage its images here.")},
+		paused:   [2]string{tr("The Docker Engine is paused"), tr("Resume it to see and manage its images here.")},
 		start:    tr("Start Docker Engine"),
+		resume:   tr("Resume Docker Engine"),
 	}
 }
 

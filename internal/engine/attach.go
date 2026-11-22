@@ -261,30 +261,14 @@ func (e *Engine) containerAttach(w http.ResponseWriter, r *http.Request) {
 	}
 	defer unsub()
 
-	rc := http.NewResponseController(w)
-	conn, rw, err := rc.Hijack()
+	conn, rw, _, err := hijackStream(w, r, c.Config.Tty)
 	if err != nil {
-		writeError(w, r, fmt.Errorf("hijack failed: %w", err))
+		writeError(w, r, err)
 		return
 	}
 	defer conn.Close()
 
 	tty := c.Config.Tty
-	multiplex := !tty
-	ct := streamContentTypeRaw
-	if multiplex && versionAtLeast(requestVersion(r), "1.42") {
-		ct = streamContentTypeMux
-	}
-	upgraded := strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "tcp")
-	var head string
-	if upgraded {
-		head = "HTTP/1.1 101 UPGRADED\r\nContent-Type: " + ct + "\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n"
-	} else {
-		head = "HTTP/1.1 200 OK\r\nContent-Type: " + ct + "\r\n\r\n"
-	}
-	if _, err := conn.Write([]byte(head)); err != nil {
-		return
-	}
 
 	writeOut := func(ent logsEntry) error {
 		if tty {
@@ -497,6 +481,34 @@ func attachCloseWriteConn(c net.Conn) {
 		return
 	}
 	_ = c.Close()
+}
+
+// hijackStream hijacks w and writes the Docker stream response header
+// (101 UPGRADED with Upgrade: tcp, else 200 OK) with the raw or multiplexed
+// content type. Shared by containerAttach and execStart.
+func hijackStream(w http.ResponseWriter, r *http.Request, tty bool) (net.Conn, *bufio.ReadWriter, bool, error) {
+	rc := http.NewResponseController(w)
+	conn, rw, err := rc.Hijack()
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("hijack failed: %w", err)
+	}
+	multiplex := !tty
+	ct := streamContentTypeRaw
+	if multiplex && versionAtLeast(requestVersion(r), "1.42") {
+		ct = streamContentTypeMux
+	}
+	upgraded := strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "tcp")
+	var head string
+	if upgraded {
+		head = "HTTP/1.1 101 UPGRADED\r\nContent-Type: " + ct + "\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n"
+	} else {
+		head = "HTTP/1.1 200 OK\r\nContent-Type: " + ct + "\r\n\r\n"
+	}
+	if _, err := conn.Write([]byte(head)); err != nil {
+		_ = conn.Close()
+		return nil, nil, false, err
+	}
+	return conn, rw, multiplex, nil
 }
 
 // attachParseDetachKeys parses a comma-separated Docker detach key sequence

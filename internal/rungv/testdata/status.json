@@ -1,0 +1,30 @@
+{
+    "id": "gvxd-test-1",
+    "state": "running",
+    "platform": "hvf",
+    "lockdown_applied": true,
+    "resources": {
+        "memory_bytes": 536870912,
+        "cpu_millis": 1500,
+        "cpu_quota_usec": 150000,
+        "cpu_period_usec": 100000,
+        "guest_cpus": 8,
+        "pids_limit": 64,
+        "isolate_lan": true
+    },
+    "memory_used_bytes": 188416,
+    "ports": [
+        {
+            "proto": "tcp",
+            "host_ip": "127.0.0.1",
+            "host_port": 18090,
+            "guest_ip": "10.0.2.15",
+            "guest_port": 80,
+            "source": "static"
+        }
+    ],
+    "active_exec_sessions": 1,
+    "pid_count": 3,
+    "capabilities": ["exec", "exec.tty", "lifecycle.pause", "sandbox.stats"],
+    "started_at": "2026-11-22T17:25:00Z"
+}

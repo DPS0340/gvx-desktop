@@ -182,6 +182,11 @@ func TestBuilderLazyStartConcurrentIdleAndClose(t *testing.T) {
 	if st := e.BuilderState(); st.Status != BuilderIdle {
 		t.Fatalf("builder did not stop after idle timeout: %+v", st)
 	}
+	// The builder reports idle as it asks its sandbox to stop; the stop
+	// itself lands a moment later.
+	for fake.State(builderSandboxID).Status.Active() && time.Now().Before(deadline.Add(2*time.Second)) {
+		time.Sleep(20 * time.Millisecond)
+	}
 	if st := fake.State(builderSandboxID); st.Status.Active() {
 		t.Fatalf("fake builder process still active after idle timeout: %+v", st)
 	}

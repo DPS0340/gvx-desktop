@@ -7,11 +7,13 @@
 package guestcfg
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -21,6 +23,10 @@ const EnvVar = "GVX_NET"
 
 // Path is where the engine mounts netinit in the container.
 const Path = "/.gvx-netinit"
+
+// ApplyArg is argv[1] for netinit's live reconcile mode (docker network
+// connect/disconnect on a running container via rungv exec).
+const ApplyArg = "--gvx-apply"
 
 // LinkName is the name of the link netinit makes.
 const LinkName = "gvx0"
@@ -230,4 +236,105 @@ func ParseExtraHost(s, gateway string) (string, error) {
 		return "", fmt.Errorf("invalid IP address in extra host %q", s)
 	}
 	return a.String() + "\t" + name, nil
+}
+
+// DiffPrefixes returns the addresses to add to and delete from a link so
+// its addresses match want. Both slices are deduplicated and sorted.
+func DiffPrefixes(current, want []netip.Prefix) (add, del []netip.Prefix) {
+	curSet := make(map[netip.Prefix]bool, len(current))
+	for _, p := range current {
+		if p.IsValid() {
+			curSet[p] = true
+		}
+	}
+	wantSet := make(map[netip.Prefix]bool, len(want))
+	for _, p := range want {
+		if p.IsValid() {
+			wantSet[p] = true
+		}
+	}
+	for p := range wantSet {
+		if !curSet[p] {
+			add = append(add, p)
+		}
+	}
+	for p := range curSet {
+		if !wantSet[p] {
+			del = append(del, p)
+		}
+	}
+	cmpPrefix := func(a, b netip.Prefix) int {
+		if c := a.Addr().Compare(b.Addr()); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Bits(), b.Bits())
+	}
+	slices.SortFunc(add, cmpPrefix)
+	slices.SortFunc(del, cmpPrefix)
+	return add, del
+}
+
+// UncoveredRoutes returns the masked routes from routes that are not
+// already implied by any interface address in addrs.
+func UncoveredRoutes(addrs, routes []netip.Prefix) []netip.Prefix {
+	covered := make(map[netip.Prefix]bool, len(addrs))
+	for _, a := range addrs {
+		if a.IsValid() {
+			covered[a.Masked()] = true
+		}
+	}
+	seen := map[netip.Prefix]bool{}
+	var out []netip.Prefix
+	for _, r := range routes {
+		if !r.IsValid() {
+			continue
+		}
+		m := r.Masked()
+		if covered[m] || seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	slices.SortFunc(out, func(a, b netip.Prefix) int {
+		if c := a.Addr().Compare(b.Addr()); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Bits(), b.Bits())
+	})
+	return out
+}
+
+// AllowedIPs returns the sorted, deduplicated set of masked prefixes the
+// WireGuard hub peer should allow for addrs and routes.
+func AllowedIPs(addrs, routes []netip.Prefix) []netip.Prefix {
+	seen := make(map[netip.Prefix]bool, len(addrs)+len(routes))
+	var out []netip.Prefix
+	for _, p := range addrs {
+		if !p.IsValid() {
+			continue
+		}
+		m := p.Masked()
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	for _, p := range routes {
+		if !p.IsValid() {
+			continue
+		}
+		m := p.Masked()
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	slices.SortFunc(out, func(a, b netip.Prefix) int {
+		if c := a.Addr().Compare(b.Addr()); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Bits(), b.Bits())
+	})
+	return out
 }

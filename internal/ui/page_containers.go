@@ -116,7 +116,9 @@ func dockerGate() gateWords {
 			tr("Set it up to run containers with the docker CLI on this machine. They show here while it runs.")},
 		starting: [2]string{tr("The Docker Engine is starting"), tr("Its containers show here once dockerd is ready.")},
 		stopped:  [2]string{tr("The Docker Engine is not running"), tr("Start it to see and manage its containers here.")},
+		paused:   [2]string{tr("The Docker Engine is paused"), tr("Resume it to see and manage its containers here.")},
 		start:    tr("Start Docker Engine"),
+		resume:   tr("Resume Docker Engine"),
 	}
 }
 
@@ -290,10 +292,9 @@ func projectQuickAction(m *Model, row containerRow) ggui.Widget {
 // projectMenu is what can be done to a project's containers together.
 func projectMenu(m *Model, row containerRow) ggui.Widget {
 	p, members := row.Project, row.Members
-	running, total := projectCounts(members)
 	return moreMenu(tr("More actions for %s", p),
-		ui.MenuItem(tr("Start all"), func() { m.ProjectAction("start", p, members) }).Disabled(running == total),
-		ui.MenuItem(tr("Stop all"), func() { m.ProjectAction("stop", p, members) }).Disabled(running == 0),
+		ui.MenuItem(tr("Start all"), func() { m.ProjectAction("start", p, members) }).Disabled(len(projectTargets("start", members)) == 0),
+		ui.MenuItem(tr("Stop all"), func() { m.ProjectAction("stop", p, members) }).Disabled(len(projectTargets("stop", members)) == 0),
 		ui.MenuItem(tr("Restart all"), func() { m.ProjectAction("restart", p, members) }),
 		ui.MenuItem(tr("Copy project name"), func() { m.Copy(p, p) }),
 		ui.MenuDivider(),
@@ -370,8 +371,29 @@ func containerPortsSummary(c dockerapi.Container) string {
 	return strings.Join(parts, ", ")
 }
 
-// containerQuickAction starts a stopped container and stops a running one.
+// containerPauseAction returns "pause", "unpause", or "" for container c.
+func containerPauseAction(c dockerapi.Container, sandboxEngine, canControl bool) string {
+	if sandboxEngine && !canControl {
+		return ""
+	}
+	switch c.State {
+	case "running":
+		return "pause"
+	case "paused":
+		return "unpause"
+	}
+	return ""
+}
+
+// containerQuickAction starts a stopped container, resumes a paused one, and
+// stops a running one.
 func containerQuickAction(m *Model, c dockerapi.Container) ggui.Widget {
+	if c.State == "paused" {
+		if !ggui.Peek(m.Settings).SandboxEngine || m.canControlContainer(c.ID) {
+			return tip(iconButton(lucide.Play, tr("Resume"), func() { m.DockerAction("unpause", c) }), tr("Resume"))
+		}
+		return tip(iconButton(lucide.Square, tr("Stop %s", c.Name()), func() { m.DockerAction("stop", c) }), tr("Stop"))
+	}
 	if c.State == "running" || c.State == "restarting" {
 		return tip(iconButton(lucide.Square, tr("Stop %s", c.Name()), func() { m.DockerAction("stop", c) }), tr("Stop"))
 	}
@@ -381,8 +403,15 @@ func containerQuickAction(m *Model, c dockerapi.Container) ggui.Widget {
 // containerMenu is the rest of what can be done to a container.
 func containerMenu(m *Model, c dockerapi.Container) ggui.Widget {
 	name := c.Name()
+	se := ggui.Peek(m.Settings).SandboxEngine
 	entries := []ggui.Widget{
 		ui.MenuItem(tr("Logs"), func() { m.ShowContainerLogs(c.ID) }),
+	}
+	switch containerPauseAction(c, se, m.canControlContainer(c.ID)) {
+	case "pause":
+		entries = append(entries, ui.MenuItem(tr("Pause"), func() { m.DockerAction("pause", c) }))
+	case "unpause":
+		entries = append(entries, ui.MenuItem(tr("Resume"), func() { m.DockerAction("unpause", c) }))
 	}
 	if c.State == "running" {
 		entries = append(entries, ui.MenuItem(tr("Restart"), func() { m.DockerAction("restart", c) }))
@@ -391,7 +420,7 @@ func containerMenu(m *Model, c dockerapi.Container) ggui.Widget {
 		ui.MenuItem(tr("Copy ID"), func() { m.Copy(c.ID, c.ShortID()) }),
 		ui.MenuItem(tr("Copy docker logs command"), func() { m.Copy("docker logs -f "+name, "docker logs") }),
 	)
-	if !ggui.Peek(m.Settings).SandboxEngine {
+	if !se || m.peekEngineFeatures().Control {
 		entries = append(entries, ui.MenuItem(tr("Copy docker exec command"), func() { m.Copy("docker exec -it "+name+" sh", "docker exec") }))
 	}
 	entries = append(entries,
@@ -419,13 +448,20 @@ func containerDetail(m *Model) ggui.Widget {
 }
 
 func containerHeader(m *Model, c dockerapi.Container) ggui.Widget {
+	se := ggui.Peek(m.Settings).SandboxEngine
 	var actions []ggui.Widget
-	if c.State == "running" || c.State == "restarting" {
+	switch {
+	case c.State == "paused":
+		if !se || m.canControlContainer(c.ID) {
+			actions = append(actions, ui.Button(tr("Resume"), func() { m.DockerAction("unpause", c) }).Icon(glyph(lucide.Play, 14)))
+		}
+		actions = append(actions, ui.Button(tr("Stop"), func() { m.DockerAction("stop", c) }).Outline().Icon(glyph(lucide.Square, 14)))
+	case c.State == "running" || c.State == "restarting":
 		actions = append(actions,
 			ui.Button(tr("Stop"), func() { m.DockerAction("stop", c) }).Outline().Icon(glyph(lucide.Square, 14)),
 			ui.Button(tr("Restart"), func() { m.DockerAction("restart", c) }).Outline().Icon(glyph(lucide.RotateCcw, 14)),
 		)
-	} else {
+	default:
 		actions = append(actions, ui.Button(tr("Start"), func() { m.DockerAction("start", c) }).Icon(glyph(lucide.Play, 14)))
 	}
 	actions = append(actions, containerMenu(m, c))
@@ -456,19 +492,14 @@ func containerLogsView(m *Model) ggui.Widget {
 }
 
 // containerTerminal is a shell in the chosen container, as docker exec -it
-// runs one. In sandbox-engine mode exec is not supported.
+// runs one.
 func containerTerminal(m *Model) ggui.Widget {
-	return ggui.View(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func(se bool) ggui.Widget {
-		if se {
-			return terminalEmpty(
-				tr("Not supported in the experimental sandbox engine"),
-				tr("Container exec is not supported in the experimental sandbox engine yet. Use docker run -it for an interactive shell."),
-			)
-		}
-		name := ggui.Peek(m.Container).Name()
-		return terminalTab(m, m.containerShell(), tr("A shell in the container, as docker exec -it runs one."),
-			tip(iconButton(lucide.Copy, tr("Copy docker exec command"), func() { m.Copy("docker exec -it "+name+" sh", "docker exec") }), tr("Copy")))
-	})
+	return terminalTab(m, m.containerShell(), tr("A shell in the container, as docker exec -it runs one."),
+		tip(iconButton(lucide.Copy, tr("Copy docker exec command"), func() {
+			if name := ggui.Peek(m.Container).Name(); name != "" {
+				m.Copy("docker exec -it "+name+" sh", "docker exec")
+			}
+		}), tr("Copy")))
 }
 
 // engineSpecOf follows the spec of the Docker Engine's sandbox.
@@ -586,7 +617,7 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 		sectionTitle(tr("Commands"), tr("For a terminal where docker uses the gvx context.")),
 		copyable(m, "docker logs -f "+name, "docker logs"),
 	)
-	if !se {
+	if !se || m.peekEngineFeatures().Control {
 		parts = append(parts, copyable(m, "docker exec -it "+name+" sh", "docker exec"))
 	}
 	parts = append(parts, copyable(m, "docker inspect "+name, "docker inspect"))

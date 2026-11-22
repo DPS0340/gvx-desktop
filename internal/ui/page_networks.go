@@ -79,6 +79,7 @@ func networksGate() gateWords {
 	g.notSetUp[1] = tr("Set it up to run containers with the docker CLI on this machine. Their networks show here while it runs.")
 	g.starting[1] = tr("Its networks show here once dockerd is ready.")
 	g.stopped[1] = tr("Start it to see its networks here.")
+	g.paused[1] = tr("Resume it to see its networks here.")
 	return g
 }
 

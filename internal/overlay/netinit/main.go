@@ -33,6 +33,23 @@ func main() {
 	raw := os.Getenv(guestcfg.EnvVar)
 	os.Unsetenv(guestcfg.EnvVar)
 
+	if os.Args[1] == guestcfg.ApplyArg {
+		if raw == "" {
+			fmt.Fprintf(os.Stderr, "netinit: %s is not set\n", guestcfg.EnvVar)
+			os.Exit(1)
+		}
+		cfg, err := guestcfg.Decode(raw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "netinit: %v\n", err)
+			os.Exit(1)
+		}
+		if err := applyLink(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "netinit: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	var (
 		user     string
 		keepHome bool

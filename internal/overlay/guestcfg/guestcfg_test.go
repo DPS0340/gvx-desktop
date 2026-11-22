@@ -2,6 +2,7 @@ package guestcfg
 
 import (
 	"bytes"
+	"net/netip"
 	"slices"
 	"testing"
 )
@@ -102,5 +103,39 @@ func TestDecodeWithoutLink(t *testing.T) {
 	c, err := Decode(s)
 	if err != nil || c.HasLink() || len(c.Hosts) != 1 {
 		t.Fatalf("Decode = %+v, %v", c, err)
+	}
+}
+
+func TestReconcileHelpers(t *testing.T) {
+	p := netip.MustParsePrefix
+	cur := []netip.Prefix{p("10.89.1.2/24"), p("10.89.2.2/24")}
+	want := []netip.Prefix{p("10.89.2.2/24"), p("10.89.3.5/24"), p("172.30.0.5/16")}
+
+	add, del := DiffPrefixes(cur, want)
+	if !slices.Equal(add, []netip.Prefix{p("10.89.3.5/24"), p("172.30.0.5/16")}) {
+		t.Errorf("add = %v", add)
+	}
+	if !slices.Equal(del, []netip.Prefix{p("10.89.1.2/24")}) {
+		t.Errorf("del = %v", del)
+	}
+
+	// Disconnecting all networks removes every current address.
+	add, del = DiffPrefixes(cur, nil)
+	if len(add) != 0 || !slices.Equal(del, []netip.Prefix{p("10.89.1.2/24"), p("10.89.2.2/24")}) {
+		t.Errorf("disconnect all: add=%v del=%v", add, del)
+	}
+
+	// UncoveredRoutes excludes subnets already covered by interface addresses.
+	routes := []netip.Prefix{p("10.89.0.0/16"), p("172.30.0.0/16"), p("10.90.0.0/16")}
+	uncovered := UncoveredRoutes(want, routes)
+	if !slices.Equal(uncovered, []netip.Prefix{p("10.89.0.0/16"), p("10.90.0.0/16")}) {
+		t.Errorf("uncovered = %v", uncovered)
+	}
+
+	// AllowedIPs combines masked addrs and routes without duplicates.
+	allowed := AllowedIPs([]netip.Prefix{p("10.89.2.2/24"), p("172.30.0.5/16")}, routes)
+	wantAllowed := []netip.Prefix{p("10.89.0.0/16"), p("10.89.2.0/24"), p("10.90.0.0/16"), p("172.30.0.0/16")}
+	if !slices.Equal(allowed, wantAllowed) {
+		t.Errorf("allowed = %v, want %v", allowed, wantAllowed)
 	}
 }

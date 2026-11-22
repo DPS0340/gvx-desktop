@@ -504,7 +504,16 @@ func (c *Client) PruneVolumes(ctx context.Context) (string, error) {
 
 // Checkpoint asks the sandbox listening on socket to write its bundle.
 func (c *Client) Checkpoint(ctx context.Context, socket, dir string, leaveRunning bool) error {
-	args := []string{"checkpoint", "-control-socket", socket}
+	return c.CheckpointTarget(ctx, Target{Socket: socket}, dir, leaveRunning)
+}
+
+// CheckpointTarget asks the sandbox at t to write its bundle, passing
+// --token-file when t carries one.
+func (c *Client) CheckpointTarget(ctx context.Context, t Target, dir string, leaveRunning bool) error {
+	args := []string{"checkpoint", "-control-socket", t.Socket}
+	if t.TokenFile != "" {
+		args = append(args, "--token-file", t.TokenFile)
+	}
 	if dir != "" {
 		args = append(args, "-checkpoint-dir", dir)
 	}

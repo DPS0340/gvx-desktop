@@ -20,13 +20,14 @@ import (
 // the details of the chosen row and its logs beneath.
 
 // The stages of a recipe's engine, as ContainersAccess and PodsAccess
-// count them: it runs, it is not set up, its sandbox is starting, or it is
-// stopped, stopping, exited or failed.
+// count them: it runs, it is not set up, its sandbox is starting, it is
+// stopped/stopping/exited/failed, or it is paused.
 const (
 	engineOpen = iota
 	engineNotSetUp
 	engineStarting
 	engineStopped
+	enginePaused
 )
 
 // engineStage reads from the sandboxes how far the recipe's engine is from
@@ -36,10 +37,12 @@ func engineStage(rows []Row, recipe string) int {
 		if r.Spec.Recipe != recipe {
 			continue
 		}
-		switch r.State.Status {
-		case sandbox.Running:
+		switch {
+		case r.State.Status == sandbox.Running && r.State.Paused:
+			return enginePaused
+		case r.State.Status == sandbox.Running:
 			return engineOpen
-		case sandbox.Starting:
+		case r.State.Status == sandbox.Starting:
 			return engineStarting
 		}
 		return engineStopped
@@ -48,17 +51,18 @@ func engineStage(rows []Row, recipe string) int {
 }
 
 // engineGate is what a page says of an engine that is not running: how
-// far it is from running, and whether it is stopping.
+// far it is from running, whether it is stopping, and its sandbox ID.
 type engineGate struct {
 	stage    int
 	stopping bool
+	id       string
 }
 
 // gateOf follows a recipe's engine for a page that stands aside while it
 // does not run.
 func gateOf(m *Model, recipe string, stage ggui.Readable[int]) ggui.Readable[engineGate] {
 	return ggui.Combine(stage, recipeRow(m, recipe), func(s int, r Row) engineGate {
-		return engineGate{s, r.State.Status == sandbox.Stopping}
+		return engineGate{s, r.State.Status == sandbox.Stopping, r.Spec.ID}
 	})
 }
 
@@ -70,11 +74,13 @@ type gateWords struct {
 	notSetUp     [2]string    // the title and text while it is not set up
 	starting     [2]string    // ... while it starts
 	stopped      [2]string    // ... while it is stopped
+	paused       [2]string    // ... while it is paused
 	start        string       // the button that starts it
+	resume       string       // the button that resumes it when paused
 }
 
 // engineNotRunning stands in for a page's table while the engine does not
-// run, with what would start it.
+// run, with what would start or resume it.
 func engineNotRunning(m *Model, g engineGate, w gateWords) ggui.Widget {
 	media := glyph(w.icon, 32).Color(colorGray)
 	start := func(label string) *ui.ButtonWidget {
@@ -88,6 +94,10 @@ func engineNotRunning(m *Model, g engineGate, w gateWords) ggui.Widget {
 	case engineStarting:
 		return ui.Empty(w.starting[0], w.starting[1]).
 			Media(ui.Spinner().Size(28).Color(colorAmber)).Action(open).Outline()
+	case enginePaused:
+		resume := ui.Button(w.resume, func() { m.ResumeSandbox(g.id) }).Icon(glyph(lucide.Play, 16))
+		return ui.Empty(w.paused[0], w.paused[1]).
+			Media(media).Action(widget.Row(resume, open).Gap(8)).Outline()
 	}
 	return ui.Empty(w.stopped[0], w.stopped[1]).
 		Media(media).Action(widget.Row(start(w.start).Disabled(g.stopping), open).Gap(8)).Outline()
@@ -221,7 +231,7 @@ func (m *Model) followLogs(shown, id ggui.Readable[string], load func(), logs *g
 // menus and the sidebar otherwise, and not at all while it is stopped.
 func (m *Model) recipePageInterval(recipe string, pages ...string) time.Duration {
 	row, ok := m.RecipeSandbox(m.Rows.Get(), recipe)
-	if !ok || row.State.Status != sandbox.Running {
+	if !ok || row.State.Status != sandbox.Running || row.State.Paused {
 		return 0
 	}
 	page := m.Page.Get()

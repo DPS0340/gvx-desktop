@@ -15,6 +15,49 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
+// editorAction describes the editor sheet's caption and primary action for a
+// draft against the sandbox's runtime state.
+type editorAction struct {
+	running bool
+	control bool
+	live    bool
+	hasDiff bool
+}
+
+func editorActionOf(st sandbox.State, active sandbox.Spec, hasActive bool, edited sandbox.Spec) editorAction {
+	if !st.Status.Active() {
+		return editorAction{}
+	}
+	act := editorAction{running: true, control: st.Control}
+	if !st.Control || !hasActive {
+		return act
+	}
+	u, live := sandbox.LiveUpdate(active, edited)
+	act.live = live
+	act.hasDiff = !u.IsZero()
+	return act
+}
+
+func editorCaption(a editorAction) string {
+	if a.running && a.control {
+		return tr("Memory, CPUs and LAN isolation apply to a running sandbox at once. Ports, mounts and the other settings take a restart.")
+	}
+	return tr("Ports and mounts are opened before the guest starts and stay fixed while it runs.")
+}
+
+func editorPrimaryLabel(a editorAction) string {
+	switch {
+	case !a.running:
+		return tr("Save and start")
+	case a.control && a.live && a.hasDiff:
+		return tr("Save and apply")
+	case a.control && a.live:
+		return tr("Save")
+	default:
+		return tr("Save and restart")
+	}
+}
+
 func rgbA(v uint32, a uint8) color.NRGBA {
 	return color.NRGBA{uint8(v >> 16), uint8(v >> 8), uint8(v), a}
 }
@@ -191,24 +234,35 @@ func editorSheet(m *Model) ggui.Widget {
 	).Gap(18).Stretch()
 
 	invalid := ggui.Map(m.DraftError, func(s string) bool { return s != "" })
-	primaryAction := ggui.View(m.DraftRunning, func(running bool) ggui.Widget {
-		if running {
-			return ui.Button(tr("Save and restart"), func() { m.SaveDraft(true) }).BindDisabled(invalid).Icon(glyph(lucide.RotateCcw, 14))
+	saveActions := ggui.View(m.DraftAction, func(a editorAction) ggui.Widget {
+		icon := lucide.Play
+		switch {
+		case a.running && a.control && a.live:
+			icon = lucide.Check
+		case a.running:
+			icon = lucide.RotateCcw
 		}
-		return ui.Button(tr("Save and start"), func() { m.SaveDraft(true) }).BindDisabled(invalid).Icon(glyph(lucide.Play, 14))
+		primary := ui.Button(editorPrimaryLabel(a), func() { m.SaveDraft(true) }).BindDisabled(invalid).Icon(glyph(icon, 14))
+		if a.running && a.control && a.live && !a.hasDiff {
+			return primary
+		}
+		return widget.Row(
+			ui.Button(tr("Save"), func() { m.SaveDraft(false) }).Outline().BindDisabled(invalid),
+			primary,
+		).Gap(8).Align(widget.AlignCenter)
 	})
+	caption := ui.CaptionOf(ggui.Map(m.DraftAction, editorCaption))
 	// The sheet stacks its own footer under the content; the form scrolls
 	// in the room it has and the validation status + actions stay pinned
 	// at the bottom edge.
 	actions := widget.Row(
 		ui.Button(tr("Cancel"), func() { m.EditorOpen.Set(false) }).Ghost(),
 		widget.Spacer(),
-		ui.Button(tr("Save"), func() { m.SaveDraft(false) }).Outline().BindDisabled(invalid),
-		primaryAction,
+		saveActions,
 	).Gap(8).Align(widget.AlignCenter)
 	return ui.Sheet(m.EditorOpen, widget.Column(
 		ui.TitleOf(title).Size(20),
-		ui.Caption(tr("Ports and mounts are opened before the guest starts and stay fixed while it runs.")),
+		caption,
 		widget.Expanded(widget.Scroll(widget.Padding(form, 16, 12, 24, 0)).FadeEdges(12)),
 		errorBanner,
 		ui.Divider(),

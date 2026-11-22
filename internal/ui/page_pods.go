@@ -197,7 +197,9 @@ func kubeGate() gateWords {
 			tr("Set it up to run a single-node k3s cluster on this machine. Its pods show here while it runs.")},
 		starting: [2]string{tr("Kubernetes is starting"), tr("Its pods show here once k3s is up, which takes up to two minutes.")},
 		stopped:  [2]string{tr("Kubernetes is not running"), tr("Start it to see and manage its pods here.")},
+		paused:   [2]string{tr("Kubernetes is paused"), tr("Resume it to see and manage its pods here.")},
 		start:    tr("Start Kubernetes"),
+		resume:   tr("Resume Kubernetes"),
 	}
 }
 

@@ -40,7 +40,58 @@ func openPTY(cmd *exec.Cmd) (t *term, stdout io.Reader, closeSlave func(), err e
 	return &term{ptmx: ptmx}, ptmx, func() { _ = tty.Close() }, nil
 }
 
+// openExecPTY opens a pseudo-terminal for rungv exec -t, configures the slave
+// in raw mode and sets the initial window size before Start so early input is
+// neither echoed nor cooked and rungv reads the requested size at startup.
+func openExecPTY(cmd *exec.Cmd, rows, cols uint16) (t *term, closeSlave func(), err error) {
+	if rows == 0 {
+		rows = 24
+	}
+	if cols == 0 {
+		cols = 80
+	}
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		return nil, nil, err
+	}
+	t = &term{ptmx: ptmx}
+	if err := t.resize(rows, cols); err != nil {
+		_ = tty.Close()
+		_ = ptmx.Close()
+		return nil, nil, err
+	}
+	if err := setRawTermios(tty); err != nil {
+		_ = tty.Close()
+		_ = ptmx.Close()
+		return nil, nil, err
+	}
+	cmd.Stdin = tty
+	cmd.Stdout = tty
+	attr := cmd.SysProcAttr
+	if attr == nil {
+		attr = &syscall.SysProcAttr{}
+		cmd.SysProcAttr = attr
+	}
+	attr.Setsid = true
+	attr.Setctty = true
+	return t, func() { _ = tty.Close() }, nil
+}
+
 func (t *term) writer() io.Writer { return t.ptmx }
+
+func (t *term) reader() io.Reader { return &ptyEOFReader{f: t.ptmx} }
+
+type ptyEOFReader struct {
+	f *os.File
+}
+
+func (r *ptyEOFReader) Read(p []byte) (int, error) {
+	n, err := r.f.Read(p)
+	if err != nil && isPTYEIO(err) {
+		return n, io.EOF
+	}
+	return n, err
+}
 
 func (t *term) closeStdin() error {
 	_, err := t.ptmx.Write([]byte{0x04}) // EOT
@@ -80,4 +131,19 @@ func waitSignal(ps *os.ProcessState) int {
 
 func signalProc(proc *os.Process, sig syscall.Signal) error {
 	return proc.Signal(sig)
+}
+
+// killExecClient terminates the rungv exec client with SIGKILL (killing its
+// process group when hasPGroup is true) so rungv cannot trap the signal and
+// forward SIGINT to the guest command.
+func killExecClient(proc *os.Process, hasPGroup bool) {
+	if proc == nil {
+		return
+	}
+	if hasPGroup && proc.Pid > 0 {
+		if err := syscall.Kill(-proc.Pid, syscall.SIGKILL); err == nil {
+			return
+		}
+	}
+	_ = proc.Kill()
 }

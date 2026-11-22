@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
@@ -169,6 +170,10 @@ func (e *Engine) containerEvent(ev sandbox.Event) {
 				c.State.StartedAt = ev.State.StartedAt.UTC()
 				changed = true
 			}
+			if ev.State.Status.Active() && c.State.Paused != ev.State.Paused {
+				c.State.Paused = ev.State.Paused
+				changed = true
+			}
 		}
 		e.ctr.mu.Unlock()
 		if changed {
@@ -209,6 +214,7 @@ func (e *Engine) containerEvent(ev sandbox.Event) {
 
 			c.State.ExitCode = exitCode
 			c.State.Pid = 0
+			c.State.Paused = false
 			c.State.FinishedAt = finishedAt
 			c.State.Exits++
 
@@ -252,6 +258,7 @@ func (e *Engine) containerEvent(ev sandbox.Event) {
 		if !found {
 			return
 		}
+		e.onContainerExitedExecs(ev.ID)
 		if needStartEmit {
 			e.emit(Event{Type: "container", Action: "start", ID: ev.ID, Attributes: startAttrs})
 		}
@@ -428,7 +435,11 @@ func (e *Engine) resumeContainers(ctx context.Context) {
 // timeout for each, and records them as stopped by the engine, not by the
 // user.
 func (e *Engine) stopContainers(timeout time.Duration) {
-	var running []string
+	type stopTarget struct {
+		id  string
+		sig string
+	}
+	var running []stopTarget
 	dirty := false
 
 	e.ctr.mu.Lock()
@@ -440,7 +451,11 @@ func (e *Engine) stopContainers(timeout time.Duration) {
 			c.restartTimer = nil
 		}
 		if c.State.Status == StatusRunning {
-			running = append(running, c.ID)
+			sig := strings.TrimSpace(c.Config.StopSignal)
+			if sig == "" {
+				sig = "SIGTERM"
+			}
+			running = append(running, stopTarget{id: c.ID, sig: sig})
 		} else if c.State.Status == StatusRestarting {
 			c.State.Status = StatusExited
 			dirty = true
@@ -452,14 +467,14 @@ func (e *Engine) stopContainers(timeout time.Duration) {
 	e.ctr.mu.Unlock()
 
 	var wg sync.WaitGroup
-	for _, id := range running {
+	for _, item := range running {
 		wg.Add(1)
-		go func(id string) {
+		go func(item stopTarget) {
 			defer wg.Done()
-			if err := e.runner.Stop(id, timeout); err != nil {
-				e.logf("engine: stop %s: %v", id[:min(12, len(id))], err)
+			if err := e.runner.Shutdown(item.id, item.sig, timeout); err != nil {
+				e.logf("engine: stop %s: %v", item.id[:min(12, len(item.id))], err)
 			}
-		}(id)
+		}(item)
 	}
 	wg.Wait()
 
@@ -470,8 +485,8 @@ func (e *Engine) stopContainers(timeout time.Duration) {
 		ch := e.changes()
 		stillRunning := false
 		e.ctr.mu.Lock()
-		for _, id := range running {
-			if c := e.ctr.byID[id]; c != nil && c.State.Status == StatusRunning {
+		for _, item := range running {
+			if c := e.ctr.byID[item.id]; c != nil && c.State.Status == StatusRunning {
 				stillRunning = true
 				break
 			}
@@ -485,10 +500,11 @@ func (e *Engine) stopContainers(timeout time.Duration) {
 		case <-deadline:
 			e.ctr.mu.Lock()
 			now := time.Now().UTC()
-			for _, id := range running {
-				if c := e.ctr.byID[id]; c != nil && c.State.Status == StatusRunning {
+			for _, item := range running {
+				if c := e.ctr.byID[item.id]; c != nil && c.State.Status == StatusRunning {
 					c.State.Status = StatusExited
 					c.State.Pid = 0
+					c.State.Paused = false
 					c.State.FinishedAt = now
 				}
 			}
@@ -580,6 +596,12 @@ func (e *Engine) startContainer(id string) error {
 	spec := snapshot.Spec.Clone()
 	spec.Name = snapshot.Name
 	spec.Ports = specPorts
+	if snapshot.HostConfig.PidsLimit != nil && *snapshot.HostConfig.PidsLimit > 0 && e.hasRunFlag("pids-limit") {
+		if extra, err := rungv.SplitArgs(spec.ExtraArgs); err == nil {
+			extra = append(extra, "-pids-limit", strconv.FormatInt(*snapshot.HostConfig.PidsLimit, 10))
+			spec.ExtraArgs = rungv.FormatArgs(extra)
+		}
+	}
 
 	// Mark running and record reserved ports BEFORE releasing portMu and
 	// before calling runner.Start, so concurrent starts see these ports and
@@ -604,6 +626,7 @@ func (e *Engine) startContainer(id string) error {
 	c.runGen++
 	gen := c.runGen
 	c.State.Status = StatusRunning
+	c.State.Paused = false
 	c.State.StartedAt = time.Now().UTC()
 	c.State.FinishedAt = time.Time{}
 	c.State.Error = ""
@@ -703,9 +726,9 @@ func (e *Engine) handleStartFailure(id string, gen uint64, prevStatus string, pr
 	}
 }
 
-// stopContainerByRef stops a container by ref with timeout. It returns
-// errNotModified if the container is already stopped.
-func (e *Engine) stopContainerByRef(ctx context.Context, ref string, timeout time.Duration, hasExplicitTimeout bool) error {
+// stopContainerByRef stops a container by ref with signal and timeout. It
+// returns errNotModified if the container is already stopped.
+func (e *Engine) stopContainerByRef(ctx context.Context, ref string, signal string, timeout time.Duration, hasExplicitTimeout bool) error {
 	e.ctr.mu.Lock()
 	c, err := e.lookupLocked(ref)
 	if err != nil {
@@ -713,9 +736,20 @@ func (e *Engine) stopContainerByRef(ctx context.Context, ref string, timeout tim
 		return err
 	}
 	id := c.ID
+	sig := strings.TrimSpace(signal)
+	if sig == "" {
+		sig = strings.TrimSpace(c.Config.StopSignal)
+	}
+	if sig == "" {
+		sig = "SIGTERM"
+	}
 	if !hasExplicitTimeout {
-		if c.Config.StopTimeout != nil && *c.Config.StopTimeout >= 0 {
-			timeout = time.Duration(*c.Config.StopTimeout) * time.Second
+		if c.Config.StopTimeout != nil {
+			if *c.Config.StopTimeout < 0 {
+				timeout = 24 * time.Hour
+			} else {
+				timeout = time.Duration(*c.Config.StopTimeout) * time.Second
+			}
 		} else {
 			timeout = 10 * time.Second
 		}
@@ -744,7 +778,7 @@ func (e *Engine) stopContainerByRef(ctx context.Context, ref string, timeout tim
 	_ = e.saveContainersLocked()
 	e.ctr.mu.Unlock()
 
-	if err := e.runner.Stop(id, timeout); err != nil {
+	if err := e.runner.Shutdown(id, sig, timeout); err != nil {
 		return err
 	}
 	e.waitNotRunning(ctx, id)
@@ -779,9 +813,10 @@ func (e *Engine) waitNotRunning(ctx context.Context, id string) {
 // StatusRemoving.
 func (e *Engine) removeContainerCleanup(ctx context.Context, id string, stopFirst, removeVols bool, anonVols []string, attrs map[string]string) {
 	if stopFirst {
-		_ = e.runner.Stop(id, 0)
+		_ = e.runner.Shutdown(id, "SIGKILL", 0)
 		e.waitNotRunning(ctx, id)
 	}
+	e.dropExecsForContainer(id)
 	e.runner.Forget(id)
 	e.dropLogs(id)
 	e.leaveOverlay(id)
@@ -1165,6 +1200,7 @@ func (e *Engine) containerList(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	out := make([]containerListItem, 0, len(containers))
 	for _, c := range containers {
+		c.State.Paused = e.isContainerPaused(c)
 		if !showAll && !c.State.Running() {
 			continue
 		}
@@ -1199,7 +1235,11 @@ func matchContainerFilters(c Container, f filters, nameRegexes []*regexp.Regexp)
 			return false
 		}
 	}
-	if !f.matchAny("status", func(v string) bool { return c.State.Status == v }) {
+	effectiveStatus := c.State.Status
+	if c.State.Status == StatusRunning && c.State.Paused {
+		effectiveStatus = StatusPaused
+	}
+	if !f.matchAny("status", func(v string) bool { return effectiveStatus == v }) {
 		return false
 	}
 	if !f.matchAny("exited", func(v string) bool {
@@ -1302,6 +1342,10 @@ func formatContainerListItem(c Container, now time.Time) containerListItem {
 		})
 	}
 
+	stateWord := c.State.Status
+	if c.State.Status == StatusRunning && c.State.Paused {
+		stateWord = StatusPaused
+	}
 	return containerListItem{
 		ID:      c.ID,
 		Names:   []string{"/" + c.Name},
@@ -1311,7 +1355,7 @@ func formatContainerListItem(c Container, now time.Time) containerListItem {
 		Created: c.Created.Unix(),
 		Ports:   ports,
 		Labels:  labels,
-		State:   c.State.Status,
+		State:   stateWord,
 		Status:  containerStatusText(c.State, now),
 		HostConfig: listHostConfig{
 			NetworkMode: c.HostConfig.NetworkMode,
@@ -1398,15 +1442,21 @@ func (e *Engine) containerInspect(w http.ResponseWriter, r *http.Request) {
 		logPath = e.path("logs", c.ID+".log")
 	}
 
+	paused := e.isContainerPaused(c)
+	stateWord := c.State.Status
+	if paused {
+		stateWord = StatusPaused
+	}
+
 	resp := containerInspectResponse{
 		ID:      c.ID,
 		Created: formatInspectTime(c.Created),
 		Path:    pathStr,
 		Args:    args,
 		State: inspectState{
-			Status:     c.State.Status,
+			Status:     stateWord,
 			Running:    c.State.Running(),
-			Paused:     false,
+			Paused:     paused,
 			Restarting: c.State.Status == StatusRestarting,
 			OOMKilled:  c.State.OOMKilled,
 			Dead:       c.State.Status == StatusDead,
@@ -1422,6 +1472,7 @@ func (e *Engine) containerInspect(w http.ResponseWriter, r *http.Request) {
 		RestartCount: c.RestartCount,
 		Driver:       "gvx",
 		Platform:     "linux",
+		ExecIDs:      e.execIDsForContainer(c.ID),
 		HostConfig:   c.HostConfig,
 		GraphDriver:  inspectGraphDriver{Name: "gvx"},
 		Mounts:       mounts,
@@ -1452,16 +1503,24 @@ func (e *Engine) containerStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) containerStop(w http.ResponseWriter, r *http.Request) {
+	sigRaw := strings.TrimSpace(r.URL.Query().Get("signal"))
+	if sigRaw != "" {
+		if _, err := parseSignal(sigRaw); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
 	hasT := strings.TrimSpace(r.URL.Query().Get("t")) != ""
 	tSec, err := queryInt(r, "t", 10)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
+	timeout := time.Duration(tSec) * time.Second
 	if tSec < 0 {
-		tSec = 0
+		timeout = 24 * time.Hour
 	}
-	if err := e.stopContainerByRef(r.Context(), r.PathValue("id"), time.Duration(tSec)*time.Second, hasT); err != nil {
+	if err := e.stopContainerByRef(r.Context(), r.PathValue("id"), sigRaw, timeout, hasT); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -1475,16 +1534,24 @@ func (e *Engine) containerRestart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	sigRaw := strings.TrimSpace(r.URL.Query().Get("signal"))
+	if sigRaw != "" {
+		if _, err := parseSignal(sigRaw); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
 	hasT := strings.TrimSpace(r.URL.Query().Get("t")) != ""
 	tSec, err := queryInt(r, "t", 10)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
+	timeout := time.Duration(tSec) * time.Second
 	if tSec < 0 {
-		tSec = 0
+		timeout = 24 * time.Hour
 	}
-	if err := e.stopContainerByRef(r.Context(), c.ID, time.Duration(tSec)*time.Second, hasT); err != nil && err != errNotModified {
+	if err := e.stopContainerByRef(r.Context(), c.ID, sigRaw, timeout, hasT); err != nil && err != errNotModified {
 		writeError(w, r, err)
 		return
 	}
@@ -1543,6 +1610,7 @@ func (e *Engine) containerKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := c.ID
+	wasPaused := c.State.Paused
 	c.restartGen++
 	if c.restartTimer != nil {
 		c.restartTimer.Stop()
@@ -1553,6 +1621,16 @@ func (e *Engine) containerKill(w http.ResponseWriter, r *http.Request) {
 	attrs["signal"] = strconv.Itoa(int(sig))
 	_ = e.saveContainersLocked()
 	e.ctr.mu.Unlock()
+
+	if wasPaused || e.runner.State(id).Paused {
+		if err := e.runner.Unpause(r.Context(), id); err == nil {
+			e.ctr.mu.Lock()
+			if cur := e.ctr.byID[id]; cur != nil {
+				cur.State.Paused = false
+			}
+			e.ctr.mu.Unlock()
+		}
+	}
 
 	if err := e.runner.Signal(id, sig); err != nil {
 		writeError(w, r, errConflict("Cannot kill container: %s: %v", ref, err))

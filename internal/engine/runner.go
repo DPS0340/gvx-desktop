@@ -2,7 +2,8 @@ package engine
 
 // Owner: frozen (architect). Process methods of rungvRunner are in
 // runner_proc.go (workstream A), rungv image and volume methods in
-// runner_store.go (workstream C).
+// runner_store.go (workstream C). The v0.20 methods of Runner are frozen
+// seams of docs/design/gvx-v020.md; this file belongs to W2 after it.
 
 import (
 	"context"
@@ -40,6 +41,28 @@ type Runner interface {
 	Resize(id string, rows, cols uint16) error
 	// Forget drops what the runner keeps of an ended run.
 	Forget(id string)
+
+	// rungv v0.20 runtime control (docs/design/gvx-v020.md §5). Frozen
+	// seams; the bodies of rungvRunner's are W2's (runner_proc.go) over
+	// W1's Supervisor methods.
+
+	// Features are what the rungv binary the runner drives can do. A zero
+	// Features is a v0.19: every v0.20 path answers as before (501s).
+	Features() rungv.Features
+	// Control is the runtime control of id's run; nil when it has none:
+	// not running, or started without a control socket.
+	Control(id string) sandbox.Control
+	// Pause freezes the run's guest; State(id).Paused follows. Unpause
+	// thaws it. sandbox.ErrNoControl without a control socket.
+	Pause(ctx context.Context, id string) error
+	Unpause(ctx context.Context, id string) error
+	// Update changes the run's resources live.
+	Update(ctx context.Context, id string, u rungv.Update) (rungv.Resources, error)
+	// Shutdown stops the run as docker stop does: signal ("" is SIGTERM)
+	// to the guest's first process, SIGKILL after timeout; the run ends as
+	// sandbox.Stopped. It is Stop without a control socket. It returns
+	// when the process has ended.
+	Shutdown(id string, signal string, timeout time.Duration) error
 
 	// Images lists the cached images, with full IDs.
 	Images(ctx context.Context) ([]rungv.Image, error)

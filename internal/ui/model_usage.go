@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/procstat"
+	"github.com/ironpark/gvx-desktop/internal/rungv"
+	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
 // Usage is what a sandbox or a container uses: the share of a CPU, as
@@ -96,27 +99,44 @@ func memoryLimit(s string) int64 {
 	return int64(v * float64(scale))
 }
 
-// sandboxSample is the last sample of a sandbox's process.
+// sandboxSample is the last sample of a sandbox's process or guest.
 type sandboxSample struct {
-	pid int
-	s   procstat.Sample
+	pid   int
+	s     procstat.Sample
+	guest bool
+	stats rungv.Stats
+}
+
+// guestCPUPercent is the share of a CPU a sandbox's guest used between two
+// rungv stats samples: 100 for one CPU kept busy, matching procstat.CPUPercent.
+func guestCPUPercent(prev, cur rungv.Stats) (percent float64, ok bool) {
+	wall := cur.Timestamp.Sub(prev.Timestamp)
+	if prev.Timestamp.IsZero() || cur.Timestamp.IsZero() || wall <= 0 {
+		return 0, false
+	}
+	prevCPU, curCPU := prev.CPUNanos(), cur.CPUNanos()
+	if curCPU < prevCPU {
+		return 0, false
+	}
+	return float64(curCPU-prevCPU) / float64(wall.Nanoseconds()) * 100, true
 }
 
 // sandboxUsageShown reports whether a page that shows what sandboxes use
-// is on screen while one runs.
+// is on screen while one is active (including paused).
 func (m *Model) sandboxUsageShown() bool {
 	p := m.Page.Get()
-	return (p == PageSandboxes || p == PageDashboard) && m.Running.Get() > 0
+	return (p == PageSandboxes || p == PageDashboard) && m.Active.Get() > 0
 }
 
 // usageInterval is how often what runs is sampled while a page shows it,
 // as often as a page's containers and pods are read.
 const usageInterval = 3 * time.Second
 
-// LoadSandboxUsage samples the processes of the running sandboxes, while a
-// page shows them. A sandbox with no sample before is sampled twice, half
-// a second apart, so its CPU shows at once. Asked for while a sampling
-// runs, it does nothing: the next tick is soon.
+// LoadSandboxUsage samples the running sandboxes while a page shows them.
+// Sandboxes with a control socket use guest-accurate rungv stats (falling back
+// to host procstat on error); others use host procstat. A sandbox with no
+// sample before is sampled twice, half a second apart, so its CPU shows at
+// once. Asked for while a sampling runs, it does nothing: the next tick is soon.
 func (m *Model) LoadSandboxUsage() {
 	if m.Offline || m.sandboxUsageLoading {
 		return
@@ -126,63 +146,175 @@ func (m *Model) LoadSandboxUsage() {
 		m.SandboxUsage.Set(nil)
 		return
 	}
-	pids := map[string]int{}
+	type target struct {
+		id  string
+		pid int
+		ctl sandbox.Control
+	}
+	var targets []target
 	for _, r := range ggui.Peek(m.Rows) {
-		if r.State.Status.Active() && r.State.PID != 0 {
-			pids[r.Spec.ID] = r.State.PID
+		if !r.State.Status.Active() {
+			continue
 		}
+		var ctl sandbox.Control
+		if r.State.Control {
+			ctl, _ = m.sandboxControl(r.Spec.ID)
+		}
+		if r.State.PID == 0 && ctl == nil {
+			continue
+		}
+		targets = append(targets, target{id: r.Spec.ID, pid: r.State.PID, ctl: ctl})
 	}
 	prev := maps.Clone(m.sandboxSamples)
 	if prev == nil {
 		prev = map[string]sandboxSample{}
 	}
 	m.sandboxUsageLoading = true
-	var got map[int]procstat.Sample
-	m.async(func(context.Context) error {
-		list := make([]int, 0, len(pids))
-		fresh := false
-		for id, pid := range pids {
-			list = append(list, pid)
-			if p, ok := prev[id]; !ok || p.pid != pid {
-				fresh = true
+	guestGot := map[string]rungv.Stats{}
+	var procGot map[int]procstat.Sample
+	var procErr error
+	m.async(func(ctx context.Context) error {
+		// Query guest stats in parallel for rows with a control socket.
+		sampleGuests := func(rows []target) map[string]rungv.Stats {
+			out := map[string]rungv.Stats{}
+			if len(rows) == 0 {
+				return out
+			}
+			var mu sync.Mutex
+			var wg sync.WaitGroup
+			for _, t := range rows {
+				wg.Go(func() {
+					sctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+					defer cancel()
+					if st, err := t.ctl.Stats(sctx); err == nil {
+						mu.Lock()
+						out[t.id] = st
+						mu.Unlock()
+					}
+				})
+			}
+			wg.Wait()
+			return out
+		}
+
+		var ctlRows, procRows []target
+		for _, t := range targets {
+			if t.ctl != nil {
+				ctlRows = append(ctlRows, t)
+			} else if t.pid != 0 {
+				procRows = append(procRows, t)
 			}
 		}
-		if fresh {
-			if first, err := procstat.Read(list); err == nil {
-				for id, pid := range pids {
-					if s, ok := first[pid]; ok && prev[id].pid != pid {
-						prev[id] = sandboxSample{pid, s}
+
+		var freshCtl []target
+		for _, t := range ctlRows {
+			if p, ok := prev[t.id]; !ok || p.pid != t.pid {
+				freshCtl = append(freshCtl, t)
+			}
+		}
+		procList := make([]int, 0, len(procRows))
+		freshProc := false
+		for _, t := range procRows {
+			procList = append(procList, t.pid)
+			if p, ok := prev[t.id]; !ok || p.guest || p.pid != t.pid {
+				freshProc = true
+			}
+		}
+
+		if len(freshCtl) > 0 || freshProc {
+			var wg sync.WaitGroup
+			var firstGuest map[string]rungv.Stats
+			var firstProc map[int]procstat.Sample
+			var firstProcErr error
+			if len(freshCtl) > 0 {
+				wg.Go(func() { firstGuest = sampleGuests(freshCtl) })
+			}
+			if freshProc {
+				wg.Go(func() { firstProc, firstProcErr = procstat.Read(procList) })
+			}
+			wg.Wait()
+			var failedFreshPIDs []int
+			for _, t := range freshCtl {
+				if st, ok := firstGuest[t.id]; ok {
+					prev[t.id] = sandboxSample{pid: t.pid, guest: true, stats: st}
+				} else if t.pid != 0 {
+					failedFreshPIDs = append(failedFreshPIDs, t.pid)
+				}
+			}
+			if len(failedFreshPIDs) > 0 {
+				if fbFirst, err := procstat.Read(failedFreshPIDs); err == nil {
+					for _, t := range freshCtl {
+						if _, ok := firstGuest[t.id]; ok {
+							continue
+						}
+						if s, ok := fbFirst[t.pid]; ok {
+							prev[t.id] = sandboxSample{pid: t.pid, s: s}
+						}
 					}
 				}
-				time.Sleep(500 * time.Millisecond)
+			}
+			if firstProcErr == nil {
+				for _, t := range procRows {
+					if s, ok := firstProc[t.pid]; ok && (prev[t.id].guest || prev[t.id].pid != t.pid) {
+						prev[t.id] = sandboxSample{pid: t.pid, s: s}
+					}
+				}
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		guestGot = sampleGuests(ctlRows)
+		// Any control row whose guest stats failed falls back to procstat.
+		fallbackList := slices.Clone(procList)
+		for _, t := range ctlRows {
+			if _, ok := guestGot[t.id]; !ok && t.pid != 0 {
+				fallbackList = append(fallbackList, t.pid)
 			}
 		}
-		var err error
-		got, err = procstat.Read(list)
-		return err
-	}, func(err error) {
+		if len(fallbackList) > 0 {
+			procGot, procErr = procstat.Read(fallbackList)
+		}
+		return nil
+	}, func(error) {
 		m.sandboxUsageLoading = false
-		if err != nil || !ggui.Untrack(m.sandboxUsageShown) {
+		if !ggui.Untrack(m.sandboxUsageShown) || (len(guestGot) == 0 && procErr != nil) {
 			m.sandboxSamples = nil
 			m.SandboxUsage.Set(nil)
 			return
 		}
 		samples := map[string]sandboxSample{}
 		usage := map[string]Usage{}
-		for id, pid := range pids {
-			s, ok := got[pid]
+		for _, t := range targets {
+			if st, ok := guestGot[t.id]; ok {
+				samples[t.id] = sandboxSample{pid: t.pid, guest: true, stats: st}
+				u := Usage{Memory: int64(st.Memory.TotalBytes), Limit: int64(st.Memory.LimitBytes)}
+				if u.Limit == 0 {
+					if spec, ok := m.spec(t.id); ok {
+						u.Limit = memoryLimit(spec.Memory)
+					}
+				}
+				if p, ok := prev[t.id]; ok && p.guest && p.pid == t.pid {
+					u.CPU, u.HasCPU = guestCPUPercent(p.stats, st)
+				}
+				usage[t.id] = u
+				continue
+			}
+			if t.pid == 0 {
+				continue
+			}
+			s, ok := procGot[t.pid]
 			if !ok {
 				continue
 			}
-			samples[id] = sandboxSample{pid, s}
+			samples[t.id] = sandboxSample{pid: t.pid, s: s}
 			u := Usage{Memory: int64(s.Memory)}
-			if p, ok := prev[id]; ok && p.pid == pid {
+			if p, ok := prev[t.id]; ok && !p.guest && p.pid == t.pid {
 				u.CPU, u.HasCPU = procstat.CPUPercent(p.s, s)
 			}
-			if spec, ok := m.spec(id); ok {
+			if spec, ok := m.spec(t.id); ok {
 				u.Limit = memoryLimit(spec.Memory)
 			}
-			usage[id] = u
+			usage[t.id] = u
 		}
 		m.sandboxSamples = samples
 		m.SandboxUsage.Set(usage)
@@ -227,7 +359,7 @@ func (m *Model) LoadContainerUsage() {
 	}
 	var ids []string
 	for _, c := range ggui.Peek(m.DockerContainers).Items {
-		if c.State == "running" {
+		if c.State == "running" || c.State == "paused" {
 			ids = append(ids, c.ID)
 		}
 	}
@@ -298,9 +430,9 @@ func (m *Model) followContainerUsage() {
 // ---- Pods ---------------------------------------------------------------
 
 // wantsPodUsage reports whether what the pods use is read with them: while
-// the Pods view shows them.
+// the Pods view shows them and the cluster is open.
 func (m *Model) wantsPodUsage() bool {
-	return m.Page.Get() == PagePods && m.KubeView.Get() == KubePods
+	return m.Page.Get() == PagePods && m.KubeView.Get() == KubePods && m.PodsOpen.Get()
 }
 
 // followPodUsage lists the pods, and with them what they use, as soon as

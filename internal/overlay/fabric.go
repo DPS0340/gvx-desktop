@@ -63,9 +63,13 @@ type Fabric struct {
 
 // peer is a container that joined: a running sandbox with a link.
 type peer struct {
-	pub  []byte
-	live []netip.Addr // addresses configured on its link
-	dns  *dnsServer
+	priv     []byte
+	pub      []byte
+	mtu      int
+	gen      uint64
+	prefixes []netip.Prefix
+	live     []netip.Addr // addresses configured on its link
+	dns      *dnsServer
 }
 
 // view is what packets and queries are checked against, rebuilt on every
@@ -122,22 +126,17 @@ func (f *Fabric) Join(id string, addrs []netip.Prefix, opts JoinOptions) (guestc
 		}
 		f.hub = h
 	}
+	var prevGen uint64
+	if old, ok := f.peers[id]; ok {
+		prevGen = old.gen
+	}
 	f.leaveLocked(id)
 
 	priv, pub, err := newKey()
 	if err != nil {
 		return guestcfg.Config{}, netip.AddrPort{}, err
 	}
-	live := make([]netip.Addr, 0, len(addrs))
-	strs := make([]string, 0, len(addrs))
-	routes := []string{Pool.String()}
-	for _, p := range addrs {
-		live = append(live, p.Addr())
-		strs = append(strs, p.String())
-		if !Pool.Contains(p.Addr()) {
-			routes = append(routes, p.Masked().String())
-		}
-	}
+	live, strs, routes := expandAddrs(addrs)
 	if err := f.hub.setPeer(pub, live); err != nil {
 		return guestcfg.Config{}, netip.AddrPort{}, err
 	}
@@ -150,10 +149,18 @@ func (f *Fabric) Join(id string, addrs []netip.Prefix, opts JoinOptions) (guestc
 		_ = f.hub.removePeer(pub)
 		return guestcfg.Config{}, netip.AddrPort{}, err
 	}
-	f.peers[id] = &peer{pub: pub, live: live, dns: dns}
 	mtu := opts.MTU
 	if mtu <= 0 {
 		mtu = LinkMTU
+	}
+	f.peers[id] = &peer{
+		priv:     slices.Clone(priv),
+		pub:      slices.Clone(pub),
+		mtu:      mtu,
+		gen:      prevGen + 1,
+		prefixes: slices.Clone(addrs),
+		live:     live,
+		dns:      dns,
 	}
 	f.rebuildLocked()
 
@@ -166,6 +173,95 @@ func (f *Fabric) Join(id string, addrs []netip.Prefix, opts JoinOptions) (guestc
 		MTU:          mtu,
 		Keepalive:    keepalive,
 	}, dns.addr, nil
+}
+
+func expandAddrs(addrs []netip.Prefix) (live []netip.Addr, strs []string, routes []string) {
+	if len(addrs) == 0 {
+		return nil, nil, nil
+	}
+	live = make([]netip.Addr, 0, len(addrs))
+	strs = make([]string, 0, len(addrs))
+	routes = []string{Pool.String()}
+	for _, p := range addrs {
+		live = append(live, p.Addr())
+		strs = append(strs, p.String())
+		if !Pool.Contains(p.Addr()) {
+			r := p.Masked().String()
+			if !slices.Contains(routes, r) {
+				routes = append(routes, r)
+			}
+		}
+	}
+	return live, strs, routes
+}
+
+// PeerAddrs returns the link prefixes currently recorded for a joined
+// container, or false if the container did not join the hub.
+func (f *Fabric) PeerAddrs(id string) ([]netip.Prefix, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.peers[id]
+	if !ok {
+		return nil, false
+	}
+	return slices.Clone(p.prefixes), true
+}
+
+// SetAddrs updates a joined container's allowed IPs on the hub and returns
+// a guestcfg.Config with the container's existing key and the new addresses
+// and routes, plus the peer's new generation for safe rollback on failure.
+// ok is false when id did not join the hub at start.
+func (f *Fabric) SetAddrs(id string, addrs []netip.Prefix) (cfg guestcfg.Config, gen uint64, ok bool, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed || f.hub == nil {
+		return guestcfg.Config{}, 0, false, nil
+	}
+	p, exists := f.peers[id]
+	if !exists {
+		return guestcfg.Config{}, 0, false, nil
+	}
+	live, strs, routes := expandAddrs(addrs)
+	if err := f.hub.setPeer(p.pub, live); err != nil {
+		return guestcfg.Config{}, 0, true, err
+	}
+	p.gen++
+	p.prefixes = slices.Clone(addrs)
+	p.live = live
+	f.rebuildLocked()
+	return guestcfg.Config{
+		PrivateKey:   slices.Clone(p.priv),
+		HubPublicKey: slices.Clone(f.hub.pub),
+		Endpoint:     netip.AddrPortFrom(netip.MustParseAddr(HostGateway), f.hub.port).String(),
+		Addresses:    strs,
+		Routes:       routes,
+		MTU:          p.mtu,
+		Keepalive:    keepalive,
+	}, p.gen, true, nil
+}
+
+// RevertAddrs restores id's hub allowed IPs to prev only if id is still
+// joined at expectedGen (not restarted or superseded by a newer update).
+func (f *Fabric) RevertAddrs(id string, expectedGen uint64, prev []netip.Prefix) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed || f.hub == nil {
+		return false
+	}
+	p, exists := f.peers[id]
+	if !exists || p.gen != expectedGen {
+		return false
+	}
+	live, _, _ := expandAddrs(prev)
+	if err := f.hub.setPeer(p.pub, live); err != nil {
+		f.logf("overlay: revert peer: %v", err)
+		return false
+	}
+	p.gen++
+	p.prefixes = slices.Clone(prev)
+	p.live = live
+	f.rebuildLocked()
+	return true
 }
 
 // Leave takes a container off the hub, when its sandbox stopped.

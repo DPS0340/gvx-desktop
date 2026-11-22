@@ -142,7 +142,14 @@ func Install(ctx context.Context, r Release, target string, progress func(done, 
 	if err := os.Chmod(fresh.Name(), 0o755); err != nil {
 		return err
 	}
-	return replaceFile(fresh.Name(), target)
+	if err := replaceFile(fresh.Name(), target); err != nil {
+		return err
+	}
+	ForgetFeatures(target)
+	if abs, err := filepath.Abs(target); err == nil && abs != target {
+		ForgetFeatures(abs)
+	}
+	return nil
 }
 
 // replaceFile moves fresh onto target. Windows does not let a running

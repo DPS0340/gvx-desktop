@@ -186,6 +186,45 @@ func TestContainersAndActions(t *testing.T) {
 	}
 }
 
+func TestPauseAndUnpause(t *testing.T) {
+	var calls []string
+	c := engine(t, func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		switch r.URL.Path {
+		case "/containers/web/pause", "/containers/web/unpause":
+			w.WriteHeader(http.StatusNoContent)
+		case "/containers/paused/pause":
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"message":"Container paused is already paused"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"No such container"}`))
+		}
+	})
+	ctx := context.Background()
+	if err := c.Pause(ctx, "web"); err != nil {
+		t.Fatalf("Pause(web): %v", err)
+	}
+	if err := c.Unpause(ctx, "web"); err != nil {
+		t.Fatalf("Unpause(web): %v", err)
+	}
+	if err := c.Pause(ctx, "paused"); err == nil || err.Error() != "Container paused is already paused" {
+		t.Errorf("Pause(paused) = %v, want conflict message", err)
+	}
+	if err := c.Unpause(ctx, "missing"); err == nil || err.Error() != "No such container" {
+		t.Errorf("Unpause(missing) = %v, want not found message", err)
+	}
+	want := []string{
+		"POST /containers/web/pause",
+		"POST /containers/web/unpause",
+		"POST /containers/paused/pause",
+		"POST /containers/missing/unpause",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("requests\n%s\nwant\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 func TestLogsOfAContainerWithoutATerminal(t *testing.T) {
 	var query string
 	c := engine(t, func(w http.ResponseWriter, r *http.Request) {

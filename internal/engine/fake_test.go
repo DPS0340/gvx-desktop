@@ -43,17 +43,39 @@ type fakeRunner struct {
 	// NoRunFlags names run flags this rungv lacks.
 	NoRunFlags []string
 
+	// rungv v0.20 fake controls (default zero Features = v0.19 behavior).
+	features       rungv.Features
+	controls       map[string]sandbox.Control
+	defaultControl func(p *fakeProc) sandbox.Control
+	pauseErr       error
+	unpauseErr     error
+	updateErr      error
+	shutdownCalls  []fakeShutdownCall
+	updateCalls    []fakeUpdateCall
+
 	images  map[string]ImageInspect // by every RepoTag and by ID
 	volumes map[string]rungv.Volume
 	pulls   []string
 }
 
+type fakeShutdownCall struct {
+	ID      string
+	Signal  string
+	Timeout time.Duration
+}
+
+type fakeUpdateCall struct {
+	ID     string
+	Update rungv.Update
+}
+
 // fakeProc is one run of a sandbox.
 type fakeProc struct {
-	r      *fakeRunner
-	Spec   sandbox.Spec
-	stdin  *io.PipeReader
-	stdinW *io.PipeWriter
+	r       *fakeRunner
+	Spec    sandbox.Spec
+	stdin   *io.PipeReader
+	stdinW  *io.PipeWriter
+	control sandbox.Control
 
 	mu      sync.Mutex
 	state   sandbox.State
@@ -135,7 +157,14 @@ func (f *fakeRunner) Start(spec sandbox.Spec) error {
 	pr, pw := io.Pipe()
 	p := &fakeProc{r: f, Spec: spec.Clone(), stdin: pr, stdinW: pw,
 		end: make(chan int, 1), done: make(chan struct{}),
-		state: sandbox.State{Status: sandbox.Running, PID: 1000 + len(f.started), StartedAt: time.Now(), ReadyAt: time.Now()}}
+		state: sandbox.State{Status: sandbox.Running, PID: 1000 + len(f.started), StartedAt: time.Now(), ReadyAt: time.Now(), Control: f.features.Control}}
+	if f.features.Control {
+		if ctl, ok := f.controls[spec.ID]; ok {
+			p.control = ctl
+		} else if f.defaultControl != nil {
+			p.control = f.defaultControl(p)
+		}
+	}
 	for _, port := range spec.Ports {
 		p.state.Ports = append(p.state.Ports, fakePublished(port))
 	}
@@ -222,6 +251,15 @@ func (f *fakeRunner) Signal(id string, sig syscall.Signal) error {
 	if p == nil || !p.State().Status.Active() {
 		return errors.New("the sandbox is not running")
 	}
+	if ctl := f.Control(id); ctl != nil {
+		err := ctl.Kill(context.Background(), rungv.KillOptions{Signal: signalName(sig)})
+		if err == nil {
+			return nil
+		}
+		if !isControlUnreachable(err) {
+			return err
+		}
+	}
 	p.mu.Lock()
 	p.signals = append(p.signals, sig)
 	p.mu.Unlock()
@@ -274,6 +312,97 @@ func (f *fakeRunner) Forget(id string) {
 	if p := f.procs[id]; p != nil && !p.State().Status.Active() {
 		delete(f.procs, id)
 	}
+}
+
+// ---- rungv v0.20 (docs/design/gvx-v020.md §5): a v0.19 by default. ----
+
+func (f *fakeRunner) Features() rungv.Features {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.features
+}
+
+func (f *fakeRunner) Control(id string) sandbox.Control {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p := f.procs[id]
+	if p == nil || !p.State().Status.Active() {
+		return nil
+	}
+	if ctl, ok := f.controls[id]; ok {
+		return ctl
+	}
+	return p.control
+}
+
+func (f *fakeRunner) Pause(ctx context.Context, id string) error {
+	if f.Control(id) == nil {
+		return sandbox.ErrNoControl
+	}
+	f.mu.Lock()
+	perr := f.pauseErr
+	f.mu.Unlock()
+	if perr != nil {
+		return perr
+	}
+	p := f.proc(id)
+	if p == nil || !p.State().Status.Active() {
+		return errors.New("the sandbox is not running")
+	}
+	p.mu.Lock()
+	p.state.Paused = true
+	st := p.state
+	p.mu.Unlock()
+	f.event(sandbox.Event{ID: id, Kind: sandbox.EventChanged, State: st})
+	return nil
+}
+
+func (f *fakeRunner) Unpause(ctx context.Context, id string) error {
+	if f.Control(id) == nil {
+		return sandbox.ErrNoControl
+	}
+	f.mu.Lock()
+	uerr := f.unpauseErr
+	f.mu.Unlock()
+	if uerr != nil {
+		return uerr
+	}
+	p := f.proc(id)
+	if p == nil || !p.State().Status.Active() {
+		return errors.New("the sandbox is not running")
+	}
+	p.mu.Lock()
+	p.state.Paused = false
+	st := p.state
+	p.mu.Unlock()
+	f.event(sandbox.Event{ID: id, Kind: sandbox.EventChanged, State: st})
+	return nil
+}
+
+func (f *fakeRunner) Update(ctx context.Context, id string, u rungv.Update) (rungv.Resources, error) {
+	if f.Control(id) == nil {
+		return rungv.Resources{}, sandbox.ErrNoControl
+	}
+	f.mu.Lock()
+	f.updateCalls = append(f.updateCalls, fakeUpdateCall{ID: id, Update: u})
+	uerr := f.updateErr
+	f.mu.Unlock()
+	if uerr != nil {
+		return rungv.Resources{}, uerr
+	}
+	return rungv.Resources{}, nil
+}
+
+func (f *fakeRunner) Shutdown(id string, signal string, timeout time.Duration) error {
+	f.mu.Lock()
+	f.shutdownCalls = append(f.shutdownCalls, fakeShutdownCall{ID: id, Signal: signal, Timeout: timeout})
+	f.mu.Unlock()
+	if p := f.proc(id); p != nil {
+		p.mu.Lock()
+		p.state.Paused = false
+		p.mu.Unlock()
+	}
+	return f.Stop(id, timeout)
 }
 
 // State is the run's state.

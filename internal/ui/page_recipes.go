@@ -36,10 +36,22 @@ func recipeHero(m *Model, key string, row ggui.Readable[Row], title, what string
 		case r.Spec.ID == "":
 			state = ui.Caption(tr("Not set up yet."))
 			actions = append(actions, ui.Button(tr("Set up and start"), func() { m.CreateFromRecipe(key) }).Icon(glyph(lucide.Play, 14)))
+		case r.State.Status.Active() && r.State.Paused:
+			state = statusLabel(r.State)
+			actions = append(actions,
+				ui.Button(tr("Logs"), func() { m.ShowSandbox(r.Spec.ID, 0) }).Outline().Icon(glyph(lucide.ScrollText, 14)),
+				ui.Button(tr("Resume"), func() { m.ResumeSandbox(r.Spec.ID) }).Icon(glyph(lucide.Play, 14)),
+				ui.Button(tr("Stop"), func() { m.StopSandbox(r.Spec.ID) }).Outline().Icon(glyph(lucide.Square, 14)).Disabled(r.State.Status == sandbox.Stopping),
+			)
 		case r.State.Status.Active():
 			state = statusLabel(r.State)
 			actions = append(actions,
 				ui.Button(tr("Logs"), func() { m.ShowSandbox(r.Spec.ID, 0) }).Outline().Icon(glyph(lucide.ScrollText, 14)),
+			)
+			if r.State.Control && r.State.Status != sandbox.Stopping {
+				actions = append(actions, ui.Button(tr("Pause"), func() { m.PauseSandbox(r.Spec.ID) }).Outline().Icon(glyph(lucide.Pause, 14)))
+			}
+			actions = append(actions,
 				ui.Button(tr("Stop"), func() { m.StopSandbox(r.Spec.ID) }).Outline().Icon(glyph(lucide.Square, 14)).Disabled(r.State.Status == sandbox.Stopping),
 			)
 		default:
@@ -347,7 +359,8 @@ func dockerNotesCard() ggui.Widget {
 func kubernetesPage(m *Model) ggui.Widget {
 	row := recipeRow(m, recipes.Kubernetes)
 	ggui.Effect(func() ggui.Cleanup {
-		if !row.Get().State.Status.Active() {
+		st := row.Get().State
+		if !st.Status.Active() || st.Paused {
 			return nil
 		}
 		stop := make(chan struct{})

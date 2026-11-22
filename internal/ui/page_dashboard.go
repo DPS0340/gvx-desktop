@@ -224,10 +224,16 @@ func sandboxUsageBrief(m *Model, id string) ggui.Widget {
 	})
 }
 
-// sandboxQuickActions are the start, restart and stop buttons of a row.
+// sandboxQuickActions are the start, resume, restart and stop buttons of a row.
 func sandboxQuickActions(m *Model, r Row) ggui.Widget {
 	id := r.Spec.ID
 	if r.State.Status.Active() {
+		if r.State.Paused {
+			return widget.Row(
+				tip(iconButton(lucide.Play, tr("Resume %s", r.Spec.Name), func() { m.ResumeSandbox(id) }), tr("Resume")),
+				tip(iconButton(lucide.Square, tr("Stop %s", r.Spec.Name), func() { m.StopSandbox(id) }).BindDisabled(ggui.Const(r.State.Status == sandbox.Stopping)), tr("Stop")),
+			).Gap(2)
+		}
 		return widget.Row(
 			tip(iconButton(lucide.RotateCcw, tr("Restart %s", r.Spec.Name), func() { m.RestartSandbox(id) }).BindDisabled(ggui.Const(r.State.Status != sandbox.Running)), tr("Restart")),
 			tip(iconButton(lucide.Square, tr("Stop %s", r.Spec.Name), func() { m.StopSandbox(id) }).BindDisabled(ggui.Const(r.State.Status == sandbox.Stopping)), tr("Stop")),
@@ -279,18 +285,29 @@ func recipeCards(m *Model) ggui.Widget {
 		for _, h := range highlights {
 			points = append(points, widget.Row(glyph(lucide.Check, 14).Color(colorGreen), ui.Caption(h)).Gap(8).Align(widget.AlignStart))
 		}
-		state := ggui.Map(m.Rows, func(rows []Row) sandbox.Status {
+		type recipeCardState struct {
+			exists bool
+			id     string
+			state  sandbox.State
+		}
+		state := ggui.Map(m.Rows, func(rows []Row) recipeCardState {
 			if row, ok := m.RecipeSandbox(rows, r.Key); ok {
-				return row.State.Status
+				return recipeCardState{exists: true, id: row.Spec.ID, state: row.State}
 			}
-			return -1
+			return recipeCardState{}
+		}).WithEqual(func(a, b recipeCardState) bool {
+			return a.exists == b.exists && a.id == b.id && a.state.Status == b.state.Status && a.state.Paused == b.state.Paused
 		})
-		action := ggui.View(state, func(s sandbox.Status) ggui.Widget {
+		action := ggui.View(state, func(s recipeCardState) ggui.Widget {
 			switch {
-			case s.Active():
-				return widget.Row(statusLabel(sandbox.State{Status: s}), widget.Spacer(),
+			case s.exists && s.state.Status.Active() && s.state.Paused:
+				return widget.Row(statusLabel(s.state), widget.Spacer(),
+					ui.Button(tr("Resume"), func() { m.ResumeSandbox(s.id) }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14)),
+					ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall)).Gap(6).Align(widget.AlignCenter)
+			case s.exists && s.state.Status.Active():
+				return widget.Row(statusLabel(s.state), widget.Spacer(),
 					ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall)).Align(widget.AlignCenter)
-			case s >= 0:
+			case s.exists:
 				return widget.Row(ui.Button(tr("Start"), func() { m.CreateFromRecipe(r.Key); open() }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14)),
 					ui.Button(tr("Details"), open).Ghost().Size(ui.ButtonSmall)).Gap(8)
 			}

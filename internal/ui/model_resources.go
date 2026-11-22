@@ -716,10 +716,13 @@ func (m *Model) followLinks() {
 	ggui.Watch(m.KubeconfigReady, func(bool) { m.CheckLink(m.KubeLink) })
 }
 
-// DockerAction runs start, stop, restart or remove on a container.
+// DockerAction runs start, stop, restart, pause, unpause or remove on a container.
 func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
 	host := m.dockerBackendHost()
 	m.async(func(ctx context.Context) error {
+		if action == "pause" {
+			m.closeTerminalsFor(containerTermTarget(ctr.ID))
+		}
 		c, err := dockerapi.New(host)
 		if err != nil {
 			return err
@@ -727,10 +730,23 @@ func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
 		defer c.Close()
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		return dockerDo(ctx, c, action, ctr.ID)
+		if err := dockerDo(ctx, c, action, ctr.ID); err != nil {
+			return err
+		}
+		if action == "unpause" {
+			m.drainContainerSweeps(ctx, c, ctr.ID)
+		}
+		return nil
 	}, func(err error) {
 		if err != nil {
-			m.toastError(fmt.Sprintf(tr("Could not %s %s"), action, ctr.Name()), err)
+			switch action {
+			case "pause":
+				m.toastError(tr("Could not pause %s", ctr.Name()), err)
+			case "unpause":
+				m.toastError(tr("Could not resume %s", ctr.Name()), err)
+			default:
+				m.toastError(fmt.Sprintf(tr("Could not %s %s"), action, ctr.Name()), err)
+			}
 		}
 		m.LoadDocker()
 		if ggui.Peek(m.Page) == PageContainers && ggui.Peek(m.Container).ID == ctr.ID {
@@ -739,7 +755,7 @@ func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
 	})
 }
 
-// dockerDo runs start, stop, restart or remove on the container id.
+// dockerDo runs start, stop, restart, pause, unpause or remove on the container id.
 func dockerDo(ctx context.Context, c *dockerapi.Client, action, id string) error {
 	switch action {
 	case "start":
@@ -748,6 +764,10 @@ func dockerDo(ctx context.Context, c *dockerapi.Client, action, id string) error
 		return c.Stop(ctx, id)
 	case "restart":
 		return c.Restart(ctx, id)
+	case "pause":
+		return c.Pause(ctx, id)
+	case "unpause":
+		return c.Unpause(ctx, id)
 	case "remove":
 		return c.Remove(ctx, id, true)
 	}

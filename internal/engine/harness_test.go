@@ -52,7 +52,7 @@ func startHarnessWithIdle(t *testing.T, idle time.Duration) *harness {
 	if testing.Short() || os.Getenv("GVX_ENGINE_HARNESS") != "1" {
 		t.Skip("set GVX_ENGINE_HARNESS=1 and drop -short to drive the real docker CLI")
 	}
-	path, err := rungv.Locate("")
+	path, err := rungv.Locate(os.Getenv("GVX_RUNGV"))
 	if err != nil {
 		t.Skip("rungv not found")
 	}

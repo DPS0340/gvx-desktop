@@ -112,10 +112,16 @@ func containerStatusText(st ContainerState, now time.Time) string {
 	case StatusCreated:
 		return "Created"
 	case StatusRunning:
+		var s string
 		if st.StartedAt.IsZero() {
-			return "Up"
+			s = "Up"
+		} else {
+			s = "Up " + humanDuration(now.Sub(st.StartedAt))
 		}
-		return "Up " + humanDuration(now.Sub(st.StartedAt))
+		if st.Paused {
+			s += " (Paused)"
+		}
+		return s
 	case StatusRestarting:
 		if st.FinishedAt.IsZero() {
 			return fmt.Sprintf("Restarting (%d)", st.ExitCode)

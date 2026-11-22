@@ -100,13 +100,14 @@ type Model struct {
 
 	Toasts *ui.ToasterWidget
 
-	Page      *ggui.StateValue[string]
-	Settings  *ggui.StateValue[store.Settings]
-	Engine    *ggui.StateValue[Engine]
-	Update    *ggui.StateValue[Update]
-	Autostart *ggui.StateValue[bool]   // registered to start at login
-	BuildLog  *ggui.StateValue[string] // the end of what a build from source printed
-	release   rungv.Release            // what Update tells of
+	Page          *ggui.StateValue[string]
+	Settings      *ggui.StateValue[store.Settings]
+	Engine        *ggui.StateValue[Engine]
+	RungvFeatures *ggui.StateValue[rungv.Features]
+	Update        *ggui.StateValue[Update]
+	Autostart     *ggui.StateValue[bool]   // registered to start at login
+	BuildLog      *ggui.StateValue[string] // the end of what a build from source printed
+	release       rungv.Release            // what Update tells of
 	// AppUpdate is what the app knows of its own newest release; see
 	// model_appupdate.go.
 	AppUpdate  *ggui.StateValue[AppUpdate]
@@ -122,6 +123,7 @@ type Model struct {
 	Specs             *ggui.StateValue[[]sandbox.Spec]
 	States            *ggui.StateValue[map[string]sandbox.State]
 	Rows              *ggui.DerivedValue[[]Row]
+	Active            *ggui.DerivedValue[int]
 	Running           *ggui.DerivedValue[int]
 	EngineRunning     *ggui.StateValue[int]
 	TotalRunning      *ggui.DerivedValue[int]
@@ -245,6 +247,7 @@ type Model struct {
 	DraftError   *ggui.DerivedValue[string]
 	DraftLine    *ggui.DerivedValue[string]
 	DraftRunning *ggui.DerivedValue[bool]
+	DraftAction  *ggui.DerivedValue[editorAction]
 
 	// Dialogs
 	ConfirmOpen   *ggui.StateValue[bool]
@@ -308,20 +311,24 @@ type Model struct {
 	logSeq    int64
 	quitting  bool
 
-	runCLI                                     cliRunner                  // runs docker and kubectl; tests replace it
-	runVMHelper                                vmHelperRunner             // runs __vm-helper check/install-rosetta; tests replace it
-	syncAmd64NodeHook                          func(on bool)              // overrides syncAmd64Node in tests
-	dockerLoading, dockerAgain                 bool                       // LoadDocker runs; it is wanted again after
-	dockerNetworksLoading, dockerNetworksAgain bool                       // LoadDockerNetworks runs; it is wanted again after
-	dockerImagesLoading, dockerImagesAgain     bool                       // LoadDockerImages runs; it is wanted again after
-	logsLoading, logsAgain                     bool                       // LoadContainerLogs runs; it is wanted again after
-	podsLoading, podsAgain                     bool                       // LoadPods runs; it is wanted again after
-	podLogsLoading, podLogsAgain               bool                       // LoadPodLogs runs; it is wanted again after
-	podsAnswered                               bool                       // the cluster's API server answered since it started
-	sandboxUsageLoading                        bool                       // LoadSandboxUsage runs
-	containerUsageLoading                      bool                       // LoadContainerUsage runs
-	sandboxSamples                             map[string]sandboxSample   // the last of each sandbox's, by ID
-	containerStats                             map[string]dockerapi.Stats // the last of each container's, by ID
+	runCLI                                     cliRunner                                                                     // runs docker and kubectl; tests replace it
+	runVMHelper                                vmHelperRunner                                                                // runs __vm-helper check/install-rosetta; tests replace it
+	syncAmd64NodeHook                          func(on bool)                                                                 // overrides syncAmd64Node in tests
+	controlOf                                  func(id string) (sandbox.Control, bool)                                       // overrides m.sup.Control in tests
+	pauseSandboxFn                             func(ctx context.Context, id string) error                                    // overrides m.sup.Pause in tests
+	unpauseSandboxFn                           func(ctx context.Context, id string) error                                    // overrides m.sup.Unpause in tests
+	updateSandboxFn                            func(ctx context.Context, id string, u rungv.Update) (rungv.Resources, error) // overrides m.sup.Update in tests
+	dockerLoading, dockerAgain                 bool                                                                          // LoadDocker runs; it is wanted again after
+	dockerNetworksLoading, dockerNetworksAgain bool                                                                          // LoadDockerNetworks runs; it is wanted again after
+	dockerImagesLoading, dockerImagesAgain     bool                                                                          // LoadDockerImages runs; it is wanted again after
+	logsLoading, logsAgain                     bool                                                                          // LoadContainerLogs runs; it is wanted again after
+	podsLoading, podsAgain                     bool                                                                          // LoadPods runs; it is wanted again after
+	podLogsLoading, podLogsAgain               bool                                                                          // LoadPodLogs runs; it is wanted again after
+	podsAnswered                               bool                                                                          // the cluster's API server answered since it started
+	sandboxUsageLoading                        bool                                                                          // LoadSandboxUsage runs
+	containerUsageLoading                      bool                                                                          // LoadContainerUsage runs
+	sandboxSamples                             map[string]sandboxSample                                                      // the last of each sandbox's, by ID
+	containerStats                             map[string]dockerapi.Stats                                                    // the last of each container's, by ID
 	terms                                      liveTerminals
 	forwards                                   liveForwards
 	forwarder                                  forwarder // carries port forwards; tests replace it
@@ -363,14 +370,15 @@ func NewModel(st store.Store, dataDir string) *Model {
 		store:  st,
 		Toasts: ui.NewToaster().Limit(3),
 
-		Page:      ggui.State(PageDashboard),
-		Settings:  ggui.State(settings),
-		Engine:    ggui.State(Engine{Loading: true}),
-		Update:    ggui.State(Update{Source: settings.UpdateChannel == ChannelSource, Repo: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.DisplayRepo(), Branch: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.BranchName()}),
-		Autostart: ggui.State(false), // read by Start
-		BuildLog:  ggui.State(""),
-		AppUpdate: ggui.State(AppUpdate{Install: appupdate.Detect()}),
-		Now:       ggui.State(time.Now()),
+		Page:          ggui.State(PageDashboard),
+		Settings:      ggui.State(settings),
+		Engine:        ggui.State(Engine{Loading: true}),
+		RungvFeatures: ggui.State(rungv.Features{}),
+		Update:        ggui.State(Update{Source: settings.UpdateChannel == ChannelSource, Repo: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.DisplayRepo(), Branch: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.BranchName()}),
+		Autostart:     ggui.State(false), // read by Start
+		BuildLog:      ggui.State(""),
+		AppUpdate:     ggui.State(AppUpdate{Install: appupdate.Detect()}),
+		Now:           ggui.State(time.Now()),
 
 		Specs:             ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
 		States:            ggui.State(map[string]sandbox.State{}).WithEqual(nil),
@@ -545,7 +553,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		s.Forwards = menuForwards(m.Forwards.Get())
 		return s
 	}).WithEqual(MenuState.Equal)
-	m.Running = m.States.Map(func(states map[string]sandbox.State) int {
+	m.Active = m.States.Map(func(states map[string]sandbox.State) int {
 		n := 0
 		for _, st := range states {
 			if st.Status.Active() {
@@ -554,7 +562,16 @@ func NewModel(st store.Store, dataDir string) *Model {
 		}
 		return n
 	})
-	m.TotalRunning = ggui.Combine(m.Running, m.EngineRunning, func(a, b int) int { return a + b })
+	m.Running = m.States.Map(func(states map[string]sandbox.State) int {
+		n := 0
+		for _, st := range states {
+			if st.Status.Active() && !st.Paused {
+				n++
+			}
+		}
+		return n
+	})
+	m.TotalRunning = ggui.Combine(m.Active, m.EngineRunning, func(a, b int) int { return a + b })
 	m.DraftError = ggui.Combine(m.Draft, m.Specs, func(d Draft, specs []sandbox.Spec) string {
 		spec, err := d.Spec()
 		if err != nil {
@@ -572,6 +589,18 @@ func NewModel(st store.Store, dataDir string) *Model {
 	})
 	m.DraftRunning = ggui.Combine(m.Draft, m.States, func(d Draft, states map[string]sandbox.State) bool {
 		return d.ID != "" && states[d.ID].Status.Active()
+	})
+	m.DraftAction = ggui.Combine(m.Draft, m.States, func(d Draft, states map[string]sandbox.State) editorAction {
+		if d.ID == "" {
+			return editorAction{}
+		}
+		st := states[d.ID]
+		active, ok := m.activeSpec(d.ID)
+		spec, err := d.Spec()
+		if err != nil {
+			return editorAction{running: st.Status.Active(), control: st.Status.Active() && st.Control}
+		}
+		return editorActionOf(st, active, ok, spec)
 	})
 	m.DraftLine = m.Draft.Map(func(d Draft) string {
 		spec, err := d.Spec()
@@ -790,8 +819,9 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 	set := ggui.Peek(m.Settings)
 	m.Engine.Update(func(e Engine) Engine { e.Loading = true; return e })
 	type result struct {
-		e Engine
-		c *rungv.Client
+		e        Engine
+		c        *rungv.Client
+		features rungv.Features
 	}
 	var r result
 	m.async(func(ctx context.Context) error {
@@ -815,14 +845,18 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 			return nil
 		}
 		r.e.Info = info
+		r.features = c.Features(ctx)
 		return nil
 	}, func(error) {
-		if r.c != nil {
-			m.clientMu.Lock()
+		m.clientMu.Lock()
+		if r.e.Err == "" {
 			m.client = r.c
-			m.clientMu.Unlock()
+		} else {
+			m.client = nil
 		}
+		m.clientMu.Unlock()
 		m.Engine.Set(r.e)
+		m.RungvFeatures.Set(r.features)
 		ok := r.e.Path != "" && r.e.Err == ""
 		ready := ok && len(r.e.Info.AvailableBackends) > 0
 		if ok {
@@ -1087,6 +1121,90 @@ func (m *Model) RestartSandbox(id string) {
 	}, func(error) { m.StartSandbox(id) })
 }
 
+// PauseSandbox freezes a running sandbox over its control socket.
+// Any open terminal sessions in the sandbox are closed (and swept) first while
+// the guest can still accept exec calls.
+func (m *Model) PauseSandbox(id string) {
+	spec, ok := m.spec(id)
+	if !ok {
+		return
+	}
+	m.async(func(ctx context.Context) error {
+		m.closeTerminalsFor(sandboxTermTarget(id))
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if m.pauseSandboxFn != nil {
+			return m.pauseSandboxFn(ctx, id)
+		}
+		return m.sup.Pause(ctx, id)
+	}, func(err error) {
+		if err != nil {
+			m.toastError(tr("Could not pause %s", spec.Name), err)
+		}
+		m.refreshStates()
+	})
+}
+
+// ResumeSandbox thaws a paused sandbox over its control socket and drains any
+// terminal sweeps that were deferred while it was paused.
+func (m *Model) ResumeSandbox(id string) {
+	spec, ok := m.spec(id)
+	if !ok {
+		return
+	}
+	m.async(func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		var err error
+		if m.unpauseSandboxFn != nil {
+			err = m.unpauseSandboxFn(ctx, id)
+		} else {
+			err = m.sup.Unpause(ctx, id)
+		}
+		if err != nil {
+			return err
+		}
+		m.drainSandboxSweeps(ctx, id)
+		return nil
+	}, func(err error) {
+		if err != nil {
+			m.toastError(tr("Could not resume %s", spec.Name), err)
+		}
+		m.refreshStates()
+	})
+}
+
+func (m *Model) sandboxControl(id string) (sandbox.Control, bool) {
+	if m.controlOf != nil {
+		return m.controlOf(id)
+	}
+	if m.sup == nil {
+		return nil, false
+	}
+	return m.sup.Control(id)
+}
+
+func (m *Model) activeSpec(id string) (sandbox.Spec, bool) {
+	if m.sup != nil {
+		if s, ok := m.sup.ActiveSpec(id); ok {
+			return s, true
+		}
+	}
+	if m.Offline {
+		if s, ok := m.spec(id); ok && ggui.Peek(m.States)[id].Status.Active() {
+			return s, true
+		}
+	}
+	return sandbox.Spec{}, false
+}
+
+func (m *Model) updateSandbox(ctx context.Context, id string, u rungv.Update) (rungv.Resources, error) {
+	if m.updateSandboxFn != nil {
+		return m.updateSandboxFn(ctx, id, u)
+	}
+	return m.sup.Update(ctx, id, u)
+}
+
 // AskDelete confirms and removes a sandbox.
 func (m *Model) AskDelete(id string) {
 	spec, ok := m.spec(id)
@@ -1187,7 +1305,30 @@ func (m *Model) SaveDraft(start bool) bool {
 			return false
 		}
 	}
-	active := spec.ID != "" && m.sup.State(spec.ID).Status.Active()
+	st := sandbox.State{}
+	if spec.ID != "" {
+		st = m.sup.State(spec.ID)
+		if !st.Status.Active() && m.Offline {
+			st = ggui.Peek(m.States)[spec.ID]
+		}
+	}
+	active := spec.ID != "" && st.Status.Active()
+	var (
+		applyLive   bool
+		liveChecked bool
+		liveUpdate  rungv.Update
+	)
+	if active && st.Control {
+		if runningSpec, ok := m.activeSpec(spec.ID); ok {
+			if u, live := sandbox.LiveUpdate(runningSpec, spec); live {
+				liveChecked = true
+				if !u.IsZero() {
+					applyLive = true
+					liveUpdate = u
+				}
+			}
+		}
+	}
 	if spec.ID == "" {
 		spec.ID = sandbox.NewID()
 		spec.CreatedAt = time.Now()
@@ -1197,7 +1338,7 @@ func (m *Model) SaveDraft(start bool) bool {
 		if i < 0 {
 			specs = append(specs, spec)
 		} else {
-			if active && !start && !specs[i].Equal(spec) {
+			if active && !start && !liveChecked && !specs[i].Equal(spec) {
 				m.Toasts.Push(ui.Toast(tr("Saved %s", spec.Name), tr("Restart the sandbox to apply the changes: ports and mounts are fixed while it runs.")).Warning())
 			}
 			specs[i] = spec
@@ -1206,6 +1347,28 @@ func (m *Model) SaveDraft(start bool) bool {
 	m.saveSpecs(specs)
 	m.EditorOpen.Set(false)
 	m.Select(spec.ID)
+	if applyLive {
+		id, name, u := spec.ID, spec.Name, liveUpdate
+		m.async(func(ctx context.Context) error {
+			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			_, err := m.updateSandbox(ctx, id, u)
+			return err
+		}, func(err error) {
+			if err != nil {
+				m.toastError(tr("Could not change the running sandbox"), err)
+				return
+			}
+			m.toastOK(tr("Applied to %s", name), tr("The running sandbox has the new memory, CPU and LAN settings."))
+			m.refreshStates()
+		})
+		return true
+	}
+	if liveChecked {
+		// Controllable running sandbox with zero live diff (e.g. only AutoStart
+		// changed or nothing changed): keep the spec saved without restarting.
+		return true
+	}
 	if start {
 		if active {
 			m.RestartSandbox(spec.ID)

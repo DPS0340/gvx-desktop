@@ -104,9 +104,11 @@ func (e *Engine) version(w http.ResponseWriter, r *http.Request) {
 
 func (e *Engine) info(w http.ResponseWriter, r *http.Request) {
 	ctrs := e.allContainers()
-	var running, stopped int
+	var running, paused, stopped int
 	for _, c := range ctrs {
-		if c.State.Running() {
+		if e.isContainerPaused(c) {
+			paused++
+		} else if c.State.Running() {
 			running++
 		} else {
 			stopped++
@@ -130,6 +132,11 @@ func (e *Engine) info(w http.ResponseWriter, r *http.Request) {
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
 		hostname = "gvx-desktop"
+	}
+
+	infoWarning := "GVX Desktop's experimental sandbox engine: exec and cp are not supported yet."
+	if e.runner.Features().Control {
+		infoWarning = "GVX Desktop's experimental sandbox engine: commit, export and diff are not supported yet."
 	}
 
 	resp := struct {
@@ -166,7 +173,7 @@ func (e *Engine) info(w http.ResponseWriter, r *http.Request) {
 		ServerVersion:      e.serverVersion(),
 		Containers:         len(ctrs),
 		ContainersRunning:  running,
-		ContainersPaused:   0,
+		ContainersPaused:   paused,
 		ContainersStopped:  stopped,
 		Images:             imgCount,
 		Driver:             "gvx",
@@ -190,9 +197,7 @@ func (e *Engine) info(w http.ResponseWriter, r *http.Request) {
 		LoggingDriver:     "json-file",
 		CgroupDriver:      "none",
 		ExperimentalBuild: true,
-		Warnings: []string{
-			"GVX Desktop's experimental sandbox engine: exec and cp are not supported yet.",
-		},
+		Warnings:          []string{infoWarning},
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

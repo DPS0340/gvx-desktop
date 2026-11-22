@@ -123,14 +123,20 @@ func TestHarnessSystemC(t *testing.T) {
 	evCancel()
 	_ = evCmd.Wait()
 
-	// 10. docker exec & docker build print the 501 message
+	// 10. docker exec (works with rungv v0.20+, 501 with v0.19) & docker build 501
 	t.Cleanup(func() { _, _, _ = h.docker(t, "", "rm", "-f", "gvxd-exec501") })
 	if _, errOut, code := h.docker(t, "", "run", "-d", "--name", "gvxd-exec501", "alpine:3.20", "sleep", "30"); code != 0 {
 		t.Fatalf("run gvxd-exec501 (%d): %s", code, errOut)
 	}
-	_, errOut, code = h.docker(t, "", "exec", "gvxd-exec501", "true")
-	if code == 0 || !strings.Contains(errOut, "not supported by GVX Desktop's experimental sandbox engine yet") {
-		t.Errorf("docker exec = (%d) %q, want 501 unsupported message", code, errOut)
+	out, errOut, code = h.docker(t, "", "exec", "gvxd-exec501", "echo", "exec-ok")
+	if h.e.Features().Control {
+		if code != 0 || strings.TrimSpace(out) != "exec-ok" {
+			t.Errorf("docker exec = (%d) out=%q err=%q, want 0 exec-ok", code, out, errOut)
+		}
+	} else {
+		if code == 0 || !strings.Contains(errOut, "not supported by GVX Desktop's experimental sandbox engine yet") {
+			t.Errorf("docker exec = (%d) %q, want 501 unsupported message", code, errOut)
+		}
 	}
 	_, _, _ = h.docker(t, "", "rm", "-f", "gvxd-exec501")
 
@@ -357,9 +363,15 @@ func TestHarnessEndToEnd(t *testing.T) {
 		if _, errOut, code := h.docker(t, "", "run", "-d", "--name", "gvxd-exec-e2e", "alpine:3.20", "sleep", "30"); code != 0 {
 			t.Fatalf("run gvxd-exec-e2e (%d): %s", code, errOut)
 		}
-		_, errOut, code := h.docker(t, "", "exec", "gvxd-exec-e2e", "true")
-		if code == 0 || !strings.Contains(errOut, "not supported by GVX Desktop's experimental sandbox engine yet") {
-			t.Errorf("exec (%d): %q", code, errOut)
+		out, errOut, code := h.docker(t, "", "exec", "gvxd-exec-e2e", "echo", "e2e-ok")
+		if h.e.Features().Control {
+			if code != 0 || strings.TrimSpace(out) != "e2e-ok" {
+				t.Errorf("exec (%d): out=%q err=%q, want 0 e2e-ok", code, out, errOut)
+			}
+		} else {
+			if code == 0 || !strings.Contains(errOut, "not supported by GVX Desktop's experimental sandbox engine yet") {
+				t.Errorf("exec (%d): %q", code, errOut)
+			}
 		}
 		_, _, _ = h.docker(t, "", "rm", "-f", "gvxd-exec-e2e")
 

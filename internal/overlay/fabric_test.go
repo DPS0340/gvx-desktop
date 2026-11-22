@@ -126,6 +126,78 @@ func TestJoinConfiguresTheGuestAndThePeer(t *testing.T) {
 	}
 }
 
+func TestSetAddrsKeepsKeyAndUpdatesHub(t *testing.T) {
+	f := newTestFabric(t)
+	if _, _, ok, err := f.SetAddrs("missing", []netip.Prefix{pfx("10.89.1.2/24")}); err != nil || ok {
+		t.Fatalf("SetAddrs(missing) = ok=%v err=%v", ok, err)
+	}
+	orig, _, err := f.Join("c1", []netip.Prefix{pfx("10.89.1.2/24")}, JoinOptions{MTU: 8920})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, gen1, ok, err := f.SetAddrs("c1", []netip.Prefix{pfx("10.89.1.2/24"), pfx("10.89.2.7/24"), pfx("172.31.0.9/16")})
+	if err != nil || !ok || gen1 == 0 {
+		t.Fatalf("SetAddrs = gen=%d ok=%v err=%v", gen1, ok, err)
+	}
+	if !slices.Equal(updated.PrivateKey, orig.PrivateKey) {
+		t.Fatal("SetAddrs changed private key")
+	}
+	if !slices.Equal(updated.HubPublicKey, orig.HubPublicKey) || updated.Endpoint != orig.Endpoint || updated.MTU != 8920 {
+		t.Fatalf("SetAddrs lost peer settings: %+v vs %+v", updated, orig)
+	}
+	if !slices.Equal(updated.Addresses, []string{"10.89.1.2/24", "10.89.2.7/24", "172.31.0.9/16"}) {
+		t.Fatalf("addresses = %v", updated.Addresses)
+	}
+	if !slices.Equal(updated.Routes, []string{"10.89.0.0/16", "172.31.0.0/16"}) {
+		t.Fatalf("routes = %v", updated.Routes)
+	}
+	ipc, err := f.hub.dev.IpcGet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"allowed_ip=10.89.1.2/32", "allowed_ip=10.89.2.7/32", "allowed_ip=172.31.0.9/32"} {
+		if !strings.Contains(ipc, want) {
+			t.Fatalf("hub missing %s:\n%s", want, ipc)
+		}
+	}
+	// Disconnect removes old address from hub allowed IPs.
+	shrunk, gen2, ok, err := f.SetAddrs("c1", []netip.Prefix{pfx("10.89.2.7/24")})
+	if err != nil || !ok || gen2 <= gen1 {
+		t.Fatalf("SetAddrs shrink = gen=%d ok=%v err=%v", gen2, ok, err)
+	}
+	// Stale generation rollback is ignored.
+	if f.RevertAddrs("c1", gen1, []netip.Prefix{pfx("10.89.1.2/24")}) {
+		t.Fatal("RevertAddrs accepted stale generation")
+	}
+	// Matching generation rollback succeeds.
+	if !f.RevertAddrs("c1", gen2, []netip.Prefix{pfx("10.89.1.2/24")}) {
+		t.Fatal("RevertAddrs rejected current generation")
+	}
+	if got, _ := f.PeerAddrs("c1"); !slices.Equal(got, []netip.Prefix{pfx("10.89.1.2/24")}) {
+		t.Fatalf("after revert PeerAddrs = %v", got)
+	}
+	// Set back to shrunk, then empty.
+	shrunk, _, ok, err = f.SetAddrs("c1", []netip.Prefix{pfx("10.89.2.7/24")})
+	if err != nil || !ok {
+		t.Fatalf("SetAddrs shrink = ok=%v err=%v", ok, err)
+	}
+	if !slices.Equal(shrunk.Addresses, []string{"10.89.2.7/24"}) {
+		t.Fatalf("shrunk addresses = %v", shrunk.Addresses)
+	}
+	ipc, _ = f.hub.dev.IpcGet()
+	if strings.Contains(ipc, "10.89.1.2/32") || !strings.Contains(ipc, "allowed_ip=10.89.2.7/32") {
+		t.Fatalf("hub after shrink:\n%s", ipc)
+	}
+	// Disconnect all networks leaves empty allowed IPs and decodable config.
+	empty, _, ok, err := f.SetAddrs("c1", nil)
+	if err != nil || !ok || len(empty.Addresses) != 0 {
+		t.Fatalf("SetAddrs empty = %+v ok=%v err=%v", empty, ok, err)
+	}
+	if _, err := guestcfg.Decode(mustEncode(t, empty)); err != nil {
+		t.Fatalf("Decode empty config: %v", err)
+	}
+}
+
 func mustEncode(t *testing.T, c guestcfg.Config) string {
 	s, err := c.Encode()
 	if err != nil {

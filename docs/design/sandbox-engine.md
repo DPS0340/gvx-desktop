@@ -18,11 +18,16 @@ of the engine's own over `rungv run`. Images are rungv's image cache and volumes
 rungv volumes. No dockerd runs anywhere. The mode is off by default. With it off, the app
 behaves exactly as today.
 
-Not in phase 1: exec, commit/export,
-archive (cp), top, pause, update, swarm and plugins (all answer 501), and a TTY on
-Windows (falls back to pipes with a warning). Image builds are supported through the
-engine's lazy BuildKit builder sandbox (§9.1). Containers on a user network reach each
-other by name through the overlay (§9.2).
+With `rungv` v0.20+ (control protocol, see `docs/design/gvx-v020.md`), the engine
+also supports `exec`, `cp` (archive), `pause`/`unpause`, `top`, `update`, guest
+`kill`, graceful `stop` (honoring `StopSignal` and timeout), guest-accurate
+`stats`, and live `network connect`/`disconnect` for containers on the overlay.
+With `rungv` v0.19, those endpoints answer 501 as before. Still not supported:
+`commit`, `export`, `diff` (`/changes`), WebSocket attach, swarm and plugins
+(all answer 501), and a TTY on Windows (falls back to pipes with a warning).
+Image builds are supported through the engine's lazy BuildKit builder sandbox
+(§9.1). Containers on a user network reach each other by name through the
+overlay (§9.2).
 
 ## 2. rungv facts this design relies on (verified with rungv v0.18 on this machine)
 
@@ -697,11 +702,12 @@ Desktop's experimental sandbox engine yet"}`. Unknown paths answer 404 `page not
 | POST | /containers/{id}/wait | A | `condition`; header flushed at once; `{"StatusCode":n,"Error":null}` |
 | GET | /containers/{id}/logs | A | `follow,stdout,stderr,timestamps,tail,since,until`; multiplexed unless Tty |
 | POST | /containers/{id}/resize | A | `h`, `w` |
-| GET | /containers/{id}/stats | A | `stream`, `one-shot` |
-| GET | /containers/{id}/top, /changes, /export | – | 501 |
-| POST | /containers/{id}/update, /pause, /unpause | – | 501 |
-| HEAD,GET,PUT | /containers/{id}/archive | – | 501 (docker cp) |
-| POST | /containers/{id}/exec, /exec/{id}/start, /exec/{id}/resize; GET /exec/{id}/json | – | 501 "exec" |
+| GET | /containers/{id}/stats | A | `stream`, `one-shot`; guest stats via `rungv stats` (v0.20+), procstat fallback |
+| GET | /containers/{id}/top | W2 | `rungv top` (v0.20+; 501 on v0.19) |
+| GET | /containers/{id}/changes, /export | – | 501 |
+| POST | /containers/{id}/update, /pause, /unpause | W2 | `rungv update`/`pause`/`unpause` (v0.20+; 501 on v0.19) |
+| HEAD,GET,PUT | /containers/{id}/archive | W2 | `rungv cp` for running containers (v0.20+; 501 on v0.19 or stopped) |
+| POST | /containers/{id}/exec, /exec/{id}/start, /exec/{id}/resize; GET /exec/{id}/json | W2 | `rungv exec` (v0.20+; 501 "exec" on v0.19) |
 | POST | /commit | – | 501 |
 | GET | /images/json | C | |
 | POST | /images/create | C | `fromImage`, `tag`, `platform`; JSON progress stream |

@@ -389,14 +389,67 @@ func logLine(stderr bool, b []byte) LogLine {
 	return l
 }
 
+// ImagePlatform identifies the OS and CPU architecture of an image manifest.
+type ImagePlatform struct {
+	Architecture string `json:"architecture"`
+	OS           string `json:"os"`
+	Variant      string `json:"variant,omitempty"`
+}
+
+// ImageManifestData holds image-specific metadata for an image manifest.
+type ImageManifestData struct {
+	Platform ImagePlatform `json:"Platform"`
+}
+
+// ImageManifest is one manifest entry in GET /images/json (API 1.47+).
+type ImageManifest struct {
+	ID        string             `json:"ID"`
+	Available bool               `json:"Available"`
+	Kind      string             `json:"Kind"`
+	ImageData *ImageManifestData `json:"ImageData,omitempty"`
+}
+
+// Equal makes ImageManifest comparable for signals.
+func (m ImageManifest) Equal(o ImageManifest) bool {
+	if m.ID != o.ID || m.Available != o.Available || m.Kind != o.Kind {
+		return false
+	}
+	if (m.ImageData == nil) != (o.ImageData == nil) {
+		return false
+	}
+	return m.ImageData == nil || *m.ImageData == *o.ImageData
+}
+
 // Image is an entry of GET /images/json.
 type Image struct {
-	ID          string   `json:"Id"`
-	RepoTags    []string `json:"RepoTags"`
-	RepoDigests []string `json:"RepoDigests"`
-	Size        int64    `json:"Size"`
-	Created     int64    `json:"Created"`
-	Containers  int64    `json:"Containers"`
+	ID          string          `json:"Id"`
+	RepoTags    []string        `json:"RepoTags"`
+	RepoDigests []string        `json:"RepoDigests"`
+	Size        int64           `json:"Size"`
+	Created     int64           `json:"Created"`
+	Containers  int64           `json:"Containers"`
+	Manifests   []ImageManifest `json:"Manifests,omitempty"`
+}
+
+// Architecture returns the image's CPU architecture from its available image
+// manifest, or "" when GET /images/json did not include manifests.
+func (i Image) Architecture() string {
+	var fallback string
+	for _, m := range i.Manifests {
+		if m.ImageData == nil || m.ImageData.Platform.Architecture == "" {
+			continue
+		}
+		if m.Kind != "" && m.Kind != "image" {
+			continue
+		}
+		if m.Available {
+			return m.ImageData.Platform.Architecture
+		}
+		if fallback == "" {
+			fallback = m.ImageData.Platform.Architecture
+		}
+	}
+	return fallback
 }
 
 // ShortID is the first twelve hex characters of the ID, without any
@@ -411,7 +464,8 @@ func (i Image) Equal(o Image) bool {
 	return i.ID == o.ID && i.Size == o.Size && i.Created == o.Created &&
 		i.Containers == o.Containers &&
 		slices.Equal(i.RepoTags, o.RepoTags) &&
-		slices.Equal(i.RepoDigests, o.RepoDigests)
+		slices.Equal(i.RepoDigests, o.RepoDigests) &&
+		slices.EqualFunc(i.Manifests, o.Manifests, ImageManifest.Equal)
 }
 
 // escapeImagePath escapes each segment of an image reference while keeping
@@ -433,7 +487,17 @@ func (c *Client) Images(ctx context.Context) ([]Image, error) {
 
 // InspectImage returns the indented JSON of GET /images/{name}/json.
 func (c *Client) InspectImage(ctx context.Context, name string) (string, error) {
-	body, err := c.send(ctx, http.MethodGet, "/images/"+escapeImagePath(name)+"/json")
+	return c.InspectImagePlatform(ctx, name, "")
+}
+
+// InspectImagePlatform returns the indented JSON of GET /images/{name}/json,
+// scoped to platform (such as "linux/amd64") when non-empty.
+func (c *Client) InspectImagePlatform(ctx context.Context, name, platform string) (string, error) {
+	path := "/images/" + escapeImagePath(name) + "/json"
+	if platform != "" {
+		path += "?" + url.Values{"platform": {platform}}.Encode()
+	}
+	body, err := c.send(ctx, http.MethodGet, path)
 	if err != nil || body == nil {
 		return "", err
 	}
@@ -453,11 +517,24 @@ func (c *Client) InspectImage(ctx context.Context, name string) (string, error) 
 
 // RemoveImage untags or deletes an image from the engine.
 func (c *Client) RemoveImage(ctx context.Context, name string, force bool) error {
-	q := ""
+	return c.RemoveImagePlatform(ctx, name, force, "")
+}
+
+// RemoveImagePlatform untags or deletes an image from the engine, scoped to
+// platform (such as "linux/amd64") when non-empty.
+func (c *Client) RemoveImagePlatform(ctx context.Context, name string, force bool, platform string) error {
+	q := url.Values{}
 	if force {
-		q = "?force=1"
+		q.Set("force", "1")
 	}
-	return c.do(ctx, http.MethodDelete, "/images/"+escapeImagePath(name)+q, nil)
+	if platform != "" {
+		q.Set("platform", platform)
+	}
+	path := "/images/" + escapeImagePath(name)
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	return c.do(ctx, http.MethodDelete, path, nil)
 }
 
 // PruneResult is what POST /images/prune removed.
@@ -520,7 +597,16 @@ func (c *Client) PullImage(ctx context.Context, ref string, line func(string)) e
 
 // Tag names the image source repo:tag as well.
 func (c *Client) Tag(ctx context.Context, source, repo, tag string) error {
+	return c.TagPlatform(ctx, source, repo, tag, "")
+}
+
+// TagPlatform names the image source repo:tag as well, scoped to platform
+// (such as "linux/amd64") when non-empty.
+func (c *Client) TagPlatform(ctx context.Context, source, repo, tag, platform string) error {
 	q := url.Values{"repo": {repo}, "tag": {tag}}
+	if platform != "" {
+		q.Set("platform", platform)
+	}
 	return c.do(ctx, http.MethodPost, "/images/"+escapeImagePath(source)+"/tag?"+q.Encode(), nil)
 }
 

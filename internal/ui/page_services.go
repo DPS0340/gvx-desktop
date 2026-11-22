@@ -142,8 +142,12 @@ func nodePortCell(m *Model, list []NodePortReach) ggui.Widget {
 	var first ggui.Widget
 	if r.Address != "" {
 		url := r.URL()
-		first = tip(ui.Button(r.Address, func() { m.Open(url) }).Link().Size(ui.ButtonExtraSmall).Pad(0).
-			TrailingIcon(glyph(lucide.ExternalLink, 12)).Name(tr("Open %s", url)), tr("Open %s", url))
+		label := widget.Row(
+			ui.Mono(r.Address).Size(12).Color(colorLink).NoWrap(),
+			glyph(lucide.ExternalLink, 12).Color(colorLink),
+		).Gap(4).Align(widget.AlignCenter)
+		first = tip(ui.ButtonOf(label, func() { m.Open(url) }).Ghost().Size(ui.ButtonExtraSmall).Pad(2, 4).
+			Name(tr("Open %s", url)), tr("Open %s", url))
 	} else {
 		first = tip(widget.Row(
 			glyph(lucide.TriangleExclamationPoint, 13).Color(colorAmber),

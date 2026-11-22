@@ -97,11 +97,15 @@ func gvxImagesView(m *Model) ggui.Widget {
 				widget.TextOf(ggui.Map(r, func(i rungv.Image) string { return i.Repository })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
 			).Gap(10)
 		}).Grow(3),
-		ui.TextCol(tr("Tag"), func(i rungv.Image) string { return i.Tag }).Grow(1),
+		ui.Col(tr("Tag"), func(r ggui.Readable[rungv.Image]) ggui.Widget {
+			return ui.MonoOf(ggui.Map(r, func(i rungv.Image) string { return i.Tag })).Size(12).NoWrap().Ellipsis()
+		}).Grow(1),
 		ui.Col(tr("Image ID"), func(r ggui.Readable[rungv.Image]) ggui.Widget {
 			return ui.MonoOf(ggui.Map(r, func(i rungv.Image) string { return i.ID })).Size(12)
 		}).W(130),
-		ui.TextCol(tr("Created"), imageAge).W(130),
+		ui.Col(tr("Created"), func(r ggui.Readable[rungv.Image]) ggui.Widget {
+			return ui.CaptionOf(ggui.Combine(r, m.Now, imageAge)).Size(12).NoWrap()
+		}).W(130),
 		ui.TextCol(tr("Size"), func(i rungv.Image) string { return formatSize(i.Size) }).W(96).Right(),
 		ui.Col("", func(r ggui.Readable[rungv.Image]) ggui.Widget {
 			return ggui.View(r, func(img rungv.Image) ggui.Widget {
@@ -178,26 +182,39 @@ func dockerImagesView(m *Model) ggui.Widget {
 
 	table := ui.Table(visible, DockerImageRow.Key,
 		ui.Col(tr("Repository"), func(r ggui.Readable[DockerImageRow]) ggui.Widget {
-			return ggui.View(ggui.Derived(func() [2]string {
+			type repoCell struct {
+				repo    string
+				users   string
+				arch    string
+				foreign bool
+			}
+			return ggui.View(ggui.Derived(func() repoCell {
 				img := r.Get()
 				ctrs := m.DockerContainers.Get()
 				users := dockerImageAllUsers(ctrs.Items, m.Rows.Get(), m.Settings.Get().SandboxEngine, img)
-				if len(users) > 0 {
-					return [2]string{img.Repository, strings.Join(users, ", ")}
+				return repoCell{
+					repo:    img.Repository,
+					users:   strings.Join(users, ", "),
+					arch:    img.Arch,
+					foreign: img.ForeignArch(),
 				}
-				return [2]string{img.Repository, ""}
-			}), func(info [2]string) ggui.Widget {
+			}), func(info repoCell) ggui.Widget {
 				parts := []ggui.Widget{
 					glyph(lucide.Layers, 16).Color(colorGray),
-					widget.Flexible(widget.Text(info[0]).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
+					widget.Flexible(widget.Text(info.repo).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
 				}
-				if info[1] != "" {
-					parts = append(parts, tip(ui.Badge(tr("In use")).Outline(), tr("Used by %s", info[1])))
+				if info.foreign {
+					parts = append(parts, tip(ui.Badge(info.arch).Outline(), tr("Built for linux/%s; cannot be run in a sandbox yet.", info.arch)))
+				}
+				if info.users != "" {
+					parts = append(parts, tip(ui.Badge(tr("In use")).Outline(), tr("Used by %s", info.users)))
 				}
 				return widget.Row(parts...).Gap(8).Align(widget.AlignCenter)
 			})
 		}).Grow(3),
-		ui.TextCol(tr("Tag"), func(i DockerImageRow) string { return i.Tag }).Grow(1),
+		ui.Col(tr("Tag"), func(r ggui.Readable[DockerImageRow]) ggui.Widget {
+			return ui.MonoOf(ggui.Map(r, func(i DockerImageRow) string { return i.Tag })).Size(12).NoWrap().Ellipsis()
+		}).Grow(1),
 		ui.Col(tr("Image ID"), func(r ggui.Readable[DockerImageRow]) ggui.Widget {
 			return ui.MonoOf(ggui.Map(r, func(i DockerImageRow) string { return i.ShortID })).Size(12)
 		}).W(130),
@@ -213,20 +230,25 @@ func dockerImagesView(m *Model) ggui.Widget {
 		ui.Col("", func(r ggui.Readable[DockerImageRow]) ggui.Widget {
 			return ggui.View(r, func(img DockerImageRow) ggui.Widget {
 				ref := img.Ref()
+				entries := []ggui.Widget{
+					ui.MenuItem(tr("Browse files"), func() { m.ExploreDockerImage(img, ExploreFiles) }),
+					ui.MenuItem(tr("Inspect"), func() { m.ExploreDockerImage(img, ExploreInspect) }),
+					ui.MenuItem(tr("Pull again"), func() { m.OpenDockerPull(ref); m.Pull() }).Disabled(!img.Pullable()),
+					ui.MenuItem(tr("Push to cluster registry"), func() { m.PushToRegistry(img) }).Disabled(!img.Pullable()),
+					ui.MenuItem(tr("Copy reference"), func() { m.Copy(ref, ref) }),
+					ui.MenuItem(tr("Copy ID"), func() { m.Copy(img.ID, img.ShortID) }),
+				}
+				if !img.ForeignArch() {
+					entries = append(entries, ui.MenuItem(tr("Copy docker run command"), func() { m.Copy("docker run --rm -it "+ref, "docker run") }))
+				}
+				entries = append(entries,
+					ui.MenuDivider(),
+					ui.MenuItem(tr("Remove"), func() { m.AskRemoveDockerImage(img) }).Destructive(),
+				)
 				return widget.Row(
 					tip(iconButton(lucide.FolderSearch, tr("Browse files of %s", ref), func() { m.ExploreDockerImage(img, ExploreFiles) }), tr("Browse files")),
 					tip(iconButton(lucide.Trash, tr("Remove %s", ref), func() { m.AskRemoveDockerImage(img) }), tr("Remove")),
-					moreMenu(tr("More actions for %s", ref),
-						ui.MenuItem(tr("Browse files"), func() { m.ExploreDockerImage(img, ExploreFiles) }),
-						ui.MenuItem(tr("Inspect"), func() { m.ExploreDockerImage(img, ExploreInspect) }),
-						ui.MenuItem(tr("Pull again"), func() { m.OpenDockerPull(ref); m.Pull() }).Disabled(!img.Pullable()),
-						ui.MenuItem(tr("Push to cluster registry"), func() { m.PushToRegistry(img) }).Disabled(!img.Pullable()),
-						ui.MenuItem(tr("Copy reference"), func() { m.Copy(ref, ref) }),
-						ui.MenuItem(tr("Copy ID"), func() { m.Copy(img.ID, img.ShortID) }),
-						ui.MenuItem(tr("Copy docker run command"), func() { m.Copy("docker run --rm -it "+ref, "docker run") }),
-						ui.MenuDivider(),
-						ui.MenuItem(tr("Remove"), func() { m.AskRemoveDockerImage(img) }).Destructive(),
-					),
+					moreMenu(tr("More actions for %s", ref), entries...),
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(112).Identified("actions"),
@@ -281,7 +303,30 @@ func volumesPage(m *Model) ggui.Widget {
 		}
 		return s.String() + tr(". Each ext4lite volume is one journaled ext4 image file that grows on demand.")
 	}))
-	table := ui.Table(ggui.Map(m.Volumes, func(l Listing[rungv.Volume]) []rungv.Volume { return l.Items }).WithEqual(nil),
+	all := ggui.Map(m.Volumes, func(l Listing[rungv.Volume]) []rungv.Volume { return l.Items }).WithEqual(nil)
+	visible := ggui.Derived(func() []rungv.Volume {
+		items := all.Get()
+		q := strings.ToLower(strings.TrimSpace(m.VolumeQuery.Get()))
+		if q == "" {
+			return items
+		}
+		rows := m.Rows.Get()
+		engUsers := m.EngineVolumeUsers.Get()
+		var out []rungv.Volume
+		for _, v := range items {
+			users := strings.Join(volumeUsersWithEngine(rows, engUsers, v.Name), " ")
+			if strings.Contains(strings.ToLower(v.Name+" "+v.Driver+" "+users), q) {
+				out = append(out, v)
+			}
+		}
+		return out
+	}).WithEqual(nil)
+	count := ggui.Combine(visible, all, func(v, a []rungv.Volume) string { return showing(len(v), len(a)) })
+	type volStatus struct {
+		inUse bool
+		users string
+	}
+	table := ui.Table(visible,
 		func(v rungv.Volume) string { return v.Name },
 		ui.Col(tr("Name"), func(r ggui.Readable[rungv.Volume]) ggui.Widget {
 			return widget.Row(
@@ -291,22 +336,23 @@ func volumesPage(m *Model) ggui.Widget {
 		}).Grow(2),
 		ui.TextCol(tr("Driver"), func(v rungv.Volume) string { return v.Driver }).W(100),
 		ui.Col(tr("Status"), func(r ggui.Readable[rungv.Volume]) ggui.Widget {
-			return ggui.View(ggui.Derived(func() string {
+			return ggui.View(ggui.Derived(func() volStatus {
 				v := r.Get()
 				users := volumeUsersWithEngine(m.Rows.Get(), m.EngineVolumeUsers.Get(), v.Name)
-				if v.InUse {
-					return "in use"
-				}
-				if len(users) > 0 {
-					return tr("used by ") + strings.Join(users, ", ")
-				}
-				return ""
-			}), func(s string) ggui.Widget {
+				return volStatus{inUse: v.InUse, users: strings.Join(users, ", ")}
+			}), func(st volStatus) ggui.Widget {
 				switch {
-				case s == "in use":
-					return widget.Row(dot(colorGreen, 7), widget.Text(tr("In use")).Size(12)).Gap(6)
-				case s != "":
-					return ui.Caption(s).Size(12).NoWrap().Ellipsis()
+				case st.inUse && st.users != "":
+					row := widget.Row(
+						dot(colorGreen, 7),
+						widget.Text(tr("In use")).Size(12).NoWrap(),
+						widget.Flexible(ui.Caption("· "+st.users).Size(12).NoWrap().Ellipsis()),
+					).Gap(6).Align(widget.AlignCenter)
+					return tip(row, tr("Used by %s", st.users))
+				case st.inUse:
+					return widget.Row(dot(colorGreen, 7), widget.Text(tr("In use")).Size(12)).Gap(6).Align(widget.AlignCenter)
+				case st.users != "":
+					return tip(ui.Caption(tr("used by ")+st.users).Size(12).NoWrap().Ellipsis(), tr("Used by %s", st.users))
 				}
 				return ui.Caption(tr("unused")).Size(12)
 			})
@@ -315,13 +361,26 @@ func volumesPage(m *Model) ggui.Widget {
 		ui.TextCol(tr("Created"), func(v rungv.Volume) string { return shortDate(v.CreatedAt) }).W(140),
 		ui.Col("", func(r ggui.Readable[rungv.Volume]) ggui.Widget {
 			return ggui.View(r, func(v rungv.Volume) ggui.Widget {
+				menuItems := []ggui.Widget{
+					ui.MenuItem(tr("Reveal in file manager"), func() { m.Open(v.Mountpoint) }).Disabled(v.Mountpoint == ""),
+					ui.MenuItem(tr("Copy name"), func() { m.Copy(v.Name, v.Name) }),
+				}
+				if v.Mountpoint != "" {
+					menuItems = append(menuItems, ui.MenuItem(tr("Copy path"), func() { m.Copy(v.Mountpoint, v.Mountpoint) }))
+				}
+				menuItems = append(menuItems,
+					ui.MenuDivider(),
+					ui.MenuItem(tr("Delete"), func() { m.AskRemoveVolume(v) }).Destructive().Disabled(v.InUse),
+				)
 				return widget.Row(
-					tip(iconButton(lucide.FolderOpen, tr("Reveal %s", v.Name), func() { m.Open(v.Mountpoint) }), tr("Reveal in file manager")),
+					tip(iconButton(lucide.FolderOpen, tr("Reveal %s", v.Name), func() { m.Open(v.Mountpoint) }).Disabled(v.Mountpoint == ""), tr("Reveal in file manager")),
 					tip(iconButton(lucide.Trash, tr("Delete %s", v.Name), func() { m.AskRemoveVolume(v) }).Disabled(v.InUse), tr("Delete")),
+					moreMenu(tr("More actions for %s", v.Name), menuItems...),
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
-		}).W(84).Identified("actions"),
-	).BindSelected(m.SelectedVolume).RowName(func(v rungv.Volume) string { return v.Name }).RowHeight(tableRow)
+		}).W(112).Identified("actions"),
+	).BindSelected(m.SelectedVolume).RowName(func(v rungv.Volume) string { return v.Name }).RowHeight(tableRow).
+		Toolbar(filterBar(m.VolumeQuery, tr("Filter by name, driver or sandbox"), count))
 
 	body := ggui.View(ggui.Map(m.Volumes, func(l Listing[rungv.Volume]) int {
 		switch {
@@ -397,21 +456,51 @@ func snapshotsPage(m *Model) ggui.Widget {
 		return ui.Alert(tr("No sandbox has snapshots turned on"),
 			tr("Turn on \"Allow snapshots\" in a sandbox's settings: gvx opens the bundle directory and a control socket before the guest starts.")).Icon(icons.Info)
 	})
+	visible := ggui.Derived(func() []sandbox.Snapshot {
+		all := m.Snapshots.Get()
+		q := strings.ToLower(strings.TrimSpace(m.SnapshotQuery.Get()))
+		if q == "" {
+			return all
+		}
+		var out []sandbox.Snapshot
+		for _, s := range all {
+			sbName := ""
+			if spec, ok := m.spec(s.SandboxID); ok {
+				sbName = spec.Name
+			}
+			if strings.Contains(strings.ToLower(sbName+" "+s.Name+" "+s.Dir), q) {
+				out = append(out, s)
+			}
+		}
+		return out
+	}).WithEqual(nil)
+	count := ggui.Combine(visible, m.Snapshots, func(v, all []sandbox.Snapshot) string { return showing(len(v), len(all)) })
+	hasSnaps := ggui.Map(m.Snapshots, func(s []sandbox.Snapshot) bool { return len(s) > 0 })
+	body := ggui.If(hasSnaps, func() ggui.Widget {
+		return widget.Column(
+			ui.Card(filterBar(m.SnapshotQuery, tr("Filter snapshots"), count)).Pad(6, 10),
+			snapshotList(m, visible, true),
+		).Gap(12).Stretch()
+	}).Else(func() ggui.Widget {
+		return ui.Empty(tr("No snapshots yet"), tr("Checkpoint a running sandbox from its Snapshots tab to resume it later in milliseconds.")).
+			Media(glyph(lucide.Camera, 32).Color(colorGray)).
+			Action(ui.Button(tr("Open Sandboxes"), func() { m.Go(PageSandboxes) }).Outline()).Outline()
+	})
 	return page(
 		pageHeader(tr("Snapshots"), summary,
 			tip(iconButton(lucide.RefreshCw, tr("Refresh snapshots"), m.LoadSnapshots), tr("Refresh")),
 		),
 		hint,
-		snapshotList(m, m.Snapshots, true),
+		body,
 	)
 }
 
 // imageAge says how long ago an image was made, in the app's language;
 // rungv's own words for it are English.
-func imageAge(i rungv.Image) string {
+func imageAge(i rungv.Image, now time.Time) string {
 	t, err := time.Parse("2006-01-02 15:04:05 -0700 MST", i.CreatedAt)
 	if err != nil {
 		return i.CreatedSince
 	}
-	return since(t, time.Now())
+	return since(t, now)
 }

@@ -71,7 +71,7 @@ icon_inset = true
 # requires. Same as --identity.
 # signing_identity = "-"
 # An entitlements plist to sign with.
-# entitlements = ""
+entitlements = "assets/entitlements.plist"
 # A PKCS#12 (.p12) certificate and key to sign with instead of the
 # keychain, as CI has: a file, or else base64 text in the environment
 # variable p12_base64_env names. Its password is read from

@@ -17,14 +17,23 @@ import (
 )
 
 func sandboxesPage(m *Model) ggui.Widget {
-	visible := ggui.Combine(m.Rows, m.Query, func(rows []Row, q string) []Row {
-		q = strings.ToLower(strings.TrimSpace(q))
-		if q == "" {
-			return rows
-		}
+	visible := ggui.Derived(func() []Row {
+		rows := m.Rows.Get()
+		q := strings.ToLower(strings.TrimSpace(m.Query.Get()))
+		status := m.SandboxStatus.Get()
 		var out []Row
 		for _, r := range rows {
-			if strings.Contains(strings.ToLower(r.Spec.Name+" "+r.Spec.Image), q) {
+			switch status {
+			case "running":
+				if !r.State.Status.Active() {
+					continue
+				}
+			case "stopped":
+				if r.State.Status.Active() {
+					continue
+				}
+			}
+			if q == "" || strings.Contains(strings.ToLower(r.Spec.Name+" "+r.Spec.Image), q) {
 				out = append(out, r)
 			}
 		}
@@ -36,8 +45,21 @@ func sandboxesPage(m *Model) ggui.Widget {
 	selected := ggui.Bind(m.Selected.Get, m.Select)
 
 	count := ggui.Combine(visible, m.Rows, func(v, all []Row) string { return showing(len(v), len(all)) })
-	// The table is as tall as its rows up to six, and scrolls past that, so
-	// the details below stay in reach.
+	statusFilter := ui.ToggleGroup(m.SandboxStatus).Options([]string{"all", "running", "stopped"}).Format(func(v string) string {
+		switch v {
+		case "running":
+			return tr("Running")
+		case "stopped":
+			return tr("Stopped")
+		}
+		return tr("All")
+	}).Outline().Size(ui.ButtonExtraSmall).Spacing(0).Name(tr("Status"))
+	toolbar := widget.Row(
+		widget.Expanded(filterBar(m.Query, tr("Filter by name or image"), count)),
+		statusFilter,
+	).Gap(12).Align(widget.AlignCenter)
+	// The table is as tall as its rows up to five, and scrolls past that, so
+	// the details below stay in reach above the fold.
 	table := ui.Table(visible, func(r Row) string { return r.Spec.ID },
 		ui.Col(tr("Status"), func(r ggui.Readable[Row]) ggui.Widget {
 			return ggui.View(ggui.Map(r, func(r Row) sandbox.State { return r.State }), statusLabel)
@@ -73,8 +95,8 @@ func sandboxesPage(m *Model) ggui.Widget {
 				return widget.Row(sandboxQuickActions(m, r), rowMenu(m, r)).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(120).Identified("actions"),
-	).BindSelected(selected).RowName(func(r Row) string { return r.Spec.Name }).RowHeight(48).MaxRows(6).
-		Toolbar(filterBar(m.Query, tr("Filter by name or image"), count))
+	).BindSelected(selected).RowName(func(r Row) string { return r.Spec.Name }).RowHeight(48).MaxRows(5).
+		Toolbar(toolbar)
 
 	empty := ui.Empty(tr("No sandboxes"), tr("A sandbox runs one OCI image in its own unprivileged process. Create one, or start the Docker Engine or Kubernetes recipe.")).
 		Media(glyph(lucide.Box, 32).Color(colorGray)).
@@ -235,9 +257,10 @@ func logsView(m *Model) ggui.Widget {
 }
 
 // logViewer shows lines of a log, with a field that filters them, their
-// count, a button that copies them and the actions given after it.
+// count, a wrap toggle, a button that copies them and the actions given after it.
 func logViewer(m *Model, lines ggui.Readable[[]sandbox.LogLine], empty string, actions ...ggui.Widget) ggui.Widget {
 	filter := ggui.State("")
+	wrap := ggui.State(false)
 	shown := ggui.Combine(lines, filter, func(lines []sandbox.LogLine, f string) []sandbox.LogLine {
 		f = strings.ToLower(strings.TrimSpace(f))
 		if f == "" {
@@ -251,29 +274,67 @@ func logViewer(m *Model, lines ggui.Readable[[]sandbox.LogLine], empty string, a
 		}
 		return out
 	}).WithEqual(nil)
-	rows := widget.EachKeyed(shown, func(l sandbox.LogLine) int64 { return l.Seq }, func(row widget.EachItem[sandbox.LogLine]) ggui.Widget {
-		l := row.Item
-		t := ui.Mono(l.Text).Size(12).NoWrap().Ellipsis().Selectable()
+	makeRow := func(l sandbox.LogLine, wrapped bool) ggui.Widget {
+		t := ui.Mono(l.Text).Size(12).Selectable()
+		if !wrapped {
+			t = t.NoWrap().Ellipsis()
+		}
 		switch l.Stream {
 		case sandbox.System:
-			t = t.Color(colorBlue)
+			t = t.Color(colorLink)
 		case sandbox.Stderr:
-			if strings.HasPrefix(l.Text, "rungv:") {
+			lower := strings.ToLower(l.Text)
+			switch {
+			case strings.HasPrefix(l.Text, "rungv:"):
 				t = t.Color(colorGray)
+			case strings.Contains(lower, "[error]") || strings.Contains(lower, "error:") || strings.Contains(lower, "fatal") || strings.Contains(lower, "panic"):
+				t = t.Color(colorRed)
+			case strings.Contains(lower, "[warn]") || strings.Contains(lower, "warning:"):
+				t = t.Color(colorAmber)
 			}
 		}
 		return widget.Row(
 			ui.Mono(l.Time.Format("15:04:05")).Size(11).Color(colorGray).NoWrap(),
 			widget.Expanded(t),
-		).Gap(10)
-	}).ItemExtent(19).Else(func() ggui.Widget {
-		return widget.Padding(ui.Caption(empty), 12)
+		).Gap(10).Align(widget.AlignStart)
+	}
+	list := ggui.View(wrap, func(wrapped bool) ggui.Widget {
+		each := widget.EachKeyed(shown, func(l sandbox.LogLine) int64 { return l.Seq }, func(row widget.EachItem[sandbox.LogLine]) ggui.Widget {
+			return makeRow(row.Item, wrapped)
+		}).Else(func() ggui.Widget {
+			return widget.Padding(ui.Caption(empty), 12)
+		})
+		if !wrapped {
+			each = each.ItemExtent(19)
+		} else {
+			each = each.Gap(2)
+		}
+		return widget.Scroll(widget.Padding(each, 8, 12)).FollowEnd()
 	})
-	scroll := widget.Scroll(widget.Padding(rows, 8, 12)).FollowEnd()
+	clearFilter := ggui.If(ggui.Map(filter, func(s string) bool { return s != "" }), func() ggui.Widget {
+		return iconButton(lucide.X, tr("Clear the filter"), func() { filter.Set("") })
+	})
+	lineCount := ui.CaptionOf(ggui.Combine(shown, lines, func(s, all []sandbox.LogLine) string {
+		if len(s) == len(all) {
+			return fmt.Sprintf(tr("%d lines"), len(all))
+		}
+		return tr("%d of %d", len(s), len(all))
+	})).Size(12).NoWrap()
+	wrapBtn := ggui.View(wrap, func(on bool) ggui.Widget {
+		b := ui.ButtonOf(glyph(lucide.TextWrap, 15), func() { wrap.Set(!on) }).Name(tr("Wrap lines")).Size(ui.ButtonIconSmall)
+		if on {
+			b = b.Secondary()
+		} else {
+			b = b.Ghost()
+		}
+		return tip(b, tr("Wrap lines"))
+	})
 	bar := []ggui.Widget{
-		widget.Box(ui.TextField(filter).Placeholder(tr("Filter lines")).Name(tr("Filter logs"))).Width(260),
+		widget.Box(ui.TextField(filter).Placeholder(tr("Filter lines")).Name(tr("Filter logs"))).Width(240),
+		clearFilter,
 		widget.Spacer(),
-		ui.CaptionOf(ggui.Map(shown, func(l []sandbox.LogLine) string { return fmt.Sprintf(tr("%d lines"), len(l)) })).Size(12),
+		lineCount,
+		wrapBtn,
 		tip(iconButton(lucide.Copy, tr("Copy logs"), func() {
 			var b strings.Builder
 			for _, l := range ggui.Peek(shown) {
@@ -286,7 +347,7 @@ func logViewer(m *Model, lines ggui.Readable[[]sandbox.LogLine], empty string, a
 	toolbar := widget.Row(append(bar, actions...)...).Gap(6).Align(widget.AlignCenter)
 	return widget.Column(
 		toolbar,
-		widget.Box(scroll).Height(380).Radius(8).Border(1, colorGrayA).Fill(rgbA(0x000000, 0x08)),
+		widget.Box(list).Height(340).Radius(8).Border(1, colorBorder).Fill(colorSurfaceInset),
 	).Gap(10).Stretch()
 }
 

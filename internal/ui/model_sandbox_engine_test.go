@@ -35,6 +35,12 @@ type fakeSandboxEngine struct {
 	handler      http.Handler
 	builderSock  string
 	builderState engine.BuilderState
+	amd64Sock    string
+	amd64State   engine.Amd64State
+	amd64Configs []*engine.Amd64Config
+	setAmd64Err  error
+	resetDisks   int
+	resetDiskErr error
 }
 
 func (f *fakeSandboxEngine) Open(context.Context) error {
@@ -108,6 +114,44 @@ func (f *fakeSandboxEngine) BuilderState() engine.BuilderState {
 		return engine.BuilderState{Status: engine.BuilderIdle}
 	}
 	return f.builderState
+}
+
+func (f *fakeSandboxEngine) SetAmd64(cfg *engine.Amd64Config) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.amd64Configs = append(f.amd64Configs, cfg)
+	if f.setAmd64Err != nil {
+		return f.setAmd64Err
+	}
+	f.amd64State.Enabled = cfg != nil
+	return nil
+}
+
+func (f *fakeSandboxEngine) Amd64Socket() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.amd64Sock
+}
+
+func (f *fakeSandboxEngine) Amd64State() engine.Amd64State {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := f.amd64State
+	if st.Status == "" {
+		st.Status = engine.BuilderIdle
+	}
+	return st
+}
+
+func (f *fakeSandboxEngine) ResetAmd64Disk(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resetDisks++
+	if f.resetDiskErr != nil {
+		return f.resetDiskErr
+	}
+	f.amd64State.DiskBytes = 0
+	return nil
 }
 
 func (f *fakeSandboxEngine) counts() (opens, closes, stopRuns int, timeout time.Duration) {

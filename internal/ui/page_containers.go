@@ -212,7 +212,7 @@ func containersTable(m *Model) ggui.Widget {
 				return widget.Row(projectQuickAction(m, row), projectMenu(m, row)).Gap(2).Justify(widget.JustifyEnd)
 			})
 		})).W(84).Identified("actions"),
-	).BindSelected(selected).RowName(containerRow.name).RowHeight(48).MaxRows(6).
+	).BindSelected(selected).RowName(containerRow.name).RowHeight(48).MaxRows(5).
 		Toolbar(filterBar(m.ContainerQuery, tr("Filter by name, image or project"), count))
 }
 

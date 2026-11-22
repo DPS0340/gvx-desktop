@@ -136,45 +136,60 @@ func installButton(m *Model, u Update, label string) *ui.ButtonWidget {
 
 func metrics(m *Model) ggui.Widget {
 	big := func(r ggui.Readable[string]) ggui.Widget { return ui.TitleOf(r).Size(28) }
+	pair := func(count, sub ggui.Readable[string]) ggui.Widget {
+		return widget.Row(
+			big(count),
+			ui.CaptionOf(sub).Size(13).NoWrap(),
+		).Gap(8).Align(widget.AlignBaseline)
+	}
 	running := ggui.Map(m.Running, func(n int) string { return itoa(n) })
-	total := ggui.Map(m.Specs, func(s []sandbox.Spec) string { return itoa(len(s)) })
-	images := ggui.Combine(m.Images, m.Disk, func(l Listing[rungv.Image], d []rungv.DiskUsage) string {
-		return countWithSize(len(l.Items), d, "Images")
-	})
-	volumes := ggui.Combine(m.Volumes, m.Disk, func(l Listing[rungv.Volume], d []rungv.DiskUsage) string {
-		return countWithSize(len(l.Items), d, "Local Volumes")
+	total := ggui.Map(m.Specs, func(s []sandbox.Spec) string { return tr("of %s", itoa(len(s))) })
+	imageCount := ggui.Map(m.Images, func(l Listing[rungv.Image]) string { return itoa(len(l.Items)) })
+	imageSize := ggui.Map(m.Disk, func(d []rungv.DiskUsage) string { return diskSize(d, "Images") })
+	volCount := ggui.Map(m.Volumes, func(l Listing[rungv.Volume]) string { return itoa(len(l.Items)) })
+	volSize := ggui.Map(m.Disk, func(d []rungv.DiskUsage) string { return diskSize(d, "Local Volumes") })
+	snapCount := ggui.Map(m.Snapshots, func(s []sandbox.Snapshot) string { return itoa(len(s)) })
+	snapSize := ggui.Map(m.Snapshots, func(s []sandbox.Snapshot) string {
+		var sum int64
+		for _, x := range s {
+			sum += x.Size
+		}
+		if sum == 0 {
+			return ""
+		}
+		return formatBytes(sum)
 	})
 	cards := []ggui.Widget{
-		metric(tr("Running"), widget.Row(big(running), ui.CaptionOf(ggui.Map(total, func(t string) string { return tr("of %s", t) })).Size(13)).Gap(8).Align(widget.AlignBaseline), lucide.Activity, func() { m.Go(PageSandboxes) }),
-		metric(tr("Images"), big(images), lucide.Layers, func() { m.Go(PageImages) }),
-		metric(tr("Volumes"), big(volumes), lucide.HardDrive, func() { m.Go(PageVolumes) }),
-		metric(tr("Snapshots"), big(ggui.Map(m.Snapshots, func(s []sandbox.Snapshot) string { return itoa(len(s)) })), lucide.Camera, func() { m.Go(PageSnapshots) }),
+		metric(tr("Running"), pair(running, total), lucide.Activity, func() { m.Go(PageSandboxes) }),
+		metric(tr("Images"), pair(imageCount, imageSize), lucide.Layers, func() { m.Go(PageImages) }),
+		metric(tr("Volumes"), pair(volCount, volSize), lucide.HardDrive, func() { m.Go(PageVolumes) }),
+		metric(tr("Snapshots"), pair(snapCount, snapSize), lucide.Camera, func() { m.Go(PageSnapshots) }),
 	}
 	return widget.Responsive(760, widget.Grid(4, cards...).Gap(12), widget.Grid(2, cards...).Gap(12))
 }
 
-func countWithSize(n int, rows []rungv.DiskUsage, kind string) string {
+func diskSize(rows []rungv.DiskUsage, kind string) string {
 	for _, r := range rows {
 		if r.Type == kind && r.Size != "" && r.Size != "0B" && r.Size != "0 B" {
-			return fmt.Sprintf("%d · %s", n, formatSize(r.Size))
+			return formatSize(r.Size)
 		}
 	}
-	return itoa(n)
+	return ""
 }
 
 func recentSandboxes(m *Model) ggui.Widget {
 	list := widget.EachKeyed(m.Rows, func(r Row) string { return r.Spec.ID }, func(row widget.EachItem[Row]) ggui.Widget {
 		id := row.Item.Spec.ID
 		return ggui.View(row.Value, func(r Row) ggui.Widget {
-			// One line: the name leads with its image after it, and the
-			// status stands by the button that changes it.
+			// One line: name and image fill the left, while usage, status,
+			// and action buttons align in consistent columns on the right.
 			return hoverRow(widget.Row(
 				statusMark(r.State),
 				widget.Text(r.Spec.Name).Size(14).Weight(ggui.WeightMedium).NoWrap(),
 				widget.Expanded(ui.Caption(r.Spec.Image).Size(13).NoWrap().Ellipsis()),
-				sandboxUsageBrief(m, id),
-				ui.Caption(statusText(r.State)).Size(12).NoWrap(),
-				sandboxQuickActions(m, r),
+				widget.Box(sandboxUsageBrief(m, id)).Width(118),
+				widget.Box(ui.Caption(statusText(r.State)).Size(12).NoWrap().Ellipsis()).Width(96),
+				widget.Box(widget.Row(sandboxQuickActions(m, r)).Justify(widget.JustifyEnd)).Width(64),
 			).Gap(10).Align(widget.AlignCenter), func() { m.ShowSandbox(id, 0) })
 		})
 	}).Gap(2).Else(func() ggui.Widget {
@@ -288,11 +303,16 @@ func recipeCards(m *Model) ggui.Widget {
 			).Gap(12),
 			ui.Caption(summary),
 			widget.Column(points...).Gap(6),
+			widget.Spacer(),
 			action,
 		).Gap(12).Stretch()))
 	}
-	return widget.Responsive(1100, widget.Grid(3, cards...).Gap(12),
-		widget.Responsive(760, widget.Grid(2, cards...).Gap(12), widget.Column(cards...).Gap(12).Stretch()))
+	rowCards := make([]ggui.Widget, len(cards))
+	for i, c := range cards {
+		rowCards[i] = widget.Expanded(c)
+	}
+	return widget.Responsive(860, widget.Row(rowCards...).Gap(12).Stretch(),
+		widget.Responsive(600, widget.Grid(2, cards...).Gap(12), widget.Column(cards...).Gap(12).Stretch()))
 }
 
 // recipeIcon pictures a recipe.

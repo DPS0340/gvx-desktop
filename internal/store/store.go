@@ -66,6 +66,11 @@ type Settings struct {
 	// the Docker API and runs every container as a sandbox of its own, with
 	// no Docker Engine.
 	SandboxEngine bool `json:"sandboxEngine,omitempty"`
+	// Amd64Builds adds a linux/amd64 node to the sandbox engine's
+	// gvx-desktop builder, served by a small Virtualization.framework VM
+	// with Rosetta (experimental, macOS on Apple silicon; meaningful only
+	// with SandboxEngine on).
+	Amd64Builds bool `json:"amd64Builds,omitempty"`
 }
 
 // Equal makes Settings comparable for signals, which a list in it keeps

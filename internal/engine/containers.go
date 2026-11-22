@@ -824,6 +824,13 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		e.ctr.mu.Unlock()
 	}
 
+	// An image of another architecture is refused here, not with the 404
+	// below, which would make the docker CLI pull it and try again.
+	if err := e.refuseForeignImage(r.Context(), req.Image, r.URL.Query().Get("platform")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
 	// Inspect the cached image (404 makes docker CLI pull).
 	img, err := e.imageConfig(r.Context(), req.Image)
 	if err != nil {

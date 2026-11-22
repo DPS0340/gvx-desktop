@@ -1,13 +1,13 @@
 package engine
 
-// Owner: workstream C (images, volumes, networks, system, events).
+// Owner: workstream C (images, volumes, networks, system).
 // Workstream C may add files named image_*.go, volume_*.go, network_*.go,
 // system_*.go and events_*.go.
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"io"
 	"net/http"
 	"path"
 	"slices"
@@ -19,9 +19,13 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
 
-// imageState is what the engine keeps of images: nothing but rungv's
-// cache, for now.
-type imageState struct{}
+// imageState tracks lightweight cache hints for image listings (such as
+// whether the foreign-architecture namespace needs to be queried).
+type imageState struct {
+	mu             sync.Mutex
+	foreignChecked bool
+	hasForeign     bool
+}
 
 // ImageInspect is rungv inspect of one image, which follows docker image
 // inspect.
@@ -59,15 +63,17 @@ type ImageConfig struct {
 }
 
 type imageSummary struct {
-	ID          string            `json:"Id"`
-	ParentID    string            `json:"ParentId"`
-	RepoTags    []string          `json:"RepoTags"`
-	RepoDigests []string          `json:"RepoDigests"`
-	Created     int64             `json:"Created"`
-	Size        int64             `json:"Size"`
-	SharedSize  int64             `json:"SharedSize"`
-	Labels      map[string]string `json:"Labels"`
-	Containers  int64             `json:"Containers"`
+	ID          string                 `json:"Id"`
+	ParentID    string                 `json:"ParentId"`
+	RepoTags    []string               `json:"RepoTags"`
+	RepoDigests []string               `json:"RepoDigests"`
+	Created     int64                  `json:"Created"`
+	Size        int64                  `json:"Size"`
+	SharedSize  int64                  `json:"SharedSize"`
+	Labels      map[string]string      `json:"Labels"`
+	Containers  int64                  `json:"Containers"`
+	Manifests   []imageManifestSummary `json:"Manifests,omitempty"`
+	arch        string
 }
 
 type imageInspectResponse struct {
@@ -92,41 +98,10 @@ type imageInspectResponse struct {
 
 // ---- seams: called by workstream B; frozen ----
 
-// imageConfig inspects the cached image ref. An image that is not cached
-// is a 404 "No such image: ref", which makes the CLI pull it.
+// imageConfig inspects the cached host-architecture image ref. An image that
+// is not cached is a 404 "No such image: ref", which makes the CLI pull it.
 func (e *Engine) imageConfig(ctx context.Context, ref string) (ImageInspect, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return ImageInspect{}, errNotFound("No such image: %s", ref)
-	}
-	if err := validateImageRef(ref); err != nil {
-		return ImageInspect{}, err
-	}
-	if imgs, err := e.runner.InspectImages(ctx, ref); err == nil && len(imgs) > 0 {
-		img := imgs[0]
-		img.ResolvedRef = resolvedCacheRef(ref, img)
-		return img, nil
-	} else if err != nil && errors.Is(err, rungv.ErrNotFound) {
-		return ImageInspect{}, err
-	}
-
-	// Try normalized reference forms (e.g. docker.io/library/alpine:3.20 → alpine:3.20)
-	// and short ID prefix lookup.
-	for _, alt := range imageRefAlternatives(ref) {
-		if imgs, err := e.runner.InspectImages(ctx, alt); err == nil && len(imgs) > 0 {
-			img := imgs[0]
-			img.ResolvedRef = resolvedCacheRef(alt, img)
-			return img, nil
-		}
-	}
-	if id := e.resolveImageIDPrefix(ctx, ref); id != "" {
-		if imgs, err := e.runner.InspectImages(ctx, id); err == nil && len(imgs) > 0 {
-			img := imgs[0]
-			img.ResolvedRef = resolvedCacheRef(id, img)
-			return img, nil
-		}
-	}
-	return ImageInspect{}, errNotFound("No such image: %s", ref)
+	return e.lookupImageInArch(ctx, hostImageArch, ref)
 }
 
 // resolvedCacheRef picks the reference that rungv run -pull never accepts for
@@ -303,29 +278,6 @@ func normalizeImageRef(ref string) string {
 	return s
 }
 
-func (e *Engine) resolveImageIDPrefix(ctx context.Context, ref string) string {
-	needle := strings.TrimPrefix(strings.ToLower(ref), "sha256:")
-	if len(needle) < 3 || !isHexString(needle) {
-		return ""
-	}
-	rows, err := e.runner.Images(ctx)
-	if err != nil {
-		return ""
-	}
-	var match string
-	for _, row := range rows {
-		id := row.ID
-		hex := strings.TrimPrefix(strings.ToLower(id), "sha256:")
-		if strings.HasPrefix(hex, needle) {
-			if match != "" && match != id {
-				return "" // ambiguous
-			}
-			match = id
-		}
-	}
-	return match
-}
-
 func isHexString(s string) bool {
 	if s == "" {
 		return false
@@ -357,7 +309,7 @@ func (e *Engine) imageList(w http.ResponseWriter, r *http.Request) {
 	hasBefore := f.has("before")
 	hasSince := f.has("since")
 	if hasBefore {
-		if img, err := e.imageConfig(r.Context(), f["before"][0]); err == nil {
+		if img, _, err := e.lookupImage(r.Context(), f["before"][0]); err == nil {
 			beforeTime = img.Created
 		} else {
 			writeError(w, r, err)
@@ -365,7 +317,7 @@ func (e *Engine) imageList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasSince {
-		if img, err := e.imageConfig(r.Context(), f["since"][0]); err == nil {
+		if img, _, err := e.lookupImage(r.Context(), f["since"][0]); err == nil {
 			sinceTime = img.Created
 		} else {
 			writeError(w, r, err)
@@ -406,7 +358,43 @@ func (e *Engine) imageList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) buildImageSummaries(ctx context.Context) ([]imageSummary, error) {
-	rows, err := e.runner.Images(ctx)
+	ctrCounts := map[string]int64{}
+	for _, c := range e.allContainers() {
+		if c.ImageID != "" {
+			ctrCounts[c.ImageID]++
+		}
+	}
+
+	out, err := e.buildImageSummariesForArch(ctx, hostImageArch, ctrCounts)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := e.archRunner(); ok && e.shouldListForeignImages() {
+		foreign := foreignImageArch()
+		fRows, ferr := e.buildImageSummariesForArch(ctx, foreign, ctrCounts)
+		if ferr != nil {
+			e.logf("engine: list %s images: %v", foreign, ferr)
+			e.recordForeignImagePresence(false)
+		} else {
+			e.recordForeignImagePresence(len(fRows) > 0)
+			out = append(out, fRows...)
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Created != out[j].Created {
+			return out[i].Created > out[j].Created
+		}
+		if out[i].ID != out[j].ID {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].arch < out[j].arch
+	})
+	return out, nil
+}
+
+func (e *Engine) buildImageSummariesForArch(ctx context.Context, arch string, ctrCounts map[string]int64) ([]imageSummary, error) {
+	rows, err := e.imagesInArch(ctx, arch)
 	if err != nil {
 		return nil, err
 	}
@@ -444,23 +432,16 @@ func (e *Engine) buildImageSummaries(ctx context.Context) ([]imageSummary, error
 	}
 
 	inspected := map[string]ImageInspect{}
-	if insList, err := e.runner.InspectImages(ctx, order...); err == nil {
+	if insList, err := e.inspectImagesInArch(ctx, arch, order...); err == nil {
 		for _, ins := range insList {
 			inspected[ins.ID] = ins
 		}
 	} else {
 		// Fall back one by one in case one ID disappeared concurrently.
 		for _, id := range order {
-			if insList, err := e.runner.InspectImages(ctx, id); err == nil && len(insList) > 0 {
+			if insList, err := e.inspectImagesInArch(ctx, arch, id); err == nil && len(insList) > 0 {
 				inspected[insList[0].ID] = insList[0]
 			}
-		}
-	}
-
-	ctrCounts := map[string]int64{}
-	for _, c := range e.allContainers() {
-		if c.ImageID != "" {
-			ctrCounts[c.ImageID]++
 		}
 	}
 
@@ -473,6 +454,8 @@ func (e *Engine) buildImageSummaries(ctx context.Context) ([]imageSummary, error
 		var created int64
 		var size int64
 		var labels map[string]string
+		imgArch := arch
+		imgOS := "linux"
 		if hasIns {
 			if len(ins.RepoTags) > 0 {
 				tags = slices.Clone(ins.RepoTags)
@@ -485,6 +468,12 @@ func (e *Engine) buildImageSummaries(ctx context.Context) ([]imageSummary, error
 			}
 			size = ins.Size
 			labels = ins.Config.Labels
+			if a := normalizeArch(ins.Architecture); a != "" {
+				imgArch = a
+			}
+			if ins.Os != "" {
+				imgOS = ins.Os
+			}
 		}
 		if created == 0 {
 			if t, err := parseRungvTime(g.row.CreatedAt); err == nil {
@@ -510,14 +499,10 @@ func (e *Engine) buildImageSummaries(ctx context.Context) ([]imageSummary, error
 			SharedSize:  -1,
 			Labels:      labels,
 			Containers:  ctrCounts[id],
+			Manifests:   makeImageManifests(id, imgArch, imgOS, size),
+			arch:        arch,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Created != out[j].Created {
-			return out[i].Created > out[j].Created
-		}
-		return out[i].ID < out[j].ID
-	})
 	return out, nil
 }
 
@@ -649,6 +634,10 @@ func (e *Engine) imageCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	mu.Unlock()
 
+	if reqArch := parsePlatformArch(platform); reqArch != "" && reqArch != hostImageArch {
+		e.markForeignImagesPossible()
+	}
+
 	e.emit(Event{
 		Type:       "image",
 		Action:     "pull",
@@ -679,11 +668,8 @@ func isImageNotFoundErr(msg string) bool {
 
 func (e *Engine) imageInspect(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := validateImageRef(name); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	img, err := e.imageConfig(r.Context(), name)
+	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
+	img, _, err := e.lookupImageForPlatform(r.Context(), name, platform)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -714,6 +700,7 @@ func (e *Engine) imageTag(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("name")
 	repo := strings.TrimSpace(r.URL.Query().Get("repo"))
 	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
+	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
 	if err := validateImageRef(source); err != nil {
 		writeError(w, r, err)
 		return
@@ -728,7 +715,7 @@ func (e *Engine) imageTag(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	img, err := e.imageConfig(r.Context(), source)
+	img, arch, err := e.lookupImageForPlatform(r.Context(), source, platform)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -743,8 +730,8 @@ func (e *Engine) imageTag(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if err := e.runner.TagImage(r.Context(), source, target); err != nil {
-		if err2 := e.runner.TagImage(r.Context(), img.ID, target); err2 != nil {
+	if err := e.tagImageInArch(r.Context(), arch, source, target); err != nil {
+		if err2 := e.tagImageInArch(r.Context(), arch, img.ID, target); err2 != nil {
 			writeError(w, r, err)
 			return
 		}
@@ -762,26 +749,23 @@ func (e *Engine) imageTag(w http.ResponseWriter, r *http.Request) {
 func (e *Engine) imageDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	force := queryBool(r, "force")
-	if err := validateImageRef(name); err != nil {
-		writeError(w, r, err)
-		return
-	}
+	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
 
-	img, err := e.imageConfig(r.Context(), name)
+	img, arch, err := e.lookupImageForPlatform(r.Context(), name, platform)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
 	// Never delete an image used by the user's own GVX Desktop sandboxes,
 	// even when force=1 is passed (e.g. from the UI's delete action).
-	if e.isKeptImage(img.ID, img.RepoTags, img.RepoDigests) {
+	if arch == hostImageArch && e.isKeptImage(img.ID, img.RepoTags, img.RepoDigests) {
 		writeError(w, r, errConflict(
 			"conflict: unable to remove image %q - a GVX Desktop sandbox uses it",
 			name,
 		))
 		return
 	}
-	if e.isBuilderImageProtected(img.ID, img.RepoTags, img.RepoDigests) {
+	if arch == hostImageArch && e.isBuilderImageProtected(img.ID, img.RepoTags, img.RepoDigests) {
 		writeError(w, r, errConflict(
 			"conflict: unable to remove image %q - the sandbox engine's builder is using it",
 			name,
@@ -812,11 +796,11 @@ func (e *Engine) imageDelete(w http.ResponseWriter, r *http.Request) {
 	if byID {
 		removeRef = img.ID
 	}
-	if err := e.runner.RemoveImage(r.Context(), removeRef, force); err != nil {
+	if err := e.removeImageInArch(r.Context(), arch, removeRef, force); err != nil {
 		// Retry with normalized ref if the client sent e.g. alpine without :latest.
 		if !byID {
 			if alt := normalizeImageRef(name); alt != removeRef {
-				err = e.runner.RemoveImage(r.Context(), alt, force)
+				err = e.removeImageInArch(r.Context(), arch, alt, force)
 			}
 		}
 		if err != nil {
@@ -848,9 +832,9 @@ func (e *Engine) imageDelete(w http.ResponseWriter, r *http.Request) {
 
 	// Check whether the image itself was removed or still exists in the cache.
 	deleted := false
-	if _, err := e.runner.InspectImages(r.Context(), img.ID); err != nil {
+	if _, err := e.inspectImagesInArch(r.Context(), arch, img.ID); err != nil {
 		deleted = true
-	} else if rows, err := e.runner.Images(r.Context()); err == nil {
+	} else if rows, err := e.imagesInArch(r.Context(), arch); err == nil {
 		found := false
 		for _, row := range rows {
 			if row.ID == img.ID {
@@ -921,7 +905,19 @@ func (e *Engine) imageLoad(w http.ResponseWriter, r *http.Request) {
 		_ = rc.Flush()
 	}
 
-	err := e.runner.LoadImages(r.Context(), r.Body, func(line string) {
+	tmpFile, cleanup, err := e.spoolImageArchive(r.Body)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	defer cleanup()
+
+	arches := detectArchiveArches(tmpFile)
+	if len(arches) == 0 {
+		arches = []string{hostImageArch}
+	}
+
+	onLine := func(line string) {
 		if quiet {
 			return
 		}
@@ -932,12 +928,24 @@ func (e *Engine) imageLoad(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		writeObj(map[string]string{"stream": line + "\n"})
 		mu.Unlock()
-	})
-	if err != nil {
+	}
+
+	var loadErr error
+	for _, arch := range arches {
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			loadErr = err
+			break
+		}
+		if err := e.loadImagesInArch(r.Context(), arch, tmpFile, onLine); err != nil {
+			loadErr = err
+			break
+		}
+	}
+	if loadErr != nil {
 		mu.Lock()
 		if !started {
 			mu.Unlock()
-			writeError(w, r, err)
+			writeError(w, r, loadErr)
 			return
 		}
 		writeObj(struct {
@@ -948,8 +956,8 @@ func (e *Engine) imageLoad(w http.ResponseWriter, r *http.Request) {
 		}{
 			ErrorDetail: struct {
 				Message string `json:"message"`
-			}{Message: err.Error()},
-			Error: err.Error(),
+			}{Message: loadErr.Error()},
+			Error: loadErr.Error(),
 		})
 		mu.Unlock()
 		return
@@ -993,18 +1001,27 @@ func (e *Engine) imageGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errInvalid("at least one image name is required"))
 		return
 	}
+	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
+	arch := ""
 	for _, ref := range refs {
 		if err := validateImageRef(ref); err != nil {
 			writeError(w, r, err)
 			return
 		}
-		if _, err := e.imageConfig(r.Context(), ref); err != nil {
+		_, refArch, err := e.lookupImageForPlatform(r.Context(), ref, platform)
+		if err != nil {
 			writeError(w, r, err)
+			return
+		}
+		if arch == "" {
+			arch = refArch
+		} else if arch != refArch {
+			writeError(w, r, errInvalid("cannot save images of mixed architectures in one archive"))
 			return
 		}
 	}
 	tw := &tarStreamWriter{w: w}
-	if err := e.runner.SaveImages(r.Context(), tw, refs...); err != nil {
+	if err := e.saveImagesInArch(r.Context(), arch, tw, refs...); err != nil {
 		if !tw.started {
 			writeError(w, r, err)
 		}
@@ -1063,15 +1080,15 @@ func (e *Engine) imagePrune(w http.ResponseWriter, r *http.Request) {
 		if danglingOnly && len(img.RepoTags) > 0 {
 			continue
 		}
-		if e.isKeptImage(img.ID, img.RepoTags, img.RepoDigests) {
+		if img.arch == hostImageArch && e.isKeptImage(img.ID, img.RepoTags, img.RepoDigests) {
 			continue
 		}
-		if e.isBuilderImageProtected(img.ID, img.RepoTags, img.RepoDigests) {
+		if img.arch == hostImageArch && e.isBuilderImageProtected(img.ID, img.RepoTags, img.RepoDigests) {
 			continue
 		}
 		inUse := false
 		for _, c := range ctrs {
-			if c.ImageID == img.ID || imageMatchesRef(c.Image, img.ID, img.RepoTags, img.RepoDigests) {
+			if c.ImageID == img.ID || (img.arch == hostImageArch && imageMatchesRef(c.Image, img.ID, img.RepoTags, img.RepoDigests)) {
 				inUse = true
 				break
 			}
@@ -1085,7 +1102,7 @@ func (e *Engine) imagePrune(w http.ResponseWriter, r *http.Request) {
 		if !untilTime.IsZero() && !time.Unix(img.Created, 0).Before(untilTime) {
 			continue
 		}
-		if err := e.runner.RemoveImage(r.Context(), img.ID, true); err != nil {
+		if err := e.removeImageInArch(r.Context(), img.arch, img.ID, true); err != nil {
 			continue
 		}
 		for _, t := range img.RepoTags {

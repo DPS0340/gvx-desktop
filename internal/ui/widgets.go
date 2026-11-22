@@ -19,13 +19,18 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
-// Status colors read on both light and dark surfaces.
+// Status colors read on both light and dark surfaces, and semantic tokens
+// follow the active light/dark theme without rebuilding.
 var (
-	colorGreen = color.RGBA{0x22, 0xc5, 0x5e, 0xff}
-	colorAmber = color.RGBA{0xf5, 0x9e, 0x0b, 0xff}
-	colorRed   = color.RGBA{0xef, 0x44, 0x44, 0xff}
-	colorGray  = color.RGBA{0xa1, 0xa1, 0xaa, 0xff}
-	colorBlue  = color.RGBA{0x3b, 0x82, 0xf6, 0xff}
+	colorGreen color.Color = color.RGBA{0x22, 0xc5, 0x5e, 0xff}
+	colorAmber color.Color = color.RGBA{0xf5, 0x9e, 0x0b, 0xff}
+	colorRed   color.Color = color.RGBA{0xef, 0x44, 0x44, 0xff}
+	colorGray  color.Color = uitheme.MutedFg
+	colorBlue  color.Color = color.RGBA{0x3b, 0x82, 0xf6, 0xff}
+
+	colorBorder       color.Color = uitheme.Border
+	colorSurfaceInset color.Color = uitheme.Muted.Alpha(0.45)
+	colorLink         color.Color = uitheme.SidebarPrimary
 )
 
 func statusColor(s sandbox.Status) color.Color {
@@ -150,8 +155,8 @@ func headed(header ggui.Widget, under ...ggui.Widget) ggui.Widget {
 
 // page lays out a scrolling page with a gutter.
 func page(children ...ggui.Widget) ggui.Widget {
-	body := widget.Column(children...).Gap(20).Stretch()
-	return widget.Scroll(widget.Padding(widget.Align(widget.Box(body).MaxWidth(1180)).Top(), 28, 32))
+	body := widget.Column(children...).Gap(16).Stretch()
+	return widget.Scroll(widget.Padding(widget.Align(widget.Box(body).MaxWidth(1180)).Top(), 22, 28))
 }
 
 // kv is a label and its value in a details list.
@@ -179,14 +184,15 @@ func copyable(m *Model, text, what string) ggui.Widget {
 
 // metric is a count with its label, as the dashboard shows them.
 func metric(label string, value ggui.Widget, icon *icons.Glyph, onTap func()) ggui.Widget {
+	badge := widget.Box(glyph(icon, 15).Color(colorGray)).Pad(6).Radius(8).Fill(colorSurfaceInset)
 	body := widget.Column(
-		widget.Row(ui.Caption(label), widget.Spacer(), glyph(icon, 16).Color(colorGray)).Align(widget.AlignCenter),
+		widget.Row(ui.Caption(label).Size(12), widget.Spacer(), badge).Align(widget.AlignCenter),
 		value,
-	).Gap(10).Stretch()
+	).Gap(8).Stretch()
 	card := ui.Card(body)
 	if onTap != nil {
 		// A card that goes somewhere answers the pointer.
-		card.OnTap(onTap).Pad(16).Name(label)
+		card.OnTap(onTap).Pad(14, 16).Name(label)
 	}
 	return card
 }

@@ -16,8 +16,11 @@ import (
 	uitheme "github.com/ironpark/ggui/ui/theme"
 	"github.com/ironpark/ggwd"
 
+	"github.com/ironpark/gvx-desktop-vm/vmhelper"
 	"github.com/ironpark/gvx-desktop/internal/appupdate"
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/engine"
+	"github.com/ironpark/gvx-desktop/internal/imagefs"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -52,7 +55,10 @@ func (s shot) live() bool { return strings.HasSuffix(s.name, "-terminal") }
 // tall reports whether the shot is drawn taller than the window, to show a
 // long page whole.
 func (s shot) tall() bool {
-	return strings.HasSuffix(s.name, "-whole") || s.name == "settings-sandbox-engine"
+	return strings.HasSuffix(s.name, "-whole") ||
+		s.name == "settings-sandbox-engine" ||
+		s.name == "settings-amd64-builder" ||
+		s.name == "settings-amd64-requirements"
 }
 
 func renderAll(tmp, out, lang string) error {
@@ -175,6 +181,32 @@ func renderAll(tmp, out, lang string) error {
 		}},
 		{"sandboxes-registry", func(m *ui.Model) { m.ShowSandbox(demoIDs[4], 1) }},
 		{"volumes", func(m *ui.Model) { m.Page.Set(ui.PageVolumes) }},
+		{"snapshots", func(m *ui.Model) { m.Page.Set(ui.PageSnapshots) }},
+		{"explorer", func(m *ui.Model) {
+			m.GoImages(ui.ImagesGVX)
+			m.ExploreTitle.Set("nginx:alpine")
+			m.ExploreSource.Set("GVX")
+			m.ExploreTab.Set(ui.ExploreFiles)
+			m.ExplorePath.Set("/etc/nginx")
+			m.ExploreLayers.Set([]imagefs.Layer{
+				{Index: 1, Digest: "sha256:111122223333", Size: 8 << 20, Command: "ADD alpine-minirootfs.tar.gz /", HasFiles: true},
+				{Index: 2, Digest: "sha256:444455556666", Size: 14 << 20, Command: "RUN apk add --no-cache nginx", HasFiles: true},
+			})
+			m.ExploreEntries.Set([]imagefs.Entry{
+				{Name: "conf.d", Path: "/etc/nginx/conf.d", Kind: imagefs.KindDir, Mode: 0o040755, Layer: 2},
+				{Name: "modules", Path: "/etc/nginx/modules", Kind: imagefs.KindSymlink, Target: "/usr/lib/nginx/modules", Mode: 0o120777, Layer: 2},
+				{Name: "mime.types", Path: "/etc/nginx/mime.types", Kind: imagefs.KindFile, Mode: 0o100644, Size: 5349, Layer: 2},
+				{Name: "nginx.conf", Path: "/etc/nginx/nginx.conf", Kind: imagefs.KindFile, Mode: 0o100644, Size: 642, Layer: 2},
+			})
+			m.ExploreSelected.Set("/etc/nginx/nginx.conf")
+			m.ExplorePreview.Set(ui.FilePreview{
+				HasEntry: true,
+				Entry:    imagefs.Entry{Name: "nginx.conf", Path: "/etc/nginx/nginx.conf", Kind: imagefs.KindFile, Mode: 0o100644, Size: 642, Layer: 2},
+				Body:     "user nginx;\nworker_processes auto;\n\nerror_log /var/log/nginx/error.log notice;\npid       /var/run/nginx.pid;\n\nevents {\n    worker_connections 1024;\n}\n",
+				Language: "conf",
+			})
+			m.ExploreOpen.Set(true)
+		}},
 		{"docker", func(m *ui.Model) { m.Page.Set(ui.PageDocker) }},
 		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes); m.Forwards.Set(demoForwards()) }},
 		{"settings", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
@@ -186,6 +218,36 @@ func renderAll(tmp, out, lang string) error {
 		{"settings-sandbox-engine", func(m *ui.Model) {
 			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = true })
 			m.BuildxStatus.Set(ui.BuildxStatus{Checked: true, Ready: true, Selected: true})
+			m.Page.Set(ui.PageSettings)
+		}},
+		// Experimental amd64 builder switch on, with VM status, disk size and buildx node.
+		{"settings-amd64-builder", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) {
+				s.SandboxEngine = true
+				s.Amd64Builds = true
+			})
+			m.BuildxStatus.Set(ui.BuildxStatus{Checked: true, Ready: true, Selected: true, Amd64Node: true})
+			m.Amd64State.Set(engine.Amd64State{
+				Enabled:   true,
+				Status:    engine.BuilderRunning,
+				Assets:    "1",
+				DiskBytes: 1_420_000_000,
+			})
+			m.Page.Set(ui.PageSettings)
+		}},
+		// Experimental amd64 builder with Rosetta missing and Install Rosetta offered.
+		{"settings-amd64-requirements", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = true })
+			m.BuildxStatus.Set(ui.BuildxStatus{Checked: true, Ready: true, Selected: true})
+			m.Amd64Check.Set(ui.Amd64CheckState{
+				Checked: true,
+				Result: vmhelper.CheckResult{
+					AppleSilicon:   true,
+					MacOS:          "15.4",
+					Virtualization: true,
+					Rosetta:        vmhelper.RosettaNotInstalled,
+				},
+			})
 			m.Page.Set(ui.PageSettings)
 		}},
 		{"settings-source", func(m *ui.Model) {
@@ -410,6 +472,15 @@ func demoState(m *ui.Model, now time.Time) {
 		Current: "desktop-linux", Contexts: []string{"default", "desktop-linux", ui.DockerContextName}})
 	m.KubeLink.State.Set(ui.CLIContext{Checked: true, CLI: "/opt/homebrew/bin/kubectl", Current: "kind-dev", Contexts: []string{"kind-dev"}})
 	m.DockerVersion.Set(dockerapi.Version{Version: "29.9.3", APIVersion: "1.56", OS: "linux", Arch: "arm64", KernelVersion: "4.19.0-gvisor"})
+	m.Amd64Check.Set(ui.Amd64CheckState{
+		Checked: true,
+		Result: vmhelper.CheckResult{
+			AppleSilicon:   true,
+			MacOS:          "15.4",
+			Virtualization: true,
+			Rosetta:        vmhelper.RosettaInstalled,
+		},
+	})
 	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{Loaded: true, Items: demoContainers()})
 	m.DockerImages.Set(ui.Listing[dockerapi.Image]{Loaded: true, Items: demoDockerImages(now)})
 	m.ContainerLogs.Set(demoContainerLogs(now))
@@ -659,6 +730,13 @@ func demoDockerImages(now time.Time) []dockerapi.Image {
 		{ID: "sha256:4a3c0f9e2b118a7d6c5e", RepoTags: []string{"nginx:alpine"}, Size: 48 * 1024 * 1024, Created: now.Add(-6 * 24 * time.Hour).Unix()},
 		{ID: "sha256:8b7c6d5e4f3a2b109876", RepoTags: []string{"redis:alpine"}, Size: 42 * 1024 * 1024, Created: now.Add(-10 * 24 * time.Hour).Unix()},
 		{ID: "sha256:1a2b3c4d5e6f708192a3", RepoTags: []string{"app:dev", "app:latest"}, Size: 164 * 1024 * 1024, Created: now.Add(-3 * time.Hour).Unix()},
+		{
+			ID: "sha256:7c6b5a4938271605abcd", RepoTags: []string{"ghcr.io/acme/api:amd64"}, Size: 118 * 1024 * 1024, Created: now.Add(-2 * time.Hour).Unix(),
+			Manifests: []dockerapi.ImageManifest{{
+				ID: "sha256:7c6b5a4938271605abcd", Available: true, Kind: "image",
+				ImageData: &dockerapi.ImageManifestData{Platform: dockerapi.ImagePlatform{Architecture: "amd64", OS: "linux"}},
+			}},
+		},
 		{ID: "sha256:9f8e7d6c5b4a3210fedc", RepoTags: []string{"<none>:<none>"}, Size: 27 * 1024 * 1024, Created: now.Add(-2 * 24 * time.Hour).Unix()},
 	}
 }

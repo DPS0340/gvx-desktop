@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -34,6 +35,10 @@ type sandboxEngine interface {
 	VolumeOwnership() (owned map[string]bool, users map[string][]string)
 	BuilderSocket() string
 	BuilderState() engine.BuilderState
+	SetAmd64(cfg *engine.Amd64Config) error
+	Amd64Socket() string
+	Amd64State() engine.Amd64State
+	ResetAmd64Disk(ctx context.Context) error
 }
 
 // initDockerProxy constructs the Model's Docker API proxy and in-app sandbox
@@ -61,6 +66,7 @@ func (m *Model) initDockerProxy(dataDir string) {
 			m.refreshEngineRunning()
 			m.refreshEngineVolumes()
 			m.refreshBuilderState()
+			m.refreshAmd64State()
 			m.LoadDocker()
 			m.LoadDockerImages()
 		})
@@ -125,6 +131,13 @@ func (m *Model) openSandboxEngine() {
 	run := m.runCLI
 	sockPath := eng.BuilderSocket()
 	dockerHost := m.dockerHost()
+	var amd64Cfg *engine.Amd64Config
+	if set.Amd64Builds {
+		var err error
+		if amd64Cfg, err = m.amd64Config(); err != nil {
+			log.Printf("amd64 builder config: %v", err)
+		}
+	}
 	// Route traffic to the in-app engine right away so requests and LoadDocker
 	// never hit the dind backend while Open is in flight; Handler answers 503
 	// until Open finishes.
@@ -137,6 +150,9 @@ func (m *Model) openSandboxEngine() {
 		bxInstalledAlias bool
 	)
 	m.async(func(ctx context.Context) error {
+		if err := eng.SetAmd64(amd64Cfg); err != nil {
+			return err
+		}
 		// Configure buildx before eng.Open binds buildkit.sock so buildx
 		// inspect/create probes do not lazily launch buildkitd at startup.
 		if sockPath != "" {
@@ -171,6 +187,9 @@ func (m *Model) openSandboxEngine() {
 			if bxInstalledAlias || (bxSavePrev && bxPrevSave != "") {
 				m.syncSandboxBuilder(false)
 			}
+			if set.Amd64Builds {
+				m.syncAmd64BuildxNode(false)
+			}
 			return
 		}
 		if m.sandboxEngineGen != gen {
@@ -189,6 +208,10 @@ func (m *Model) openSandboxEngine() {
 		m.refreshEngineRunning()
 		m.refreshEngineVolumes()
 		m.refreshBuilderState()
+		m.refreshAmd64State()
+		if ggui.Peek(m.Settings).Amd64Builds {
+			m.syncAmd64BuildxNode(true)
+		}
 		m.LoadDocker()
 		m.LoadDockerImages()
 	})
@@ -213,11 +236,16 @@ func (m *Model) closeSandboxEngine() {
 		// Restore buildx after eng.Close removes buildkit.sock so buildx
 		// inspect does not wake buildkitd while shutting down.
 		if !ggui.Peek(m.Settings).SandboxEngine {
+			hadAmd64Node := ggui.Peek(m.BuildxStatus).Amd64Node
 			m.syncSandboxBuilder(false)
+			if ggui.Peek(m.Settings).Amd64Builds || hadAmd64Node {
+				m.syncAmd64BuildxNode(false)
+			}
 		}
 		m.refreshEngineRunning()
 		m.refreshEngineVolumes()
 		m.refreshBuilderState()
+		m.refreshAmd64State()
 		m.LoadDocker()
 		m.LoadDockerImages()
 	})

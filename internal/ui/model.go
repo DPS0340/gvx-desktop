@@ -89,9 +89,10 @@ type Listing[T any] struct {
 // Model holds the app's state and actions. Signals belong to the UI
 // thread; background work posts its results back through post.
 type Model struct {
-	store store.Store
-	sup   *sandbox.Supervisor
-	host  ggui.Host
+	store   store.Store
+	sup     *sandbox.Supervisor
+	host    ggui.Host
+	appMenu func() []ggui.MenuItem
 
 	clientMu sync.Mutex
 	client   *rungv.Client
@@ -126,6 +127,9 @@ type Model struct {
 	EngineVolumeUsers *ggui.StateValue[map[string][]string]
 	BuilderState      *ggui.StateValue[engine.BuilderState]
 	BuildxStatus      *ggui.StateValue[BuildxStatus]
+	Amd64State        *ggui.StateValue[engine.Amd64State]
+	Amd64Check        *ggui.StateValue[Amd64CheckState]
+	Amd64Resetting    *ggui.StateValue[bool]
 	Selected          *ggui.StateValue[string]
 	Logs              *ggui.StateValue[[]sandbox.LogLine]
 	Detail            *ggui.StateValue[int]
@@ -229,10 +233,11 @@ type Model struct {
 	Menus *ggui.DerivedValue[MenuState]
 
 	// Editor
-	EditorOpen *ggui.StateValue[bool]
-	Draft      *ggui.StateValue[Draft]
-	DraftError *ggui.DerivedValue[string]
-	DraftLine  *ggui.DerivedValue[string]
+	EditorOpen   *ggui.StateValue[bool]
+	Draft        *ggui.StateValue[Draft]
+	DraftError   *ggui.DerivedValue[string]
+	DraftLine    *ggui.DerivedValue[string]
+	DraftRunning *ggui.DerivedValue[bool]
 
 	// Dialogs
 	ConfirmOpen   *ggui.StateValue[bool]
@@ -283,7 +288,11 @@ type Model struct {
 	PaletteQuery    *ggui.StateValue[string]
 	QuitOpen        *ggui.StateValue[bool]
 	SidebarNarrow   *ggui.StateValue[bool]
+	SandboxStatus   *ggui.StateValue[string]
 	ImageQuery      *ggui.StateValue[string]
+	VolumeQuery     *ggui.StateValue[string]
+	SnapshotQuery   *ggui.StateValue[string]
+	ExploreSplit    *ggui.StateValue[float64]
 	SelectedImage   *ggui.StateValue[string]
 	SelectedVolume  *ggui.StateValue[string]
 
@@ -293,6 +302,8 @@ type Model struct {
 	quitting  bool
 
 	runCLI                                 cliRunner                  // runs docker and kubectl; tests replace it
+	runVMHelper                            vmHelperRunner             // runs __vm-helper check/install-rosetta; tests replace it
+	syncAmd64NodeHook                      func(on bool)              // overrides syncAmd64Node in tests
 	dockerLoading, dockerAgain             bool                       // LoadDocker runs; it is wanted again after
 	dockerImagesLoading, dockerImagesAgain bool                       // LoadDockerImages runs; it is wanted again after
 	logsLoading, logsAgain                 bool                       // LoadContainerLogs runs; it is wanted again after
@@ -312,6 +323,7 @@ type Model struct {
 	engineSpec                             atomic.Pointer[sandbox.Spec]
 	sandboxEngine                          sandboxEngine // in-app Docker Engine API (*engine.Engine); tests may replace
 	sandboxEngineGen                       int
+	amd64Gen                               int
 	buildxSyncGen                          int
 	keepImages                             atomic.Pointer[[]string]
 }
@@ -358,6 +370,9 @@ func NewModel(st store.Store, dataDir string) *Model {
 		EngineVolumeUsers: ggui.State(map[string][]string(nil)).WithEqual(stringSliceMapEqual),
 		BuilderState:      ggui.State(engine.BuilderState{Status: engine.BuilderIdle}),
 		BuildxStatus:      ggui.State(BuildxStatus{}).WithEqual(BuildxStatus.Equal),
+		Amd64State:        ggui.State(engine.Amd64State{Status: engine.BuilderIdle}).WithEqual(engine.Amd64State.Equal),
+		Amd64Check:        ggui.State(Amd64CheckState{}).WithEqual(Amd64CheckState.Equal),
+		Amd64Resetting:    ggui.State(false),
 		Selected:          ggui.State(""),
 		Logs:              ggui.State([]sandbox.LogLine(nil)).WithEqual(nil),
 		Detail:            ggui.State(0),
@@ -451,10 +466,15 @@ func NewModel(st store.Store, dataDir string) *Model {
 		PaletteQuery:    ggui.State(""),
 		QuitOpen:        ggui.State(false),
 		SidebarNarrow:   ggui.State(settings.SidebarNarrow),
+		SandboxStatus:   ggui.State("all"),
 		ImageQuery:      ggui.State(""),
+		VolumeQuery:     ggui.State(""),
+		SnapshotQuery:   ggui.State(""),
+		ExploreSplit:    ggui.State(0.47),
 		SelectedImage:   ggui.State(""),
 		SelectedVolume:  ggui.State(""),
 		runCLI:          runCLI,
+		runVMHelper:     defaultRunVMHelper,
 		forwarder:       forwardThroughCluster,
 	}
 	ggui.OnCleanup(m.Toasts.Close)
@@ -521,7 +541,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		return n
 	})
 	m.TotalRunning = ggui.Combine(m.Running, m.EngineRunning, func(a, b int) int { return a + b })
-	m.DraftError = m.Draft.Map(func(d Draft) string {
+	m.DraftError = ggui.Combine(m.Draft, m.Specs, func(d Draft, specs []sandbox.Spec) string {
 		spec, err := d.Spec()
 		if err != nil {
 			return err.Error()
@@ -529,7 +549,15 @@ func NewModel(st store.Store, dataDir string) *Model {
 		if err := spec.Validate(); err != nil {
 			return err.Error()
 		}
+		for _, s := range specs {
+			if s.Name == spec.Name && s.ID != spec.ID {
+				return tr("another sandbox is called %s", spec.Name)
+			}
+		}
 		return ""
+	})
+	m.DraftRunning = ggui.Combine(m.Draft, m.States, func(d Draft, states map[string]sandbox.State) bool {
+		return d.ID != "" && states[d.ID].Status.Active()
 	})
 	m.DraftLine = m.Draft.Map(func(d Draft) string {
 		spec, err := d.Spec()
@@ -584,6 +612,17 @@ func takesValue(flag string) bool {
 
 // Attach gives the model its host once the app exists.
 func (m *Model) Attach(host ggui.Host) { m.host = host }
+
+// SetMenuSource supplies the application menu items for non-macOS windows
+// that render ui.AppMenubar inside the window frame.
+func (m *Model) SetMenuSource(fn func() []ggui.MenuItem) { m.appMenu = fn }
+
+func (m *Model) appMenus() []ggui.MenuItem {
+	if m.appMenu == nil {
+		return nil
+	}
+	return m.appMenu()
+}
 
 // Supervisor is the model's process supervisor.
 func (m *Model) Supervisor() *sandbox.Supervisor { return m.sup }
@@ -669,8 +708,12 @@ func (m *Model) Go(page string) {
 		m.LoadVolumes()
 	case PageSnapshots:
 		m.LoadSnapshots()
-	case PageDashboard, PageSettings:
+	case PageDashboard:
 		m.LoadDisk()
+	case PageSettings:
+		m.LoadDisk()
+		m.CheckAmd64()
+		m.refreshAmd64State()
 	case PageDocker:
 		m.LoadDocker()
 		m.LoadDockerImages()
@@ -1127,6 +1170,7 @@ func (m *Model) SaveDraft(start bool) bool {
 			return false
 		}
 	}
+	active := spec.ID != "" && m.sup.State(spec.ID).Status.Active()
 	if spec.ID == "" {
 		spec.ID = sandbox.NewID()
 		spec.CreatedAt = time.Now()
@@ -1136,7 +1180,7 @@ func (m *Model) SaveDraft(start bool) bool {
 		if i < 0 {
 			specs = append(specs, spec)
 		} else {
-			if m.sup.State(spec.ID).Status.Active() && !specs[i].Equal(spec) {
+			if active && !start && !specs[i].Equal(spec) {
 				m.Toasts.Push(ui.Toast(tr("Saved %s", spec.Name), tr("Restart the sandbox to apply the changes: ports and mounts are fixed while it runs.")).Warning())
 			}
 			specs[i] = spec
@@ -1145,8 +1189,12 @@ func (m *Model) SaveDraft(start bool) bool {
 	m.saveSpecs(specs)
 	m.EditorOpen.Set(false)
 	m.Select(spec.ID)
-	if start && !m.sup.State(spec.ID).Status.Active() {
-		m.StartSandbox(spec.ID)
+	if start {
+		if active {
+			m.RestartSandbox(spec.ID)
+		} else {
+			m.StartSandbox(spec.ID)
+		}
 		m.Detail.Set(0)
 		m.Go(PageSandboxes)
 	}

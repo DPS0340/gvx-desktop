@@ -320,6 +320,81 @@ func TestImagesInspectRemovePruneAndPull(t *testing.T) {
 	}
 }
 
+func TestImageManifestsArchitecture(t *testing.T) {
+	c := engine(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{
+				"Id": "sha256:1111222233334444",
+				"RepoTags": ["gvxd-amd64:1"],
+				"Size": 1024,
+				"Created": 1700000000,
+				"Manifests": [
+					{"ID": "sha256:aaa", "Available": false, "Kind": "image", "ImageData": {"Platform": {"architecture": "arm64", "os": "linux"}}},
+					{"ID": "sha256:bbb", "Available": true, "Kind": "attestation", "ImageData": {"Platform": {"architecture": "unknown", "os": "unknown"}}},
+					{"ID": "sha256:ccc", "Available": true, "Kind": "image", "ImageData": {"Platform": {"architecture": "amd64", "os": "linux"}}}
+				]
+			},
+			{
+				"Id": "sha256:5555666677778888",
+				"RepoTags": ["alpine:3.20"],
+				"Size": 2048,
+				"Created": 1700000001
+			}
+		]`))
+	})
+	imgs, err := c.Images(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgs) != 2 {
+		t.Fatalf("got %d images, want 2", len(imgs))
+	}
+	if got := imgs[0].Architecture(); got != "amd64" {
+		t.Errorf("imgs[0].Architecture() = %q, want amd64", got)
+	}
+	if got := imgs[1].Architecture(); got != "" {
+		t.Errorf("imgs[1].Architecture() = %q, want empty", got)
+	}
+	other := imgs[0]
+	other.Manifests = []ImageManifest{{ID: "sha256:ccc", Available: true, Kind: "image", ImageData: &ImageManifestData{Platform: ImagePlatform{Architecture: "arm64", OS: "linux"}}}}
+	if imgs[0].Equal(other) {
+		t.Error("Image.Equal returned true for different Manifests")
+	}
+}
+
+func TestImagePlatformScopedEndpoints(t *testing.T) {
+	var calls []string
+	c := engine(t, func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"Id":"sha256:amd64","Architecture":"amd64"}`))
+		case http.MethodDelete:
+			_, _ = w.Write([]byte(`[{"Untagged":"app:1"}]`))
+		case http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+		}
+	})
+	ctx := context.Background()
+	if _, err := c.InspectImagePlatform(ctx, "app:1", "linux/amd64"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveImagePlatform(ctx, "app:1", true, "linux/amd64"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.TagPlatform(ctx, "app:1", "localhost:5001/app", "1", "linux/amd64"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"GET /images/app:1/json?platform=linux%2Famd64",
+		"DELETE /images/app:1?force=1&platform=linux%2Famd64",
+		"POST /images/app:1/tag?platform=linux%2Famd64&repo=localhost%3A5001%2Fapp&tag=1",
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("requests\n%s\nwant\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 func TestSplitImageRef(t *testing.T) {
 	for _, tc := range []struct {
 		ref, from, tag string

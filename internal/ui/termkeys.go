@@ -119,7 +119,7 @@ var (
 // terminalPalette is the terminal's palette in theme th: its page's ground
 // and text, the selection tinted with its primary colour, and the ANSI
 // colours of a light or a dark theme as its ground is.
-func terminalPalette(th uitheme.Theme) termPalette {
+func terminalPalette(th *uitheme.Theme) termPalette {
 	bg, fg := rgbaOf(th.Bg), rgbaOf(th.Fg)
 	p := termPalette{Fg: fg, Bg: bg, Raised: rgbaOf(th.Muted), ANSI: lightANSI}
 	if lum(bg) < lum(fg) {

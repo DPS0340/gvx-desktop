@@ -22,10 +22,67 @@ func checkNoLeadingDash(label, val string) error {
 	return nil
 }
 
+func validateArchFlag(arch string) error {
+	if arch == "" {
+		return nil
+	}
+	if err := checkNoLeadingDash("arch", arch); err != nil {
+		return err
+	}
+	for i := range len(arch) {
+		if arch[i] <= 0x20 || arch[i] == 0x7f {
+			return fmt.Errorf("invalid arch %q", arch)
+		}
+	}
+	return nil
+}
+
+// archFromPlatform extracts the Linux architecture ("amd64", "arm64", ...)
+// from a Docker platform string such as "linux/amd64" or "linux/arm64/v8".
+func archFromPlatform(platform string) string {
+	p := strings.TrimSpace(strings.ToLower(platform))
+	if p == "" {
+		return ""
+	}
+	parts := strings.Split(p, "/")
+	if len(parts) >= 2 && parts[0] == "linux" {
+		switch parts[1] {
+		case "x86_64":
+			return "amd64"
+		case "aarch64":
+			return "arm64"
+		default:
+			return parts[1]
+		}
+	}
+	if len(parts) == 1 {
+		switch parts[0] {
+		case "amd64", "x86_64":
+			return "amd64"
+		case "arm64", "aarch64":
+			return "arm64"
+		}
+	}
+	return ""
+}
+
 // ImagesFull lists every cached image, dangling ones included, with full IDs
 // and digests.
 func (c *Client) ImagesFull(ctx context.Context) ([]Image, error) {
-	out, err := c.output(ctx, "images", "-a", "--no-trunc", "--digests", "--format", "json")
+	return c.ImagesFullArch(ctx, "")
+}
+
+// ImagesFullArch lists every cached image in arch's namespace ("" for host default).
+func (c *Client) ImagesFullArch(ctx context.Context, arch string) ([]Image, error) {
+	if err := validateArchFlag(arch); err != nil {
+		return nil, err
+	}
+	args := []string{"images"}
+	if arch != "" {
+		args = append(args, "-arch", arch)
+	}
+	args = append(args, "-a", "--no-trunc", "--digests", "--format", "json")
+	out, err := c.output(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -35,22 +92,36 @@ func (c *Client) ImagesFull(ctx context.Context) ([]Image, error) {
 // InspectImagesRaw returns the raw JSON array printed by rungv inspect for
 // refs.
 func (c *Client) InspectImagesRaw(ctx context.Context, refs ...string) ([]byte, error) {
+	return c.InspectImagesRawArch(ctx, "", refs...)
+}
+
+// InspectImagesRawArch returns the raw JSON array printed by rungv inspect in
+// arch's namespace ("" for host default).
+func (c *Client) InspectImagesRawArch(ctx context.Context, arch string, refs ...string) ([]byte, error) {
 	if len(refs) == 0 {
 		return []byte("[]"), nil
+	}
+	if err := validateArchFlag(arch); err != nil {
+		return nil, err
 	}
 	for _, ref := range refs {
 		if err := checkNoLeadingDash("image reference", ref); err != nil {
 			return nil, err
 		}
 	}
-	args := make([]string, 0, 2+len(refs))
-	args = append(args, "inspect", "--")
+	args := make([]string, 0, 4+len(refs))
+	args = append(args, "inspect")
+	if arch != "" {
+		args = append(args, "-arch", arch)
+	}
+	args = append(args, "--")
 	args = append(args, refs...)
 	return c.output(ctx, args...)
 }
 
 // PullPlatform downloads ref for platform ("" for the host's default), handing
-// each progress line to line.
+// each progress line to line. When platform names an architecture, -arch is
+// also passed so rungv stores the image in that architecture's namespace.
 func (c *Client) PullPlatform(ctx context.Context, ref, platform string, line func(string)) error {
 	if err := checkNoLeadingDash("image reference", ref); err != nil {
 		return err
@@ -64,6 +135,9 @@ func (c *Client) PullPlatform(ctx context.Context, ref, platform string, line fu
 		line = func(string) {}
 	}
 	args := []string{"pull"}
+	if arch := archFromPlatform(platform); arch != "" {
+		args = append(args, "-arch", arch)
+	}
 	if platform != "" {
 		args = append(args, "-platform", platform)
 	}
@@ -73,10 +147,21 @@ func (c *Client) PullPlatform(ctx context.Context, ref, platform string, line fu
 
 // RemoveImageSafe removes a tag or image, terminating flags with "--" before ref.
 func (c *Client) RemoveImageSafe(ctx context.Context, ref string, force bool) error {
+	return c.RemoveImageSafeArch(ctx, "", ref, force)
+}
+
+// RemoveImageSafeArch removes a tag or image in arch's namespace.
+func (c *Client) RemoveImageSafeArch(ctx context.Context, arch, ref string, force bool) error {
+	if err := validateArchFlag(arch); err != nil {
+		return err
+	}
 	if err := checkNoLeadingDash("image reference", ref); err != nil {
 		return err
 	}
 	args := []string{"rmi"}
+	if arch != "" {
+		args = append(args, "-arch", arch)
+	}
 	if force {
 		args = append(args, "-f")
 	}
@@ -87,26 +172,50 @@ func (c *Client) RemoveImageSafe(ctx context.Context, ref string, force bool) er
 
 // TagImage gives source an additional reference target.
 func (c *Client) TagImage(ctx context.Context, source, target string) error {
+	return c.TagImageArch(ctx, "", source, target)
+}
+
+// TagImageArch gives source an additional reference target in arch's namespace.
+func (c *Client) TagImageArch(ctx context.Context, arch, source, target string) error {
+	if err := validateArchFlag(arch); err != nil {
+		return err
+	}
 	if err := checkNoLeadingDash("source reference", source); err != nil {
 		return err
 	}
 	if err := checkNoLeadingDash("target reference", target); err != nil {
 		return err
 	}
-	_, err := c.output(ctx, "tag", "--", source, target)
+	args := []string{"tag"}
+	if arch != "" {
+		args = append(args, "-arch", arch)
+	}
+	args = append(args, "--", source, target)
+	_, err := c.output(ctx, args...)
 	return err
 }
 
 // LoadImages reads a docker save or OCI archive from archive and hands each
 // output line to line.
 func (c *Client) LoadImages(ctx context.Context, archive io.Reader, line func(string)) error {
+	return c.LoadImagesArch(ctx, "", archive, line)
+}
+
+// LoadImagesArch reads a docker save or OCI archive into arch's namespace.
+func (c *Client) LoadImagesArch(ctx context.Context, arch string, archive io.Reader, line func(string)) error {
 	if c.Path == "" {
 		return ErrNotFound
+	}
+	if err := validateArchFlag(arch); err != nil {
+		return err
 	}
 	if line == nil {
 		line = func(string) {}
 	}
 	args := []string{"load"}
+	if arch != "" {
+		args = append(args, "-arch", arch)
+	}
 	cmd := c.Command(ctx, args...)
 	cmd.Stdin = archive
 	stdout, err := cmd.StdoutPipe()
@@ -150,8 +259,16 @@ func (c *Client) LoadImages(ctx context.Context, archive io.Reader, line func(st
 
 // SaveImages writes refs as a single tar archive to w.
 func (c *Client) SaveImages(ctx context.Context, w io.Writer, refs ...string) error {
+	return c.SaveImagesArch(ctx, "", w, refs...)
+}
+
+// SaveImagesArch writes refs from arch's namespace as a single tar archive to w.
+func (c *Client) SaveImagesArch(ctx context.Context, arch string, w io.Writer, refs ...string) error {
 	if c.Path == "" {
 		return ErrNotFound
+	}
+	if err := validateArchFlag(arch); err != nil {
+		return err
 	}
 	if len(refs) == 0 {
 		return errors.New("no images specified")
@@ -161,8 +278,12 @@ func (c *Client) SaveImages(ctx context.Context, w io.Writer, refs ...string) er
 			return err
 		}
 	}
-	args := make([]string, 0, 2+len(refs))
-	args = append(args, "save", "--")
+	args := make([]string, 0, 4+len(refs))
+	args = append(args, "save")
+	if arch != "" {
+		args = append(args, "-arch", arch)
+	}
+	args = append(args, "--")
 	args = append(args, refs...)
 	cmd := c.Command(ctx, args...)
 	cmd.Stdout = w
@@ -176,6 +297,23 @@ func (c *Client) SaveImages(ctx context.Context, w io.Writer, refs ...string) er
 		return e
 	}
 	return nil
+}
+
+// PruneImagesArch deletes dangling images (or all with all=true) in arch's
+// namespace.
+func (c *Client) PruneImagesArch(ctx context.Context, arch string, all bool) (string, error) {
+	if err := validateArchFlag(arch); err != nil {
+		return "", err
+	}
+	args := []string{"image", "prune", "-f"}
+	if arch != "" {
+		args = append(args, "-arch", arch)
+	}
+	if all {
+		args = append(args, "-a")
+	}
+	out, err := c.output(ctx, args...)
+	return strings.TrimSpace(string(out)), err
 }
 
 // CreateVolumeSafe formats a named volume, terminating flags with "--" before name.

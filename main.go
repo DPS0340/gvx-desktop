@@ -25,6 +25,7 @@ import (
 	gguiruntime "github.com/ironpark/ggui/runtime"
 	uitheme "github.com/ironpark/ggui/ui/theme"
 
+	"github.com/ironpark/gvx-desktop-vm/vmhelper"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/store"
 	"github.com/ironpark/gvx-desktop/internal/ui"
@@ -34,6 +35,11 @@ import (
 var version = "dev"
 
 func main() {
+	// The amd64 builder's VM helper is this executable too, started by the
+	// app with vmhelper.Arg: a separate process with nothing of the app's.
+	if len(os.Args) > 1 && os.Args[1] == vmhelper.Arg {
+		os.Exit(vmhelper.Main(os.Args[2:]))
+	}
 	// ggui record runs the app to draw the README's tour (tour.go), which
 	// reads none of the user's data and must not hand off to a copy of the
 	// app already running, as SingleInstance would.
@@ -85,12 +91,14 @@ func run(st store.Store, dir string, hidden bool) error {
 			MinWidth:       880,
 			MinHeight:      600,
 			Resizable:      true,
+			Remember:       "main",
 			TitlebarHidden: ui.TitlebarHidden,
 			TrafficLights:  &ggui.Point{X: 18, Y: 18},
 			Inspector:      "f12",
 		}
 		app = ggui.New(cfg, func() ggui.Widget { return ui.Build(m) })
 		m.Attach(app)
+		m.SetMenuSource(app.Menu)
 		app.Setup(func() {
 			bindTheme(m)
 			m.Start()
@@ -246,6 +254,9 @@ func installMenus(app *ggui.App, m *ui.Model) {
 			ggui.MenuAction(ui.T("Images"), "", func() { m.Go(ui.PageImages) }),
 			ggui.MenuAction(ui.T("Volumes"), "", func() { m.Go(ui.PageVolumes) }),
 			ggui.MenuAction(ui.T("Snapshots"), "", func() { m.Go(ui.PageSnapshots) }),
+			ggui.MenuSeparator(),
+			ggui.MenuAction("Docker Engine", "", func() { m.Go(ui.PageDocker) }),
+			ggui.MenuAction("Kubernetes", "", func() { m.Go(ui.PageKubernetes) }),
 		),
 	)
 }

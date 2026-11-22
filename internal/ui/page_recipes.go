@@ -97,7 +97,7 @@ func dockerPage(m *Model) ggui.Widget {
 		),
 		sandboxBanner,
 		recipeHero(m, recipes.Docker, row, "docker:dind",
-			tr("An unmodified dockerd in one sandbox. Images and containers persist in the gvx-docker volume; the API is published on %s.", m.DockerHost()),
+			tr("An unmodified dockerd in one sandbox. Images and containers persist in the gvx-docker volume; the API is published on %s.", displayDockerHost(m.DockerHost())),
 			lucide.Container),
 		widget.Column(
 			sectionTitle(tr("Containers"), publishedPortsNote(m)),
@@ -105,10 +105,19 @@ func dockerPage(m *Model) ggui.Widget {
 			dockerImagesSummary(m),
 		).Gap(10).Stretch(),
 		widget.Responsive(900,
-			widget.Row(widget.Flex(dockerCLICard(m), 1), widget.Flex(dockerNotesCard(), 1)).Gap(16).Align(widget.AlignStart),
+			widget.Row(widget.Flex(dockerCLICard(m), 1), widget.Flex(dockerNotesCard(), 1)).Gap(16).Stretch(),
 			widget.Column(dockerCLICard(m), dockerNotesCard()).Gap(16).Stretch(),
 		),
 	)
+}
+
+// displayDockerHost shortens a unix:// host path under home with ~ for compact
+// prose display, without altering the real DOCKER_HOST used in CLI commands.
+func displayDockerHost(host string) string {
+	if p, ok := strings.CutPrefix(host, "unix://"); ok {
+		return "unix://" + tildePath(p)
+	}
+	return host
 }
 
 // dockerImagesSummary counts the engine's images and leads to the Docker
@@ -242,7 +251,7 @@ func linkPanel(m *Model, l *Link, commands func(LinkView) []ggui.Widget) ggui.Wi
 		return widget.Padding(widget.Column(commands(v)...).Gap(8).Stretch(), 4, 0, 0, 0)
 	})
 	return widget.Column(
-		widget.Box(status).Pad(12).Radius(8).Border(1, colorGrayA),
+		widget.Box(status).Pad(12).Radius(8).Border(1, colorBorder),
 		ui.Collapsible(m.LinkCommandsOpen, tr("Commands to type instead"), cmds),
 	).Gap(8).Stretch()
 }
@@ -374,7 +383,7 @@ func kubernetesPage(m *Model) ggui.Widget {
 			podsSummary(m),
 		).Gap(10).Stretch(),
 		widget.Responsive(900,
-			widget.Row(widget.Flex(kubectlCard(m, kubeconfig), 1), widget.Flex(kubeNotesCard(), 1)).Gap(16).Align(widget.AlignStart),
+			widget.Row(widget.Flex(kubectlCard(m, kubeconfig), 1), widget.Flex(kubeNotesCard(), 1)).Gap(16).Stretch(),
 			widget.Column(kubectlCard(m, kubeconfig), kubeNotesCard()).Gap(16).Stretch(),
 		),
 	)

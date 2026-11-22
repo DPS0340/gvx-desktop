@@ -149,7 +149,7 @@ func (m *Model) InspectImage(ref string) {
 // AskRemoveImage confirms and removes an image.
 func (m *Model) AskRemoveImage(img rungv.Image) {
 	ref := img.Ref()
-	m.Confirm(tr("Remove %s?", ref), tr("The image record is removed and layers no other image uses are deleted (%s).", img.Size), tr("Remove image"), func() {
+	m.Confirm(tr("Remove %s?", ref), tr("The image record is removed and layers no other image uses are deleted (%s).", formatSize(img.Size)), tr("Remove image"), func() {
 		c := m.Client()
 		m.async(func(ctx context.Context) error { return c.RemoveImage(ctx, ref, true) }, func(err error) {
 			if err != nil {
@@ -782,6 +782,9 @@ func (m *Model) UpdateSettings(fn func(*store.Settings)) {
 		m.CheckLink(m.DockerLink)
 		if s.SandboxEngine {
 			m.syncSandboxBuilder(true)
+			if s.Amd64Builds {
+				m.syncAmd64BuildxNode(true)
+			}
 		}
 	}
 }

@@ -149,9 +149,9 @@ func shellView(m *Model, t shellTarget, restart func()) ggui.Widget {
 			).Gap(10).Stretch()
 		case s.s == nil:
 			return widget.Box(widget.Center(widget.Row(ui.Spinner().Size(14), ui.Caption(tr("Starting a shell…"))).Gap(8).Align(widget.AlignCenter))).
-				Height(terminalHeight).Radius(8).Border(1, colorGrayA)
+				Height(terminalHeight).Radius(8).Border(1, colorBorder)
 		}
-		return widget.Box(newTerminalView(s.s, true)).Height(terminalHeight).Radius(8).Border(1, colorGrayA).Clip()
+		return widget.Box(newTerminalView(s.s, true)).Height(terminalHeight).Radius(8).Border(1, colorBorder).Clip()
 	})
 	ended := ggui.View(ggui.Map(st, func(s shellState) shellState { return shellState{exited: s.exited, code: s.code} }).WithEqual(shellState.Equal), func(s shellState) ggui.Widget {
 		if !s.exited {

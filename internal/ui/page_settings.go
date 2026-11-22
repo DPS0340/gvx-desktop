@@ -12,6 +12,7 @@ import (
 	"github.com/ironpark/ggui/ui/icons"
 	"github.com/ironpark/ggui/widget"
 
+	"github.com/ironpark/gvx-desktop-vm/vmhelper"
 	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -63,6 +64,14 @@ func settingsPage(m *Model) ggui.Widget {
 	set := ggui.Peek(m.Settings)
 	path := ggui.State(set.RungvPath)
 	cache := ggui.State(set.CacheDir)
+	ggui.Watch(m.Settings, func(s storeSettings) {
+		if ggui.Peek(path) != s.RungvPath {
+			path.Set(s.RungvPath)
+		}
+		if ggui.Peek(cache) != s.CacheDir {
+			cache.Set(s.CacheDir)
+		}
+	})
 	flag := func(get func(storeSettings) bool, put func(*storeSettings, bool)) ggui.Binding[bool] {
 		return ggui.Bind(func() bool { return get(m.Settings.Get()) }, func(v bool) { m.UpdateSettings(func(s *storeSettings) { put(s, v) }) })
 	}
@@ -120,7 +129,7 @@ func settingsPage(m *Model) ggui.Widget {
 				ui.Switch(stopOnQuit, "")),
 			settingRow(tr("Stop timeout (seconds)"),
 				tr("How long a sandbox gets to exit after an interrupt before it is killed."),
-				widget.Box(ui.NumberInput(timeout).Name(tr("Stop timeout"))).Width(120)),
+				widget.Box(ui.NumberInput(timeout).Range(1, 300).Step(1).Precision(0).Name(tr("Stop timeout"))).Width(120)),
 		),
 		dockerSettings(m),
 		kubeSettings(m),
@@ -361,6 +370,15 @@ func dockerSettings(m *Model) ggui.Widget {
 		m.SetDockerAPI(api)
 	})
 	port := ggui.State(strconv.Itoa(m.DockerAPI().Port))
+	ggui.Watch(m.Settings, func(s storeSettings) {
+		if ggui.Peek(path) != s.DockerPath {
+			path.Set(s.DockerPath)
+		}
+		wantPort := strconv.Itoa(dockerSettingOf(s).Port)
+		if ggui.Peek(port) != wantPort {
+			port.Set(wantPort)
+		}
+	})
 	setPort := func(v string) {
 		n, err := strconv.Atoi(strings.TrimSpace(v))
 		if err != nil || n < 1 || n > 65535 {
@@ -384,13 +402,13 @@ func dockerSettings(m *Model) ggui.Widget {
 	})
 
 	return settingsGroup(lucide.Container, "Docker",
-		settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Column(
-			widget.Row(
+		widget.Column(
+			settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Row(
 				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, Homebrew, Docker Desktop)")).Name(tr("docker path")).OnCommit(setPath)),
 				ui.Button(tr("Browse…"), func() { browseFile(m, path, setPath) }).Outline(),
-			).Gap(8),
+			).Gap(8)),
 			found,
-		).Gap(6).Stretch()),
+		).Gap(4).Stretch(),
 		widget.Column(
 			widget.Row(
 				widget.Expanded(widget.Column(
@@ -404,7 +422,7 @@ func dockerSettings(m *Model) ggui.Widget {
 				).Gap(2)),
 				widget.Row(
 					ggui.If(overTCP, func() ggui.Widget {
-						return widget.Box(ui.TextField(port).Name(tr("Docker API port")).OnCommit(setPort)).Width(84)
+						return widget.Box(ui.TextField(port).Filter(digits).Name(tr("Docker API port")).OnCommit(setPort)).Width(84)
 					}),
 					ui.ToggleGroup(endpoint).Options([]string{DockerSocketEndpoint, DockerTCPEndpoint}).Format(dockerEndpointName).Outline().Spacing(0).Name(tr("Engine API")),
 				).Gap(8).Align(widget.AlignCenter),
@@ -437,6 +455,20 @@ func sandboxEngineSettings(m *Model) ggui.Widget {
 	builderStatus := ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func() ggui.Widget {
 		return sandboxBuilderStatus(m)
 	})
+	notes := widget.Box(widget.Column(
+		widget.Row(
+			widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
+			widget.Expanded(ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, and single-service Compose.")).Size(12)),
+		).Gap(8).Align(widget.AlignStart),
+		widget.Row(
+			widget.Padding(glyph(lucide.CircleMinus, 13).Color(colorGray), 2, 0, 0, 0),
+			widget.Expanded(ui.Caption(tr("Not yet supported: exec, cp, inter-container networking, and Windows terminals.")).Size(12)),
+		).Gap(8).Align(widget.AlignStart),
+		widget.Row(
+			widget.Padding(glyph(lucide.Info, 13).Color(colorBlue), 2, 0, 0, 0),
+			widget.Expanded(ui.Caption(tr("Turning this on routes docker build through buildx (docker buildx install) and selects the gvx-desktop builder for the gvx context and engine endpoint; turning it off puts both back.")).Size(12)),
+		).Gap(8).Align(widget.AlignStart),
+	).Gap(6).Stretch()).Pad(10, 12).Radius(8).Fill(colorSurfaceInset).Border(1, colorBorder)
 	return widget.Column(
 		widget.Row(
 			glyph(lucide.FlaskConical, 14).Color(colorAmber),
@@ -445,12 +477,241 @@ func sandboxEngineSettings(m *Model) ggui.Widget {
 		settingRow(tr("Run containers as sandboxes, without a Docker Engine"),
 			tr("GVX Desktop answers the Docker API directly and runs each container as its own gvx sandbox. Takes effect immediately; turning it off stops those containers."),
 			ui.Switch(enabled, "")),
-		ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, and single-service Compose.")),
-		ui.Caption(tr("Not yet supported: exec, cp, inter-container networking, and Windows terminals.")),
-		ui.Caption(tr("Turning this on routes docker build through buildx (docker buildx install) and selects the gvx-desktop builder for the gvx context and engine endpoint; turning it off puts both back.")),
+		notes,
 		builderStatus,
 		runningNote,
+		widget.Padding(ui.Divider(), 6, 0),
+		amd64BuilderSettings(m),
+	).Gap(8).Stretch()
+}
+
+// amd64BuilderSettings is the "amd64 builds with Rosetta" subsection under
+// Settings → Docker → Experimental.
+func amd64BuilderSettings(m *Model) ggui.Widget {
+	enabled := ggui.Bind(func() bool { return m.Settings.Get().Amd64Builds }, m.SetAmd64Builds)
+	disabled := ggui.Combine(m.Settings, m.Amd64Check, func(s storeSettings, c Amd64CheckState) bool {
+		if !s.SandboxEngine {
+			return true
+		}
+		if s.Amd64Builds {
+			return false
+		}
+		return !c.OK() || c.Checking || c.Installing
+	})
+	needsEngine := ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return !s.SandboxEngine }), func() ggui.Widget {
+		return ui.Caption(tr("Needs the sandbox engine above."))
+	})
+	statusBox := ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine && s.Amd64Builds }), func() ggui.Widget {
+		return amd64BuilderStatus(m)
+	})
+	return widget.Column(
+		settingRow(tr("amd64 builds with Rosetta"),
+			tr("Builds for --platform linux/amd64 run in a small Linux VM with Rosetta for Linux. The images can be loaded and pushed, not run yet. The VM starts on the first amd64 build and stops when idle."),
+			ui.Switch(enabled, "").Name(tr("amd64 builds with Rosetta")).BindDisabled(disabled)),
+		needsEngine,
+		amd64Requirements(m),
+		statusBox,
 	).Gap(6).Stretch()
+}
+
+// amd64Requirements shows the host requirements check for the amd64 builder VM
+// (Apple silicon, macOS 13+, virtualization entitlement, Rosetta), offering
+// Rosetta installation when missing.
+func amd64Requirements(m *Model) ggui.Widget {
+	return ggui.View(m.Amd64Check, func(c Amd64CheckState) ggui.Widget {
+		if c.Checking && !c.Checked {
+			return widget.Row(ui.Spinner().Size(12), ui.Caption(tr("Checking requirements…")).Size(12)).Gap(8).Align(widget.AlignCenter)
+		}
+		if !c.Checked {
+			return widget.Row(
+				widget.Expanded(ui.Caption(tr("Requirements have not been checked.")).Size(12)),
+				ui.Button(tr("Check again"), m.CheckAmd64).Outline().Size(ui.ButtonExtraSmall),
+			).Gap(8).Align(widget.AlignCenter)
+		}
+		if c.Err != "" {
+			return widget.Row(
+				glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber),
+				widget.Expanded(ui.Caption(tr("Could not check requirements: %s", c.Err)).Size(12)),
+				ui.Button(tr("Check again"), m.CheckAmd64).Outline().Size(ui.ButtonExtraSmall).Disabled(c.Checking),
+			).Gap(8).Align(widget.AlignCenter)
+		}
+		res := c.Result
+		if !res.AppleSilicon {
+			return widget.Row(
+				glyph(lucide.Info, 14).Color(colorGray),
+				widget.Expanded(ui.Caption(tr("Not available on this computer: requires Apple silicon (macOS 13 or later).")).Size(12)),
+			).Gap(8).Align(widget.AlignStart)
+		}
+		if c.OK() {
+			osLabel := tr("macOS 13+")
+			if res.MacOS != "" {
+				osLabel = tr("macOS %s", res.MacOS)
+			}
+			return widget.Row(
+				glyph(lucide.CircleCheck, 14).Color(colorGreen),
+				widget.Expanded(ui.Caption(tr("Apple silicon")+" · "+osLabel+" · "+tr("Rosetta installed")).Size(12)),
+			).Gap(8).Align(widget.AlignCenter)
+		}
+
+		reqRow := func(ok bool, text string) ggui.Widget {
+			icon := glyph(lucide.CircleCheck, 13).Color(colorGreen)
+			if !ok {
+				icon = glyph(lucide.TriangleExclamationPoint, 13).Color(colorAmber)
+			}
+			return widget.Row(icon, widget.Expanded(ui.Caption(text).Size(12))).Gap(8).Align(widget.AlignStart)
+		}
+
+		var rows []ggui.Widget
+		rows = append(rows, reqRow(true, tr("Apple silicon")))
+		switch {
+		case res.MacOS != "" && macOSAtLeast13(res.MacOS):
+			rows = append(rows, reqRow(true, tr("macOS %s", res.MacOS)))
+		case res.MacOS != "":
+			rows = append(rows, reqRow(false, tr("macOS 13 or later is required (this Mac has %s).", res.MacOS)))
+		case res.Rosetta == vmhelper.RosettaNotSupported:
+			rows = append(rows, reqRow(false, tr("macOS 13 or later is required.")))
+		default:
+			rows = append(rows, reqRow(true, tr("macOS 13+")))
+		}
+		if !res.Virtualization {
+			rows = append(rows, reqRow(false, tr("Virtualization is unavailable (missing the virtualization entitlement).")))
+		}
+		switch res.Rosetta {
+		case vmhelper.RosettaInstalled:
+			rows = append(rows, reqRow(true, tr("Rosetta installed")))
+		case vmhelper.RosettaNotInstalled:
+			var installBtn ggui.Widget
+			if c.Installing {
+				installBtn = widget.Row(ui.Spinner().Size(12), ui.Caption(tr("Installing Rosetta…")).Size(12)).Gap(6).Align(widget.AlignCenter)
+			} else {
+				installBtn = ui.Button(tr("Install Rosetta"), m.InstallRosetta).Outline().Size(ui.ButtonExtraSmall).Disabled(c.Checking)
+			}
+			rows = append(rows, widget.Row(
+				glyph(lucide.TriangleExclamationPoint, 13).Color(colorAmber),
+				widget.Expanded(ui.Caption(tr("Rosetta is not installed.")).Size(12)),
+				installBtn,
+			).Gap(8).Align(widget.AlignCenter))
+			rows = append(rows, widget.Row(
+				widget.Expanded(ui.Caption(tr("Or run in a terminal: %s", "softwareupdate --install-rosetta")).Size(12)),
+				iconButton(lucide.Copy, tr("Copy %s", "softwareupdate --install-rosetta"), func() {
+					m.Copy("softwareupdate --install-rosetta", "softwareupdate --install-rosetta")
+				}),
+			).Gap(8).Align(widget.AlignCenter))
+		default:
+			rows = append(rows, reqRow(false, tr("Rosetta for Linux is not supported on this Mac.")))
+		}
+		if res.Err != "" {
+			rows = append(rows, reqRow(false, res.Err))
+		}
+		rows = append(rows, widget.Row(
+			ui.Button(tr("Check again"), m.CheckAmd64).Outline().Size(ui.ButtonExtraSmall).Disabled(c.Checking || c.Installing),
+		))
+		return widget.Box(widget.Column(rows...).Gap(6).Stretch()).Pad(10).Radius(8).Border(1, colorBorder)
+	})
+}
+
+// amd64BuilderStatus shows the amd64 builder VM's state, asset download
+// progress, persistent build cache disk size, reset button, and buildx routing.
+func amd64BuilderStatus(m *Model) ggui.Widget {
+	type viewState struct {
+		amd       engine.Amd64State
+		bx        BuildxStatus
+		resetting bool
+	}
+	combined := ggui.Derived(func() viewState {
+		return viewState{
+			amd:       m.Amd64State.Get(),
+			bx:        m.BuildxStatus.Get(),
+			resetting: m.Amd64Resetting.Get(),
+		}
+	})
+	return ggui.View(combined, func(v viewState) ggui.Widget {
+		st := v.amd
+		var rows []ggui.Widget
+
+		// 1. VM state (idle / starting / running / stopping).
+		var stateDot ggui.Widget
+		var stateLabel string
+		switch st.Status {
+		case engine.BuilderRunning:
+			stateDot = dot(colorGreen, 7)
+			stateLabel = tr("amd64 builder: running")
+		case engine.BuilderStarting:
+			stateDot = dot(colorAmber, 7)
+			stateLabel = tr("amd64 builder: starting…")
+		case engine.Amd64Stopping:
+			stateDot = dot(colorAmber, 7)
+			stateLabel = tr("amd64 builder: stopping…")
+		default:
+			stateDot = dot(colorGray, 7)
+			stateLabel = tr("amd64 builder: idle")
+		}
+
+		// 2. VM assets state or download progress.
+		var assetLine string
+		switch {
+		case st.Downloading && st.Total > 0:
+			assetLine = tr("Downloading the VM, %s of %s", formatBytes(st.Done), formatBytes(st.Total))
+		case st.Downloading:
+			assetLine = tr("Downloading the VM…")
+		case st.Assets == "local":
+			assetLine = tr("VM assets: local override")
+		case st.Assets != "":
+			assetLine = tr("VM assets: v%s downloaded", st.Assets)
+		default:
+			assetLine = tr("VM assets download on the first amd64 build.")
+		}
+		if st.Downloading {
+			rows = append(rows, widget.Row(
+				stateDot,
+				widget.Text(stateLabel).Size(12).Weight(ggui.WeightMedium),
+			).Gap(8).Align(widget.AlignCenter))
+			dlParts := []ggui.Widget{
+				ui.Spinner().Size(12),
+				widget.Expanded(ui.Caption(assetLine).Size(12)),
+			}
+			rows = append(rows, widget.Row(dlParts...).Gap(8).Align(widget.AlignCenter))
+			if st.Total > 0 {
+				frac := float64(st.Done) / float64(st.Total)
+				rows = append(rows, widget.Box(ui.Progress(ggui.Const(min(1.0, max(0.0, frac)))).Height(4)))
+			}
+		} else {
+			rows = append(rows, widget.Row(
+				stateDot,
+				widget.Text(stateLabel).Size(12).Weight(ggui.WeightMedium),
+				widget.Expanded(ui.Caption(assetLine).Size(12)),
+			).Gap(8).Align(widget.AlignCenter))
+		}
+
+		// 3. Last error (including ErrNotPublished).
+		if st.Err != "" {
+			rows = append(rows, widget.Row(
+				glyph(lucide.TriangleExclamationPoint, 13).Color(colorAmber),
+				widget.Expanded(ui.Caption(tr("amd64 builder error: %s", st.Err)).Size(12)),
+			).Gap(8).Align(widget.AlignStart))
+		}
+
+		// 4. Persistent disk size and Reset button.
+		diskLabel := tr("Build cache disk: not created yet")
+		if st.DiskBytes > 0 {
+			diskLabel = tr("Build cache disk: %s", formatBytes(st.DiskBytes))
+		}
+		rows = append(rows, widget.Row(
+			glyph(lucide.HardDrive, 13).Color(colorGray),
+			widget.Expanded(ui.Caption(diskLabel).Size(12)),
+			ui.Button(tr("Reset amd64 build cache"), m.AskResetAmd64Disk).Outline().Size(ui.ButtonExtraSmall).Disabled(v.resetting),
+		).Gap(8).Align(widget.AlignCenter))
+
+		// 5. buildx amd64 node status.
+		if v.bx.Amd64Node {
+			rows = append(rows, widget.Row(
+				glyph(lucide.CircleCheck, 14).Color(colorGreen),
+				widget.Expanded(ui.Caption(tr("docker buildx sends linux/amd64 builds to the amd64 node.")).Size(12)),
+			).Gap(8).Align(widget.AlignCenter))
+		}
+
+		return widget.Box(widget.Column(rows...).Gap(6).Stretch()).Pad(10).Radius(8).Border(1, colorBorder)
+	})
 }
 
 // sandboxBuilderStatus shows the lazy BuildKit builder state (idle/running)
@@ -530,7 +791,7 @@ func sandboxBuilderStatus(m *Model) ggui.Widget {
 			).Gap(8).Align(widget.AlignCenter))
 		}
 
-		return widget.Box(widget.Column(rows...).Gap(6).Stretch()).Pad(10).Radius(8).Border(1, colorGrayA)
+		return widget.Box(widget.Column(rows...).Gap(6).Stretch()).Pad(10).Radius(8).Border(1, colorBorder)
 	})
 }
 

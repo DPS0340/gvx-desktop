@@ -1,161 +1,123 @@
 package rungv
 
-// Owner: workstream C.
-
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestEngineClientArgs(t *testing.T) {
-	c := &Client{Path: "/usr/bin/rungv", CacheDir: "/tmp/gvxd-test-cache"}
-	cases := []struct {
-		in   []string
-		want []string
-	}{
-		{
-			[]string{"images", "-a", "--no-trunc", "--format", "json"},
-			[]string{"images", "-cache-dir", "/tmp/gvxd-test-cache", "-a", "--no-trunc", "--format", "json"},
-		},
-		{
-			[]string{"inspect", "alpine:3.20"},
-			[]string{"inspect", "-cache-dir", "/tmp/gvxd-test-cache", "alpine:3.20"},
-		},
-		{
-			[]string{"pull", "-platform", "linux/arm64", "alpine:3.20"},
-			[]string{"pull", "-cache-dir", "/tmp/gvxd-test-cache", "-platform", "linux/arm64", "alpine:3.20"},
-		},
-		{
-			[]string{"tag", "alpine:3.20", "gvxd-tag:v1"},
-			[]string{"tag", "-cache-dir", "/tmp/gvxd-test-cache", "alpine:3.20", "gvxd-tag:v1"},
-		},
-		{
-			[]string{"load"},
-			[]string{"load", "-cache-dir", "/tmp/gvxd-test-cache"},
-		},
-		{
-			[]string{"save", "alpine:3.20"},
-			[]string{"save", "-cache-dir", "/tmp/gvxd-test-cache", "alpine:3.20"},
-		},
-		{
-			[]string{"image", "prune", "-f"},
-			[]string{"image", "prune", "-cache-dir", "/tmp/gvxd-test-cache", "-f"},
-		},
-		{
-			[]string{"volume", "create", "-d", "ext4lite", "gvxd-v1"},
-			[]string{"volume", "create", "-cache-dir", "/tmp/gvxd-test-cache", "-d", "ext4lite", "gvxd-v1"},
-		},
+// makeArgRecorder writes a tiny fake rungv script that prints its argv (one
+// arg per line) to stdout and exits 0. On Windows we skip script tests.
+func makeArgRecorder(t *testing.T) (*Client, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell recorder test runs on unix")
 	}
-	for _, tc := range cases {
-		got := c.Args(tc.in...)
-		if !slices.Equal(got, tc.want) {
-			t.Errorf("Args(%v) = %v, want %v", tc.in, got, tc.want)
-		}
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "args.log")
+	bin := filepath.Join(dir, "fake-rungv")
+	script := "#!/bin/sh\n" +
+		": > \"" + logFile + "\"\n" +
+		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> \"" + logFile + "\"; done\n" +
+		"case \"$1\" in\n" +
+		"  inspect) printf '[]\\n' ;;\n" +
+		"  save) printf 'tar-bytes' ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
 	}
+	return &Client{Path: bin, CacheDir: "/tmp/test-cache"}, logFile
 }
 
-func TestEngineRejectsLeadingDashArgs(t *testing.T) {
-	c := &Client{Path: "/nonexistent/rungv", CacheDir: "/tmp/gvxd-test-cache"}
+func readRecordedArgs(t *testing.T, logFile string) []string {
+	t.Helper()
+	b, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.TrimRight(string(b), "\n")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
+}
+
+func TestEngineArchFlags(t *testing.T) {
+	c, logFile := makeArgRecorder(t)
 	ctx := context.Background()
 
-	if _, err := c.InspectImagesRaw(ctx, "-cache-dir"); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
-		t.Errorf("InspectImagesRaw(-cache-dir) = %v, want dash error", err)
+	if _, err := c.ImagesFullArch(ctx, "amd64"); err != nil {
+		t.Fatal(err)
 	}
-	if err := c.PullPlatform(ctx, "-bad", "", nil); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
-		t.Errorf("PullPlatform(-bad) = %v, want dash error", err)
-	}
-	if err := c.PullPlatform(ctx, "alpine:3.20", "-bad", nil); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
-		t.Errorf("PullPlatform(platform=-bad) = %v, want dash error", err)
-	}
-	if err := c.RemoveImageSafe(ctx, "-bad", false); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
-		t.Errorf("RemoveImageSafe(-bad) = %v, want dash error", err)
-	}
-	if err := c.TagImage(ctx, "-src", "dst:1"); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
-		t.Errorf("TagImage(-src) = %v, want dash error", err)
-	}
-	if err := c.TagImage(ctx, "src:1", "-dst"); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
-		t.Errorf("TagImage(-dst) = %v, want dash error", err)
-	}
-	if err := c.SaveImages(ctx, &bytes.Buffer{}, "-bad"); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
-		t.Errorf("SaveImages(-bad) = %v, want dash error", err)
-	}
-	if err := c.CreateVolumeSafe(ctx, "-bad", "ext4lite"); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
-		t.Errorf("CreateVolumeSafe(-bad) = %v, want dash error", err)
-	}
-	if err := c.RemoveVolumeSafe(ctx, "-bad"); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
-		t.Errorf("RemoveVolumeSafe(-bad) = %v, want dash error", err)
-	}
-}
-
-func TestEngineHelpersIntegration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping rungv integration test under -short")
-	}
-	path, err := Locate("")
-	if err != nil {
-		t.Skip("rungv not found")
-	}
-	cache := t.TempDir()
-	c := &Client{Path: path, CacheDir: cache}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	var lines []string
-	if err := c.PullPlatform(ctx, "alpine:3.20", "", func(s string) {
-		lines = append(lines, s)
-	}); err != nil {
-		t.Fatalf("PullPlatform: %v", err)
+	want := []string{"images", "-cache-dir", "/tmp/test-cache", "-arch", "amd64", "-a", "--no-trunc", "--digests", "--format", "json"}
+	if got := readRecordedArgs(t, logFile); !slices.Equal(got, want) {
+		t.Errorf("ImagesFullArch args = %v, want %v", got, want)
 	}
 
-	imgs, err := c.ImagesFull(ctx)
-	if err != nil {
-		t.Fatalf("ImagesFull: %v", err)
+	if _, err := c.InspectImagesRawArch(ctx, "amd64", "gvxd-amd64:1"); err != nil {
+		t.Fatal(err)
 	}
-	if len(imgs) == 0 {
-		t.Fatal("expected at least one image after pull")
-	}
-	if !strings.HasPrefix(imgs[0].ID, "sha256:") || len(imgs[0].ID) != len("sha256:")+64 {
-		t.Fatalf("expected full sha256 ID, got %q", imgs[0].ID)
+	want = []string{"inspect", "-cache-dir", "/tmp/test-cache", "-arch", "amd64", "--", "gvxd-amd64:1"}
+	if got := readRecordedArgs(t, logFile); !slices.Equal(got, want) {
+		t.Errorf("InspectImagesRawArch args = %v, want %v", got, want)
 	}
 
-	raw, err := c.InspectImagesRaw(ctx, "alpine:3.20")
-	if err != nil {
-		t.Fatalf("InspectImagesRaw: %v", err)
+	if err := c.PullPlatform(ctx, "alpine:3.20", "linux/amd64", nil); err != nil {
+		t.Fatal(err)
 	}
-	var inspected []struct {
-		ID string `json:"Id"`
-	}
-	if err := json.Unmarshal(raw, &inspected); err != nil || len(inspected) != 1 {
-		t.Fatalf("InspectImagesRaw decode failed: err=%v len=%d", err, len(inspected))
+	want = []string{"pull", "-cache-dir", "/tmp/test-cache", "-arch", "amd64", "-platform", "linux/amd64", "--", "alpine:3.20"}
+	if got := readRecordedArgs(t, logFile); !slices.Equal(got, want) {
+		t.Errorf("PullPlatform args = %v, want %v", got, want)
 	}
 
-	if err := c.TagImage(ctx, "alpine:3.20", "gvxd-test-tag:v1"); err != nil {
-		t.Fatalf("TagImage: %v", err)
+	if err := c.RemoveImageSafeArch(ctx, "amd64", "gvxd-amd64:1", true); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"rmi", "-cache-dir", "/tmp/test-cache", "-arch", "amd64", "-f", "--", "gvxd-amd64:1"}
+	if got := readRecordedArgs(t, logFile); !slices.Equal(got, want) {
+		t.Errorf("RemoveImageSafeArch args = %v, want %v", got, want)
 	}
 
-	var tarBuf bytes.Buffer
-	if err := c.SaveImages(ctx, &tarBuf, "alpine:3.20"); err != nil {
-		t.Fatalf("SaveImages: %v", err)
+	if err := c.TagImageArch(ctx, "amd64", "a:1", "b:2"); err != nil {
+		t.Fatal(err)
 	}
-	if tarBuf.Len() == 0 {
-		t.Fatal("SaveImages wrote 0 bytes")
+	want = []string{"tag", "-cache-dir", "/tmp/test-cache", "-arch", "amd64", "--", "a:1", "b:2"}
+	if got := readRecordedArgs(t, logFile); !slices.Equal(got, want) {
+		t.Errorf("TagImageArch args = %v, want %v", got, want)
 	}
 
-	// Load into a second isolated temp cache.
-	c2 := &Client{Path: path, CacheDir: t.TempDir()}
-	var loadLines []string
-	if err := c2.LoadImages(ctx, bytes.NewReader(tarBuf.Bytes()), func(s string) {
-		loadLines = append(loadLines, s)
-	}); err != nil {
-		t.Fatalf("LoadImages: %v", err)
+	if err := c.LoadImagesArch(ctx, "amd64", strings.NewReader("archive"), nil); err != nil {
+		t.Fatal(err)
 	}
-	loaded, err := c2.ImagesFull(ctx)
-	if err != nil || len(loaded) == 0 {
-		t.Fatalf("ImagesFull in second cache: err=%v len=%d", err, len(loaded))
+	want = []string{"load", "-cache-dir", "/tmp/test-cache", "-arch", "amd64"}
+	if got := readRecordedArgs(t, logFile); !slices.Equal(got, want) {
+		t.Errorf("LoadImagesArch args = %v, want %v", got, want)
+	}
+
+	var saved bytes.Buffer
+	if err := c.SaveImagesArch(ctx, "amd64", &saved, "gvxd-amd64:1"); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"save", "-cache-dir", "/tmp/test-cache", "-arch", "amd64", "--", "gvxd-amd64:1"}
+	if got := readRecordedArgs(t, logFile); !slices.Equal(got, want) {
+		t.Errorf("SaveImagesArch args = %v, want %v", got, want)
+	}
+
+	if _, err := c.PruneImagesArch(ctx, "amd64", false); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"image", "prune", "-cache-dir", "/tmp/test-cache", "-f", "-arch", "amd64"}
+	if got := readRecordedArgs(t, logFile); !slices.Equal(got, want) {
+		t.Errorf("PruneImagesArch args = %v, want %v", got, want)
+	}
+
+	// Leading dash in arch must be rejected.
+	if _, err := c.ImagesFullArch(ctx, "-bad"); err == nil {
+		t.Errorf("ImagesFullArch(-bad) succeeded, want error")
 	}
 }

@@ -91,10 +91,10 @@ func explorerFilesView(m *Model) ggui.Widget {
 		}
 		return widget.Column(
 			explorerNavBar(m),
-			widget.Row(
-				explorerDirPane(m),
-				widget.Expanded(explorerPreviewPane(m)),
-			).Gap(12).Align(widget.AlignStretch),
+			widget.Box(
+				ui.Resizable(m.ExploreSplit, explorerDirPane(m), explorerPreviewPane(m)).
+					WithHandle().MinSizes(280, 280).Name(tr("Image explorer")),
+			).Height(explorerPaneHeight).Radius(8).Border(1, colorBorder).Clip(),
 		).Gap(10).Stretch()
 	})
 }
@@ -142,7 +142,13 @@ func explorerNavBar(m *Model) ggui.Widget {
 		}).Small().MinWidth(120).Name(tr("Layer"))
 	})
 
-	filter := widget.Box(ui.TextField(m.ExploreQuery).Placeholder(tr("Filter files…")).Name(tr("Filter files"))).Width(180)
+	clearQuery := ggui.If(ggui.Map(m.ExploreQuery, func(q string) bool { return q != "" }), func() ggui.Widget {
+		return iconButton(lucide.X, tr("Clear the filter"), func() { m.ExploreQuery.Set("") })
+	})
+	filter := widget.Row(
+		widget.Box(ui.TextField(m.ExploreQuery).Placeholder(tr("Filter files…")).Name(tr("Filter files"))).Width(180),
+		clearQuery,
+	).Gap(4).Align(widget.AlignCenter)
 	return widget.Row(up, widget.Expanded(crumbs), layerPicker, filter).Gap(8).Align(widget.AlignCenter)
 }
 
@@ -183,7 +189,7 @@ func explorerDirPane(m *Model) ggui.Widget {
 		}
 		return widget.Padding(widget.Column(rows...).Gap(2).Stretch(), 6)
 	})
-	return widget.Box(widget.Scroll(list).FadeEdges(8)).Width(440).Height(explorerPaneHeight).Radius(8).Border(1, colorGrayA)
+	return widget.Scroll(list).FadeEdges(8)
 }
 
 func explorerEntryRow(m *Model, e imagefs.Entry, showLayer bool) ggui.Widget {
@@ -325,7 +331,7 @@ func explorerPreviewPane(m *Model) ggui.Widget {
 		}
 		return widget.Column(parts...).Gap(8).Stretch()
 	})
-	return widget.Box(widget.Padding(body, 12)).Height(explorerPaneHeight).Radius(8).Border(1, colorGrayA)
+	return widget.Padding(body, 12)
 }
 
 func explorerLayersView(m *Model) ggui.Widget {
@@ -388,7 +394,7 @@ func explorerLayersView(m *Model) ggui.Widget {
 					widget.Expanded(widget.Column(col...).Gap(2)),
 					widget.Box(ui.Caption(sizeText).Size(12).NoWrap()).Width(72),
 					act,
-				).Gap(10).Align(widget.AlignCenter)).Pad(8, 10).Radius(6).Border(1, colorGrayA)
+				).Gap(10).Align(widget.AlignCenter)).Pad(8, 10).Radius(6).Border(1, colorBorder)
 			}
 			return widget.Box(widget.Scroll(widget.Column(rows...).Gap(6).Stretch()).FadeEdges(8)).Height(470)
 		})

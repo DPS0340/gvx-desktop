@@ -10,6 +10,8 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
 
+var _ ImageArchRunner = (*rungvRunner)(nil)
+
 func (r *rungvRunner) cli() (*rungv.Client, error) {
 	if r.client == nil {
 		return nil, rungv.ErrNotFound
@@ -29,7 +31,22 @@ func (r *rungvRunner) Images(ctx context.Context) ([]rungv.Image, error) {
 	return c.ImagesFull(ctx)
 }
 
+func (r *rungvRunner) ImagesArch(ctx context.Context, arch string) ([]rungv.Image, error) {
+	if arch == "" || arch == hostImageArch {
+		return r.Images(ctx)
+	}
+	c, err := r.cli()
+	if err != nil {
+		return nil, err
+	}
+	return c.ImagesFullArch(ctx, arch)
+}
+
 func (r *rungvRunner) InspectImages(ctx context.Context, refs ...string) ([]ImageInspect, error) {
+	return r.InspectImagesArch(ctx, "", refs...)
+}
+
+func (r *rungvRunner) InspectImagesArch(ctx context.Context, arch string, refs ...string) ([]ImageInspect, error) {
 	if len(refs) == 0 {
 		return nil, nil
 	}
@@ -37,7 +54,10 @@ func (r *rungvRunner) InspectImages(ctx context.Context, refs ...string) ([]Imag
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.InspectImagesRaw(ctx, refs...)
+	if arch == hostImageArch {
+		arch = ""
+	}
+	raw, err := c.InspectImagesRawArch(ctx, arch, refs...)
 	if err != nil {
 		return nil, err
 	}
@@ -64,12 +84,34 @@ func (r *rungvRunner) RemoveImage(ctx context.Context, ref string, force bool) e
 	return c.RemoveImageSafe(ctx, ref, force)
 }
 
+func (r *rungvRunner) RemoveImageArch(ctx context.Context, arch, ref string, force bool) error {
+	if arch == "" || arch == hostImageArch {
+		return r.RemoveImage(ctx, ref, force)
+	}
+	c, err := r.cli()
+	if err != nil {
+		return err
+	}
+	return c.RemoveImageSafeArch(ctx, arch, ref, force)
+}
+
 func (r *rungvRunner) TagImage(ctx context.Context, source, target string) error {
 	c, err := r.cli()
 	if err != nil {
 		return err
 	}
 	return c.TagImage(ctx, source, target)
+}
+
+func (r *rungvRunner) TagImageArch(ctx context.Context, arch, source, target string) error {
+	if arch == "" || arch == hostImageArch {
+		return r.TagImage(ctx, source, target)
+	}
+	c, err := r.cli()
+	if err != nil {
+		return err
+	}
+	return c.TagImageArch(ctx, arch, source, target)
 }
 
 func (r *rungvRunner) LoadImages(ctx context.Context, archive io.Reader, line func(string)) error {
@@ -80,12 +122,34 @@ func (r *rungvRunner) LoadImages(ctx context.Context, archive io.Reader, line fu
 	return c.LoadImages(ctx, archive, line)
 }
 
+func (r *rungvRunner) LoadImagesArch(ctx context.Context, arch string, archive io.Reader, line func(string)) error {
+	if arch == "" || arch == hostImageArch {
+		return r.LoadImages(ctx, archive, line)
+	}
+	c, err := r.cli()
+	if err != nil {
+		return err
+	}
+	return c.LoadImagesArch(ctx, arch, archive, line)
+}
+
 func (r *rungvRunner) SaveImages(ctx context.Context, w io.Writer, refs ...string) error {
 	c, err := r.cli()
 	if err != nil {
 		return err
 	}
 	return c.SaveImages(ctx, w, refs...)
+}
+
+func (r *rungvRunner) SaveImagesArch(ctx context.Context, arch string, w io.Writer, refs ...string) error {
+	if arch == "" || arch == hostImageArch {
+		return r.SaveImages(ctx, w, refs...)
+	}
+	c, err := r.cli()
+	if err != nil {
+		return err
+	}
+	return c.SaveImagesArch(ctx, arch, w, refs...)
 }
 
 func (r *rungvRunner) PruneImages(ctx context.Context) (string, error) {
@@ -95,6 +159,18 @@ func (r *rungvRunner) PruneImages(ctx context.Context) (string, error) {
 	}
 	// Dangling only: never pass all=true, which would delete user sandbox images.
 	return c.PruneImages(ctx, false)
+}
+
+func (r *rungvRunner) PruneImagesArch(ctx context.Context, arch string) (string, error) {
+	if arch == "" || arch == hostImageArch {
+		return r.PruneImages(ctx)
+	}
+	c, err := r.cli()
+	if err != nil {
+		return "", err
+	}
+	// Dangling only: never pass all=true, which would delete user sandbox images.
+	return c.PruneImagesArch(ctx, arch, false)
 }
 
 func (r *rungvRunner) Volumes(ctx context.Context) ([]rungv.Volume, error) {

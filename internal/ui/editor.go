@@ -2,6 +2,7 @@ package ui
 
 import (
 	"image/color"
+	"slices"
 
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/icons/lucide"
@@ -11,9 +12,8 @@ import (
 	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/rungv"
+	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
-
-var colorGrayA = color.NRGBA{0x80, 0x80, 0x88, 0x40}
 
 func rgbA(v uint32, a uint8) color.NRGBA {
 	return color.NRGBA{uint8(v >> 16), uint8(v >> 8), uint8(v), a}
@@ -45,7 +45,7 @@ func editorSheet(m *Model) ggui.Widget {
 			}
 		}
 		return refs
-	}).WithEqual(func(a, b []string) bool { return equalStrings(a, b) })
+	}).WithEqual(slices.Equal[[]string])
 	imageChips := ggui.View(cached, func(refs []string) ggui.Widget {
 		if len(refs) == 0 {
 			return widget.Box()
@@ -56,7 +56,7 @@ func editorSheet(m *Model) ggui.Widget {
 				d.Update(func(x Draft) Draft {
 					x.Image = ref
 					if x.Name == "" {
-						x.Name = uniqueName(ggui.Peek(m.Specs), sandboxName(ref))
+						x.Name = uniqueName(ggui.Peek(m.Specs), sandbox.SuggestName(ref))
 					}
 					return x
 				})
@@ -168,7 +168,7 @@ func editorSheet(m *Model) ggui.Widget {
 		if msg == "" {
 			return widget.Box()
 		}
-		return ui.Alert(tr("Needs attention"), msg).Destructive().Icon(icons.Alert)
+		return widget.Padding(ui.Alert(tr("Needs attention"), msg).Destructive().Icon(icons.Alert), 6, 0, 2, 0)
 	})
 
 	form := widget.Column(
@@ -188,68 +188,32 @@ func editorSheet(m *Model) ggui.Widget {
 		ui.Collapsible(advancedOpen, tr("Advanced"), widget.Padding(advanced, 12, 0, 0, 0)),
 		ui.Divider(),
 		ui.CodeBlockOf(m.DraftLine).Header(tr("This runs")).Language("sh").Small().CopyButton(true),
-		errorBanner,
 	).Gap(18).Stretch()
 
 	invalid := ggui.Map(m.DraftError, func(s string) bool { return s != "" })
+	primaryAction := ggui.View(m.DraftRunning, func(running bool) ggui.Widget {
+		if running {
+			return ui.Button(tr("Save and restart"), func() { m.SaveDraft(true) }).BindDisabled(invalid).Icon(glyph(lucide.RotateCcw, 14))
+		}
+		return ui.Button(tr("Save and start"), func() { m.SaveDraft(true) }).BindDisabled(invalid).Icon(glyph(lucide.Play, 14))
+	})
 	// The sheet stacks its own footer under the content; the form scrolls
-	// in the room it has and the actions stay at the bottom edge.
+	// in the room it has and the validation status + actions stay pinned
+	// at the bottom edge.
 	actions := widget.Row(
 		ui.Button(tr("Cancel"), func() { m.EditorOpen.Set(false) }).Ghost(),
 		widget.Spacer(),
 		ui.Button(tr("Save"), func() { m.SaveDraft(false) }).Outline().BindDisabled(invalid),
-		ui.Button(tr("Save and start"), func() { m.SaveDraft(true) }).BindDisabled(invalid).Icon(glyph(lucide.Play, 14)),
+		primaryAction,
 	).Gap(8).Align(widget.AlignCenter)
 	return ui.Sheet(m.EditorOpen, widget.Column(
 		ui.TitleOf(title).Size(20),
 		ui.Caption(tr("Ports and mounts are opened before the guest starts and stay fixed while it runs.")),
 		widget.Expanded(widget.Scroll(widget.Padding(form, 16, 12, 24, 0)).FadeEdges(12)),
+		errorBanner,
 		ui.Divider(),
 		widget.Padding(actions, 12, 0, 0, 0),
 	).Gap(6).Stretch()).Right().Size(600).Name(tr("Sandbox editor"))
-}
-
-func sandboxName(ref string) string {
-	n := ref
-	for _, sep := range []string{"@", ":"} {
-		if i := lastIndex(n, sep); i > 0 && !containsSlashAfter(n, i) {
-			n = n[:i]
-		}
-	}
-	if i := lastIndex(n, "/"); i >= 0 {
-		n = n[i+1:]
-	}
-	return n
-}
-
-func lastIndex(s, sub string) int {
-	for i := len(s) - len(sub); i >= 0; i-- {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
-}
-
-func containsSlashAfter(s string, i int) bool {
-	for _, r := range s[i:] {
-		if r == '/' {
-			return true
-		}
-	}
-	return false
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // browseFolder asks for a folder and writes it to target.

@@ -57,6 +57,9 @@ type Config struct {
 	// BuilderVolume names the rungv volume storing BuildKit's cache. Empty
 	// defaults to BuilderVolumeName.
 	BuilderVolume string
+	// Amd64, when set, turns on the amd64 builder from the start; the app
+	// changes it later with SetAmd64. See docs/design/amd64-builder.md.
+	Amd64 *Amd64Config
 	// Logf, when set, traces every request and what the engine does.
 	Logf func(format string, args ...any)
 }
@@ -81,11 +84,13 @@ type Engine struct {
 	net networkState   // workstream C: networks.go
 	evt eventState     // workstream C: events.go
 	bld builderState   // builder.go
+	amd amd64State     // amd64.go (the amd64 builder, workstream C)
 }
 
 // New returns an engine over cfg.Runner. It serves nothing until Open.
 func New(cfg Config) *Engine {
 	e := &Engine{cfg: cfg, runner: cfg.Runner, changeCh: make(chan struct{})}
+	e.amd.cfg = cfg.Amd64
 	e.runner.SetHandlers(e.onRunnerEvent, e.handleRunnerOutput)
 	return e
 }
@@ -113,6 +118,11 @@ func (e *Engine) Open(ctx context.Context) error {
 		e.closeStreams()
 		return err
 	}
+	if err := e.openAmd64(); err != nil {
+		e.closeBuilder(0)
+		e.closeStreams()
+		return err
+	}
 	e.opened = true
 	e.resumeContainers(ctx)
 	e.notify()
@@ -129,6 +139,7 @@ func (e *Engine) Close(timeout time.Duration) error {
 		return nil
 	}
 	e.opened = false
+	e.closeAmd64(timeout)
 	e.closeBuilder(timeout)
 	e.stopContainers(timeout)
 	e.closeStreams()

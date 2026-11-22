@@ -231,7 +231,7 @@ func (m *Model) AskRestartToUpdate() {
 		return
 	}
 	text := tr("GVX Desktop quits, puts %s in place, and opens again.", u.Name())
-	if n := ggui.Peek(m.Running); n > 0 {
+	if n := max(m.ActiveCount(), ggui.Peek(m.TotalRunning)); n > 0 {
 		text = trn(n, "%d sandbox is running and will be stopped: sandboxes live only while the app runs.",
 			"%d sandboxes are running and will be stopped: sandboxes live only while the app runs.") + " " + text
 		m.Confirm(tr("Restart to update?"), text, tr("Restart to update"), m.restartToUpdate)
@@ -255,7 +255,7 @@ func (m *Model) restartToUpdate() {
 			return
 		}
 		m.appStaged, m.appRestart = nil, s
-		if len(m.sup.Running()) > 0 {
+		if m.ActiveCount() > 0 {
 			m.StopAllAndThen(func() { quitApp() })
 			return
 		}

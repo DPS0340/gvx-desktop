@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/png"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -72,7 +73,12 @@ func build(m *Model) ggui.Widget {
 	// width; the top bar belongs to the content beside the sidebar and
 	// holds its trigger. With the sidebar away the bar reaches the window's
 	// edge, and makes room for the lights itself.
+	var menubar ggui.Widget = widget.Box()
+	if !ggui.NativeMenu() && m.appMenu != nil {
+		menubar = ggui.View(m.Menus, func(MenuState) ggui.Widget { return ui.AppMenubar(m.appMenus()) })
+	}
 	main := widget.Column(
+		menubar,
 		widget.Expanded(widget.Row(
 			sidebar(m),
 			widget.Expanded(widget.Column(
@@ -334,8 +340,12 @@ func statusBar(m *Model) ggui.Widget {
 		}
 		return fmt.Sprintf(tr("rungv %s · %s · %s lockdown"), engineVersion(e), e.Info.DefaultBackend, e.Info.HostLockdown)
 	})).Size(11).NoWrap()
-	running := ui.CaptionOf(ggui.Combine(m.Running, m.Specs, func(n int, specs []sandbox.Spec) string {
-		return fmt.Sprintf(tr("%d of %d sandboxes running"), n, len(specs))
+	running := ui.CaptionOf(ggui.Derived(func() string {
+		s := fmt.Sprintf(tr("%d of %d sandboxes running"), m.Running.Get(), len(m.Specs.Get()))
+		if ec := m.EngineRunning.Get(); ec > 0 {
+			s += " · " + trn(ec, "%d container running", "%d containers running")
+		}
+		return s
 	})).Size(11).NoWrap()
 	disk := ui.CaptionOf(ggui.Map(m.Disk, func(rows []rungv.DiskUsage) string {
 		var parts []string
@@ -344,7 +354,7 @@ func statusBar(m *Model) ggui.Widget {
 		}
 		return strings.Join(parts, " · ")
 	})).Size(11).NoWrap()
-	sep := func() ggui.Widget { return widget.Box().Size(1, 12).Fill(colorGray) }
+	sep := func() ggui.Widget { return widget.Box().Size(1, 12).Fill(colorBorder) }
 	return widget.Box(widget.Row(
 		ggui.View(m.Engine, func(e Engine) ggui.Widget {
 			c := colorGreen
@@ -363,23 +373,31 @@ func statusBar(m *Model) ggui.Widget {
 // ---- Dialogs ------------------------------------------------------------
 
 func confirmDialog(m *Model) ggui.Widget {
+	head := widget.Row(
+		ggui.View(m.ConfirmSafe, func(safe bool) ggui.Widget {
+			if safe {
+				return widget.Box(glyph(lucide.Info, 16).Color(colorBlue)).Pad(7).Radius(8).Fill(rgbA(0x3b82f6, 0x1c))
+			}
+			return widget.Box(glyph(lucide.TriangleExclamationPoint, 16).Color(colorRed)).Pad(7).Radius(8).Fill(rgbA(0xef4444, 0x1c))
+		}),
+		widget.Expanded(ui.HeadingOf(m.ConfirmTitle).Size(17)),
+	).Gap(10).Align(widget.AlignCenter)
 	return ui.Dialog(m.ConfirmOpen, widget.Column(
-		ui.HeadingOf(m.ConfirmTitle).Size(17),
+		head,
 		ui.CaptionOf(m.ConfirmText),
-		widget.Row(
-			ui.Button(tr("Cancel"), func() { m.ConfirmOpen.Set(false) }).Outline(),
-			ggui.View(m.ConfirmSafe, func(safe bool) ggui.Widget {
-				b := ui.ButtonOf(widget.TextOf(m.ConfirmLabel), func() {
-					m.ConfirmOpen.Set(false)
-					m.RunConfirmed()
-				}).BindName(m.ConfirmLabel)
-				if !safe {
-					b = b.Destructive()
-				}
-				return b
-			}),
-		).Gap(8).Justify(widget.JustifyEnd),
-	).Gap(14).Stretch()).Width(440).Name(tr("Confirm"))
+	).Gap(12).Stretch()).Width(440).Dismissible(false).Name(tr("Confirm")).Footer(
+		ui.Button(tr("Cancel"), func() { m.ConfirmOpen.Set(false) }).Outline(),
+		ggui.View(m.ConfirmSafe, func(safe bool) ggui.Widget {
+			b := ui.ButtonOf(widget.TextOf(m.ConfirmLabel), func() {
+				m.ConfirmOpen.Set(false)
+				m.RunConfirmed()
+			}).BindName(m.ConfirmLabel)
+			if !safe {
+				b = b.Destructive()
+			}
+			return b
+		}),
+	)
 }
 
 func pullDialog(m *Model) ggui.Widget {
@@ -583,17 +601,20 @@ func quitText(n int) string {
 }
 
 func quitDialog(m *Model) ggui.Widget {
+	head := widget.Row(
+		widget.Box(glyph(lucide.TriangleExclamationPoint, 16).Color(colorAmber)).Pad(7).Radius(8).Fill(rgbA(0xf59e0b, 0x1c)),
+		widget.Expanded(ui.Heading(tr("Stop running sandboxes?")).Size(17)),
+	).Gap(10).Align(widget.AlignCenter)
 	return ui.Dialog(m.QuitOpen, widget.Column(
-		ui.Heading(tr("Stop running sandboxes?")).Size(17),
+		head,
 		ui.CaptionOf(ggui.Map(m.TotalRunning, quitText)),
-		widget.Row(
-			ui.Button(tr("Cancel"), func() { m.QuitOpen.Set(false) }).Outline(),
-			ui.Button(tr("Stop and quit"), func() {
-				m.QuitOpen.Set(false)
-				m.StopAllAndThen(func() { quitApp() })
-			}).Destructive(),
-		).Gap(8).Justify(widget.JustifyEnd),
-	).Gap(14).Stretch()).Width(460).Name(tr("Quit"))
+	).Gap(12).Stretch()).Width(460).Dismissible(false).Name(tr("Quit")).Footer(
+		ui.Button(tr("Cancel"), func() { m.QuitOpen.Set(false) }).Outline(),
+		ui.Button(tr("Stop and quit"), func() {
+			m.QuitOpen.Set(false)
+			m.StopAllAndThen(func() { quitApp() })
+		}).Destructive(),
+	)
 }
 
 // quitApp ends the app; main sets it.
@@ -602,31 +623,53 @@ var quitApp = func() {}
 // SetQuit installs the function that ends the app.
 func SetQuit(fn func()) { quitApp = fn }
 
+type paletteSandbox struct {
+	id, name, image string
+	status          sandbox.Status
+}
+
+type paletteState struct {
+	containers, pods bool
+	sandboxes        []paletteSandbox
+}
+
+func (a paletteState) equal(b paletteState) bool {
+	return a.containers == b.containers && a.pods == b.pods && slices.Equal(a.sandboxes, b.sandboxes)
+}
+
 func palette(m *Model) ggui.Widget {
 	close := func(fn func()) func() {
 		return func() { m.PaletteOpen.Set(false); fn() }
 	}
-	entries := func(containers, pods bool) []ui.CommandEntry {
-		return []ui.CommandEntry{
-			ui.CommandItem(tr("New sandbox"), close(func() { m.NewSandbox("") })).Group(tr("Sandboxes")).Shortcut("cmd+n").Keywords("create run"),
-			ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Group(tr("Sandboxes")),
-			ui.CommandItem(tr("Pull image"), close(func() { m.OpenPull("") })).Group(tr("Images")).Keywords("download"),
-			ui.CommandItem(tr("Start Docker Engine"), close(func() { m.CreateFromRecipe(recipes.Docker); m.Go(PageDocker) })).Group(tr("Recipes")).Keywords("dind dockerd"),
-			ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
-			ui.CommandItem(tr("Start the image registry"), close(func() { m.CreateFromRecipe(recipes.Registry); m.OpenRecipe(recipes.Registry) })).Group(tr("Recipes")).Keywords("registry push images cluster"),
-			ui.CommandItem(tr("Create volume"), close(func() { m.VolumeOpen.Set(true) })).Group(tr("Volumes")),
-			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Group(tr("Go to")).Shortcut("cmd+1"),
-			ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Group(tr("Go to")).Shortcut("cmd+2"),
-			ui.CommandItem(tr("Containers"), close(func() { m.Go(PageContainers) })).Group(tr("Go to")).Shortcut("cmd+3").Keywords("docker ps").Disabled(!containers),
-			ui.CommandItem(tr("Pods"), close(func() { m.GoKube(KubePods) })).Group(tr("Go to")).Shortcut("cmd+4").Keywords("kubectl get pods k8s").Disabled(!pods),
-			ui.CommandItem(tr("Workloads"), close(func() { m.GoKube(KubeWorkloads) })).Group(tr("Go to")).Keywords("k8s deployments statefulsets daemonsets jobs").Disabled(!pods),
-			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!pods),
-			ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Group(tr("Go to")).Shortcut("cmd+5"),
-			ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Group(tr("Go to")).Keywords("docker images rmi pull"),
-			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Group(tr("Go to")).Shortcut("cmd+6"),
-			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Group(tr("Go to")).Shortcut("cmd+7"),
-			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Group(tr("Go to")).Shortcut("cmd+,"),
-			ui.CommandItem(tr("Refresh"), close(m.RefreshAll)).Group(tr("App")).Shortcut("cmd+r"),
+	ic := func(g *icons.Glyph) ggui.Widget { return glyph(g, 14).Color(colorGray) }
+	entries := func(st paletteState) []ui.CommandEntry {
+		out := []ui.CommandEntry{
+			ui.CommandItem(tr("New sandbox"), close(func() { m.NewSandbox("") })).Icon(ic(lucide.Plus)).Group(tr("Sandboxes")).Shortcut("cmd+n").Keywords("create run"),
+			ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Icon(ic(lucide.Square)).Group(tr("Sandboxes")),
+			ui.CommandItem(tr("Pull image"), close(func() { m.OpenPull("") })).Icon(ic(lucide.Download)).Group(tr("Images")).Shortcut("cmd+shift+p").Keywords("download"),
+			ui.CommandItem(tr("Prune images"), close(m.AskPruneImages)).Icon(ic(lucide.Eraser)).Group(tr("Images")).Keywords("clean unused"),
+			ui.CommandItem(tr("Start Docker Engine"), close(func() { m.CreateFromRecipe(recipes.Docker); m.Go(PageDocker) })).Icon(ic(lucide.Container)).Group(tr("Recipes")).Keywords("dind dockerd"),
+			ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Icon(ic(lucide.ShipWheel)).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
+			ui.CommandItem(tr("Start the image registry"), close(func() { m.CreateFromRecipe(recipes.Registry); m.OpenRecipe(recipes.Registry) })).Icon(ic(recipeIcon(recipes.Registry))).Group(tr("Recipes")).Keywords("registry push images cluster"),
+			ui.CommandItem(tr("Create volume"), close(func() { m.VolumeOpen.Set(true) })).Icon(ic(lucide.HardDrive)).Group(tr("Volumes")),
+			ui.CommandItem(tr("Prune volumes"), close(m.AskPruneVolumes)).Icon(ic(lucide.Eraser)).Group(tr("Volumes")).Keywords("clean unused"),
+			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Icon(ic(lucide.LayoutDashboard)).Group(tr("Go to")).Shortcut("cmd+1"),
+			ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Icon(ic(lucide.Box)).Group(tr("Go to")).Shortcut("cmd+2"),
+			ui.CommandItem(tr("Containers"), close(func() { m.Go(PageContainers) })).Icon(ic(lucide.Boxes)).Group(tr("Go to")).Shortcut("cmd+3").Keywords("docker ps").Disabled(!st.containers),
+			ui.CommandItem(tr("Pods"), close(func() { m.GoKube(KubePods) })).Icon(ic(lucide.Hexagon)).Group(tr("Go to")).Shortcut("cmd+4").Keywords("kubectl get pods k8s").Disabled(!st.pods),
+			ui.CommandItem(tr("Workloads"), close(func() { m.GoKube(KubeWorkloads) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Keywords("k8s deployments statefulsets daemonsets jobs").Disabled(!st.pods),
+			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Icon(ic(lucide.Network)).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!st.pods),
+			ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Shortcut("cmd+5"),
+			ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Icon(ic(lucide.Container)).Group(tr("Go to")).Keywords("docker images rmi pull"),
+			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Icon(ic(lucide.HardDrive)).Group(tr("Go to")).Shortcut("cmd+6"),
+			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Icon(ic(lucide.Camera)).Group(tr("Go to")).Shortcut("cmd+7"),
+			ui.CommandItem("Docker Engine", close(func() { m.Go(PageDocker) })).Icon(ic(lucide.Container)).Group(tr("Go to")).Shortcut("cmd+8").Keywords("dockerd"),
+			ui.CommandItem("Kubernetes", close(func() { m.Go(PageKubernetes) })).Icon(ic(lucide.ShipWheel)).Group(tr("Go to")).Shortcut("cmd+9").Keywords("k3s k8s"),
+			ui.CommandItem(tr("Image registry"), close(m.OpenRegistry)).Icon(ic(recipeIcon(recipes.Registry))).Group(tr("Go to")).Keywords("registry"),
+			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Icon(ic(lucide.Settings)).Group(tr("Go to")).Shortcut("cmd+,"),
+			ui.CommandItem(tr("Refresh"), close(m.RefreshAll)).Icon(ic(lucide.RefreshCw)).Group(tr("App")).Shortcut("cmd+r"),
+			ui.CommandItem(tr("Toggle sidebar"), close(func() { m.SidebarNarrow.Set(!ggui.Peek(m.SidebarNarrow)) })).Icon(ic(lucide.PanelLeft)).Group(tr("App")).Shortcut("cmd+b").Keywords("navigation panel"),
+			ui.CommandItem(tr("Check for updates"), close(func() { m.CheckAppUpdate(false) })).Icon(ic(lucide.CircleFadingArrowUp)).Group(tr("App")).Keywords("update version release"),
 			ui.CommandItem(tr("Toggle dark mode"), close(func() {
 				m.UpdateSettings(func(s *storeSettings) {
 					if s.Theme == "dark" {
@@ -635,14 +678,29 @@ func palette(m *Model) ggui.Widget {
 						s.Theme = "dark"
 					}
 				})
-			})).Group(tr("App")).Keywords("theme appearance"),
+			})).Icon(ic(lucide.Moon)).Group(tr("App")).Keywords("theme appearance"),
 		}
+		for _, sb := range st.sandboxes {
+			id := sb.id
+			out = append(out, ui.CommandItem(sb.name, close(func() { m.ShowSandbox(id, 0) })).
+				Icon(widget.Box(dot(statusColor(sb.status), 8)).Pad(3)).
+				Group(tr("Open sandbox")).
+				Keywords(sb.image, sb.status.String()))
+		}
+		return out
 	}
-	cmd := ui.Command(m.PaletteQuery).Height(300).StableHeight().Hints()
+	cmd := ui.Command(m.PaletteQuery).Height(340).StableHeight().Hints()
 	// The Containers and Pods entries are greyed out as the sidebar's
-	// items are.
-	open := ggui.Combine(m.ContainersOpen, m.PodsOpen, func(c, p bool) [2]bool { return [2]bool{c, p} })
-	ggui.Watch(open, func(on [2]bool) { cmd.Entries(entries(on[0], on[1])...) })
+	// items are, and existing sandboxes can be jumped to directly.
+	state := ggui.Derived(func() paletteState {
+		rows := m.Rows.Get()
+		sbs := make([]paletteSandbox, len(rows))
+		for i, r := range rows {
+			sbs[i] = paletteSandbox{id: r.Spec.ID, name: r.Spec.Name, image: r.Spec.Image, status: r.State.Status}
+		}
+		return paletteState{containers: m.ContainersOpen.Get(), pods: m.PodsOpen.Get(), sandboxes: sbs}
+	}).WithEqual(paletteState.equal)
+	ggui.Watch(state, func(st paletteState) { cmd.Entries(entries(st)...) })
 	return ui.CommandDialog(m.PaletteOpen, cmd)
 }
 
@@ -657,6 +715,9 @@ func (m *Model) RefreshAll() {
 		m.LoadContainerLogs()
 	case PagePods:
 		m.LoadPodLogs()
+	case PageSettings:
+		m.CheckAmd64()
+		m.refreshAmd64State()
 	}
 	m.CheckKubeconfig()
 	for _, l := range m.Links() {

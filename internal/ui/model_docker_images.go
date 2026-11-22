@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -36,13 +37,37 @@ type DockerImageRow struct {
 	Repository string
 	Tag        string
 	Digest     string
+	Arch       string
 	Created    int64
 	Size       int64
 	Dangling   bool
 }
 
-// Key identifies a row uniquely even when one image carries several tags.
-func (r DockerImageRow) Key() string { return r.ID + "|" + r.Repository + "|" + r.Tag }
+// Key identifies a row uniquely even when one image carries several tags or
+// when two architectures share a tag.
+func (r DockerImageRow) Key() string {
+	if r.Arch != "" {
+		return r.ID + "|" + r.Repository + "|" + r.Tag + "|" + r.Arch
+	}
+	return r.ID + "|" + r.Repository + "|" + r.Tag
+}
+
+// ForeignArch reports whether the image's architecture differs from this host's
+// native sandbox architecture.
+func (r DockerImageRow) ForeignArch() bool {
+	return r.Arch != "" && r.Arch != runtime.GOARCH
+}
+
+// Platform returns "linux/<arch>" for foreign-arch rows and "" otherwise.
+// Passing it to platform-scoped engine endpoints ensures name-based actions
+// (delete, tag, inspect) target the foreign namespace even when the same
+// repo:tag also exists for the host architecture.
+func (r DockerImageRow) Platform() string {
+	if r.ForeignArch() {
+		return "linux/" + r.Arch
+	}
+	return ""
+}
 
 // Ref is how the image is named for display and copying: repo:tag when tagged,
 // repo@digest when untagged with a digest, or the short ID for a dangling one.
@@ -84,6 +109,7 @@ func dockerImageRows(images []dockerapi.Image) []DockerImageRow {
 	var out []DockerImageRow
 	for _, img := range images {
 		short := img.ShortID()
+		arch := img.Architecture()
 		var tags []string
 		for _, rt := range img.RepoTags {
 			if rt != "" && rt != "<none>:<none>" {
@@ -98,6 +124,7 @@ func dockerImageRows(images []dockerapi.Image) []DockerImageRow {
 					ShortID:    short,
 					Repository: repo,
 					Tag:        tag,
+					Arch:       arch,
 					Created:    img.Created,
 					Size:       img.Size,
 				})
@@ -117,6 +144,7 @@ func dockerImageRows(images []dockerapi.Image) []DockerImageRow {
 			Repository: repo,
 			Tag:        "<none>",
 			Digest:     digest,
+			Arch:       arch,
 			Created:    img.Created,
 			Size:       img.Size,
 			Dangling:   true,
@@ -125,7 +153,7 @@ func dockerImageRows(images []dockerapi.Image) []DockerImageRow {
 	return out
 }
 
-// filterDockerImages keeps rows whose repository, tag or ID matches q.
+// filterDockerImages keeps rows whose repository, tag, architecture or ID matches q.
 func filterDockerImages(rows []DockerImageRow, q string) []DockerImageRow {
 	q = strings.ToLower(strings.TrimSpace(q))
 	if q == "" {
@@ -133,23 +161,34 @@ func filterDockerImages(rows []DockerImageRow, q string) []DockerImageRow {
 	}
 	var out []DockerImageRow
 	for _, r := range rows {
-		if strings.Contains(strings.ToLower(r.Repository+":"+r.Tag+" "+r.ShortID+" "+r.ID), q) {
+		if strings.Contains(strings.ToLower(r.Repository+":"+r.Tag+" "+r.Arch+" "+r.ShortID+" "+r.ID), q) {
 			out = append(out, r)
 		}
 	}
 	return out
 }
 
-// dockerImageUsers returns the names of containers referencing row.
+// dockerImageUsers returns the names of containers referencing row. A
+// foreign-arch row never matches containers by repo:tag because the same tag
+// may also exist for the host architecture that containers actually run.
 func dockerImageUsers(containers []dockerapi.Container, row DockerImageRow) []string {
 	var names []string
 	ref := row.Ref()
 	for _, c := range containers {
-		if c.ImageID != "" && c.ImageID == row.ID ||
-			c.Image == ref ||
-			c.Image == row.ID ||
-			c.Image == row.ShortID ||
-			(row.Tag == "latest" && row.Repository != "<none>" && c.Image == row.Repository) {
+		if c.ImageID != "" && row.ID != "" {
+			if c.ImageID == row.ID {
+				names = append(names, c.Name())
+			}
+			continue
+		}
+		if c.Image == row.ID || c.Image == row.ShortID {
+			names = append(names, c.Name())
+			continue
+		}
+		if row.ForeignArch() {
+			continue
+		}
+		if c.Image == ref || (row.Tag == "latest" && row.Repository != "<none>" && c.Image == row.Repository) {
 			names = append(names, c.Name())
 		}
 	}
@@ -157,7 +196,12 @@ func dockerImageUsers(containers []dockerapi.Container, row DockerImageRow) []st
 }
 
 // sandboxImageUsers returns the names of user sandboxes referencing row.
+// Sandboxes run only native host-architecture images, so foreign-arch rows
+// never match.
 func sandboxImageUsers(rows []Row, row DockerImageRow) []string {
+	if row.ForeignArch() {
+		return nil
+	}
 	var names []string
 	ref := row.Ref()
 	for _, r := range rows {
@@ -319,7 +363,7 @@ func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 			defer c.Close()
 			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
-			return c.RemoveImage(ctx, img.Target(), true)
+			return c.RemoveImagePlatform(ctx, img.Target(), true, img.Platform())
 		}, func(err error) {
 			if err != nil {
 				m.toastError(tr("Could not remove %s", ref), err)
@@ -423,7 +467,7 @@ func (m *Model) PushToRegistry(img DockerImageRow) {
 			return err
 		}
 		defer c.Close()
-		if err := c.Tag(ctx, img.Target(), repo, tag); err != nil {
+		if err := c.TagPlatform(ctx, img.Target(), repo, tag, img.Platform()); err != nil {
 			return err
 		}
 		return c.PushImage(ctx, ref, func(line string) {

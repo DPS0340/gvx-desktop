@@ -268,7 +268,7 @@ func podsTable(m *Model) ggui.Widget {
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(84).Identified("actions"),
-	).BindSelected(selected).RowName(kubeapi.Pod.Name).RowHeight(48).MaxRows(6).
+	).BindSelected(selected).RowName(kubeapi.Pod.Name).RowHeight(48).MaxRows(5).
 		Toolbar(toolbar)
 }
 

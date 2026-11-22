@@ -99,7 +99,7 @@ func newTerminalView(s *term.Session, autoFocus bool) *terminalView {
 }
 
 func (t *terminalView) Layout(c ggui.Constraints, env ggui.Env) ggui.Size {
-	t.pal = terminalPalette(uitheme.From(env))
+	t.pal = terminalPalette(uitheme.Of(env))
 	// The editor is never painted as itself, but PaintCustom wants it laid
 	// out first.
 	t.ime.Layout(ggui.Loose(c.Max()), env)

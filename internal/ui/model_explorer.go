@@ -241,7 +241,7 @@ func (m *Model) ExploreDockerImage(img DockerImageRow, tab int) {
 			defer c.Close()
 			ictx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			body, err = c.InspectImage(ictx, img.ID)
+			body, err = c.InspectImagePlatform(ictx, img.ID, img.Platform())
 			if err != nil {
 				body = err.Error()
 			}

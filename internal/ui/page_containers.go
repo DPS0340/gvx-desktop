@@ -578,6 +578,7 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 		parts = append(parts, ui.Caption(tr("No ports are published. Publish one with docker run -p 9000:80.")))
 	}
 	se := ggui.Peek(m.Settings).SandboxEngine
+	parts = append(parts, containerNetworks(m, c, se)...)
 	engine, _ := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
 	parts = append(parts, containerBinds(c, engine.Spec, se)...)
 	name := c.Name()
@@ -590,6 +591,52 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 	}
 	parts = append(parts, copyable(m, "docker inspect "+name, "docker inspect"))
 	return widget.Padding(widget.Column(parts...).Gap(10).Stretch(), 8, 0)
+}
+
+// containerNetworks lists the networks a container is on, with its
+// address on each and the names other containers reach it by there.
+func containerNetworks(m *Model, c dockerapi.Container, se bool) []ggui.Widget {
+	nets := c.Networks()
+	if len(nets) == 0 {
+		return nil
+	}
+	parts := []ggui.Widget{sectionTitle(tr("Networks"), tr("Other containers on a network reach this one at its address there, or by name."))}
+	for _, n := range nets {
+		var names []string
+		for _, nm := range n.DNSNames {
+			if nm != c.Name() && nm != c.ShortID() {
+				names = append(names, nm)
+			}
+		}
+		if len(names) == 0 {
+			names = slices.DeleteFunc(slices.Clone(n.Aliases), func(a string) bool { return a == c.Name() })
+		}
+		caption := tr("Reached as %s", strings.Join(append([]string{c.Name()}, names...), ", "))
+		switch {
+		case se && (n.Name == "bridge" || n.Name == "host"):
+			caption = tr("A network of its own; other containers cannot reach it here.")
+		case n.Name == "bridge":
+			caption = tr("Reached by address only on the default bridge.")
+		case n.Name == "host" || n.Name == "none":
+			caption = ""
+		}
+		label := []ggui.Widget{widget.Text(n.Name).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()}
+		if caption != "" {
+			label = append(label, ui.Caption(caption).Size(11).NoWrap().Ellipsis())
+		}
+		row := []ggui.Widget{glyph(lucide.Network, 14).Color(colorGray), widget.Expanded(widget.Column(label...).Gap(1))}
+		addr := n.IPAddress
+		if se && (n.Name == "bridge" || n.Name == "host") {
+			addr = ""
+		}
+		if addr != "" {
+			row = append(row, ui.Mono(addr).Size(12).NoWrap(), iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(addr, addr) }))
+		}
+		name := n.Name
+		row = append(row, tip(iconButton(lucide.ArrowRight, tr("Show %s", name), func() { m.ShowNetwork(name) }), tr("Show network")))
+		parts = append(parts, widget.Row(row...).Gap(10).Align(widget.AlignCenter))
+	}
+	return parts
 }
 
 // publishedPortsNote tells where a container's published port is reached:

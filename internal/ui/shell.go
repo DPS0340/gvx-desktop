@@ -51,6 +51,8 @@ func build(m *Model) ggui.Widget {
 			return sandboxesPage(m)
 		case PageContainers:
 			return containersPage(m)
+		case PageNetworks:
+			return networksPage(m)
 		case PagePods:
 			return podsPage(m)
 		case PageImages:
@@ -147,6 +149,7 @@ func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 	// Containers and Pods lead into the recipes' engines, and are greyed
 	// out while those are not running.
 	containers := gatedItem(item(PageContainers, tr("Containers"), lucide.Boxes), noContainers, m.RunningContainers)
+	networks := gatedItem(item(PageNetworks, tr("Networks"), lucide.Network), noContainers, nil)
 	pods := gatedItem(item(PagePods, tr("Pods"), lucide.Hexagon), noPods, m.RunningPods)
 	brandTop := 4.0
 	if TitlebarHidden {
@@ -164,6 +167,7 @@ func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 		item(PageDashboard, tr("Dashboard"), lucide.LayoutDashboard),
 		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(countBadge(m.Running)),
 		containers,
+		networks,
 		pods,
 		item(PageImages, tr("Images"), lucide.Layers),
 		item(PageVolumes, tr("Volumes"), lucide.HardDrive),
@@ -656,6 +660,8 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Icon(ic(lucide.LayoutDashboard)).Group(tr("Go to")).Shortcut("cmd+1"),
 			ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Icon(ic(lucide.Box)).Group(tr("Go to")).Shortcut("cmd+2"),
 			ui.CommandItem(tr("Containers"), close(func() { m.Go(PageContainers) })).Icon(ic(lucide.Boxes)).Group(tr("Go to")).Shortcut("cmd+3").Keywords("docker ps").Disabled(!st.containers),
+			ui.CommandItem(tr("Networks"), close(func() { m.Go(PageNetworks) })).Icon(ic(lucide.Network)).Group(tr("Go to")).Keywords("docker network ls").Disabled(!st.containers),
+			ui.CommandItem(tr("Remove unused networks"), close(m.AskPruneNetworks)).Icon(ic(lucide.Eraser)).Group(tr("Networks")).Keywords("docker network prune clean").Disabled(!st.containers),
 			ui.CommandItem(tr("Pods"), close(func() { m.GoKube(KubePods) })).Icon(ic(lucide.Hexagon)).Group(tr("Go to")).Shortcut("cmd+4").Keywords("kubectl get pods k8s").Disabled(!st.pods),
 			ui.CommandItem(tr("Workloads"), close(func() { m.GoKube(KubeWorkloads) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Keywords("k8s deployments statefulsets daemonsets jobs").Disabled(!st.pods),
 			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Icon(ic(lucide.Network)).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!st.pods),
@@ -713,6 +719,8 @@ func (m *Model) RefreshAll() {
 	switch ggui.Peek(m.Page) {
 	case PageContainers:
 		m.LoadContainerLogs()
+	case PageNetworks:
+		m.LoadDockerNetworks()
 	case PagePods:
 		m.LoadPodLogs()
 	case PageSettings:

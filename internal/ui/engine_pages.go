@@ -161,11 +161,14 @@ func countBadge(n ggui.Readable[int]) ggui.Widget {
 // gatedItem is a sidebar item that leads into a recipe's engine: greyed
 // out while the engine is not running, with a mark at its end that says
 // why in a tip, as the sidebar tells the item's own Tooltip only on a
-// rail of icons; and a count of what runs while it is.
+// rail of icons; and a count of what runs while it is, if count is not nil.
 func gatedItem(item ui.SidebarEntry, why string, count ggui.Readable[int]) ui.SidebarEntry {
 	if why != "" {
 		return item.Disabled(true).Tooltip(why).
 			Action(tip(widget.Box(glyph(lucide.PowerOff, 14).Color(colorGray)).Pad(3), why))
+	}
+	if count == nil {
+		return item
 	}
 	return item.Action(countBadge(count))
 }

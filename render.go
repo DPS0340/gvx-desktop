@@ -90,6 +90,23 @@ func renderAll(tmp, out, lang string) error {
 			m.ContainerDetail.Set(1)
 		}},
 		{"containers-folded", func(m *ui.Model) { m.Go(ui.PageContainers); m.ToggleProject("shop") }},
+		// A container on two networks, with its addresses and names.
+		{"containers-networks", func(m *ui.Model) {
+			m.Go(ui.PageContainers)
+			m.SelectContainer(demoContainers()[1].ID)
+			m.ContainerDetail.Set(1)
+		}},
+		{"networks", func(m *ui.Model) { m.ShowNetwork("shop_default") }},
+		// The default bridge in the sandbox engine, where containers do not
+		// reach each other.
+		{"networks-bridge-sandbox-engine", func(m *ui.Model) {
+			stopEngine(m)
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = true })
+			m.DockerContainers.Set(ui.Listing[dockerapi.Container]{Loaded: true, Items: demoContainers()})
+			m.DockerNetworks.Set(ui.Listing[dockerapi.Network]{Loaded: true, Items: demoNetworks()})
+			m.ShowNetwork("bridge")
+		}},
+		{"networks-remove", func(m *ui.Model) { m.ShowNetwork("scratch"); m.AskRemoveNetwork(demoNetworks()[5]) }},
 		{"containers-filtered", func(m *ui.Model) { m.Go(ui.PageContainers); m.ContainerQuery.Set("redis") }},
 		{"containers-remove-project", func(m *ui.Model) {
 			m.Go(ui.PageContainers)
@@ -483,6 +500,7 @@ func demoState(m *ui.Model, now time.Time) {
 	})
 	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{Loaded: true, Items: demoContainers()})
 	m.DockerImages.Set(ui.Listing[dockerapi.Image]{Loaded: true, Items: demoDockerImages(now)})
+	m.DockerNetworks.Set(ui.Listing[dockerapi.Network]{Loaded: true, Items: demoNetworks()})
 	m.ContainerLogs.Set(demoContainerLogs(now))
 	m.KubeconfigReady.Set(true)
 	m.Pods.Set(ui.Listing[kubeapi.Pod]{Loaded: true, Items: demoPods(now)})
@@ -721,6 +739,7 @@ func stopEngine(m *ui.Model) {
 	m.States.Set(states)
 	m.DockerContainers.Set(ui.Listing[dockerapi.Container]{})
 	m.DockerImages.Set(ui.Listing[dockerapi.Image]{})
+	m.DockerNetworks.Set(ui.Listing[dockerapi.Network]{})
 	m.ContainerLogs.Set(ui.ContainerLogs{})
 }
 
@@ -770,7 +789,7 @@ func demoContainerLogs(now time.Time) ui.ContainerLogs {
 // demoContainers are the demo Docker Engine's.
 func demoContainers() []dockerapi.Container {
 	created := time.Date(2026, 11, 16, 13, 18, 0, 0, time.Local).Unix()
-	return []dockerapi.Container{
+	ctrs := []dockerapi.Container{
 		{ID: "3f2a9c1b7d4e5f60", Names: []string{"/shop-web-1"}, Image: "nginx:alpine", State: "running", Status: "Up 2 hours", Created: created,
 			Ports:  []dockerapi.Port{{IP: "0.0.0.0", PrivatePort: 80, PublicPort: 9000, Type: "tcp"}, {IP: "::", PrivatePort: 80, PublicPort: 9000, Type: "tcp"}},
 			Labels: map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.service": "web"},
@@ -782,6 +801,56 @@ func demoContainers() []dockerapi.Container {
 		{ID: "1a2b3c4d5e6f7081", Names: []string{"/migrate"}, Image: "app:dev", State: "exited", Status: "Exited (0) 2 hours ago", Created: created - 60,
 			Mounts: []dockerapi.Mount{{Type: "bind", Source: "/Volumes/work/migrations", Destination: "/migrations", RW: true}}},
 	}
+	ctrs[0].NetworkSettings.Networks = map[string]dockerapi.Endpoint{
+		"shop_default": {NetworkID: demoShopNet, IPAddress: "10.89.1.2", IPPrefixLen: 24, Gateway: "10.89.1.1", Aliases: []string{"web", "shop-web-1"}, DNSNames: []string{"shop-web-1", "web", "3f2a9c1b7d4e"}},
+	}
+	ctrs[1].NetworkSettings.Networks = map[string]dockerapi.Endpoint{
+		"shop_default": {NetworkID: demoShopNet, IPAddress: "10.89.1.3", IPPrefixLen: 24, Gateway: "10.89.1.1", Aliases: []string{"redis", "shop-redis-1"}, DNSNames: []string{"shop-redis-1", "redis", "8b7c6d5e4f3a"}},
+		"shop_cache":   {NetworkID: demoCacheNet, IPAddress: "10.89.2.2", IPPrefixLen: 24, Gateway: "10.89.2.1", DNSNames: []string{"shop-redis-1", "8b7c6d5e4f3a"}},
+	}
+	ctrs[2].NetworkSettings.Networks = map[string]dockerapi.Endpoint{
+		"bridge": {IPAddress: "172.17.0.4", IPPrefixLen: 16, Gateway: "172.17.0.1"},
+	}
+	return ctrs
+}
+
+const (
+	demoShopNet  = "9c1e4b7a2d5f80316e2b9a4c7d0f1e3a5b8c6d2e4f7a9b1c3d5e7f9a1b3c5d7e"
+	demoCacheNet = "4d2f8a6c1e3b5907d4c2a8e6f1b3d5c79e1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e"
+)
+
+func demoNetCreated(t time.Time) string { return t.Format(time.RFC3339Nano) }
+
+// demoNetworks are the demo engine's networks: the built-in ones, the shop
+// project's and an internal one of its, and one no container is on.
+func demoNetworks() []dockerapi.Network {
+	mk := func(name, id, driver, created, subnet, gateway string, members map[string]dockerapi.NetworkMember, labels map[string]string) dockerapi.Network {
+		n := dockerapi.Network{Name: name, ID: id, Driver: driver, Created: created, Scope: "local", Containers: members, Labels: labels}
+		if subnet != "" {
+			n.IPAM.Config = append(n.IPAM.Config, struct {
+				Subnet  string `json:"Subnet"`
+				Gateway string `json:"Gateway"`
+			}{subnet, gateway})
+		}
+		return n
+	}
+	shop := map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.network": "default"}
+	nets := []dockerapi.Network{
+		mk("bridge", "b1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2", "bridge", "", "172.17.0.0/16", "172.17.0.1",
+			map[string]dockerapi.NetworkMember{"1a2b3c4d5e6f7081": {Name: "migrate", IPv4Address: "172.17.0.4/16"}}, nil),
+		mk("host", "c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3", "host", "", "", "", nil, nil),
+		mk("none", "d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4", "null", "", "", "", nil, nil),
+		mk("shop_default", demoShopNet, "bridge", demoNetCreated(time.Date(2026, 11, 16, 13, 18, 0, 0, time.Local)), "10.89.1.0/24", "10.89.1.1", map[string]dockerapi.NetworkMember{
+			"3f2a9c1b7d4e5f60": {Name: "shop-web-1", IPv4Address: "10.89.1.2/24"},
+			"8b7c6d5e4f3a2b10": {Name: "shop-redis-1", IPv4Address: "10.89.1.3/24"},
+		}, shop),
+		mk("shop_cache", demoCacheNet, "bridge", demoNetCreated(time.Date(2026, 11, 16, 13, 18, 0, 0, time.Local)), "10.89.2.0/24", "10.89.2.1", map[string]dockerapi.NetworkMember{
+			"8b7c6d5e4f3a2b10": {Name: "shop-redis-1", IPv4Address: "10.89.2.2/24"},
+		}, map[string]string{"com.docker.compose.project": "shop", "com.docker.compose.network": "cache"}),
+		mk("scratch", "e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5", "bridge", demoNetCreated(time.Date(2026, 11, 15, 9, 2, 0, 0, time.Local)), "10.89.3.0/24", "10.89.3.1", nil, nil),
+	}
+	nets[4].Internal = true
+	return nets
 }
 
 // offscreen runs step on frames of a hidden window: the graphics driver

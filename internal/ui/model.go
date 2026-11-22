@@ -35,6 +35,7 @@ const (
 	PageDashboard  = "dashboard"
 	PageSandboxes  = "sandboxes"
 	PageContainers = "containers"
+	PageNetworks   = "networks"
 	PagePods       = "pods"
 	PageImages     = "images"
 	PageVolumes    = "volumes"
@@ -165,7 +166,13 @@ type Model struct {
 	ContainerLogs     *ggui.StateValue[ContainerLogs]
 	// ComposeFolded are the Compose projects whose containers the table
 	// folds under their row.
-	ComposeFolded   *ggui.StateValue[map[string]bool]
+	ComposeFolded *ggui.StateValue[map[string]bool]
+	// The Networks page: the engine's networks, what filters them, and the
+	// one chosen (by ID or name), which is the first when none is.
+	DockerNetworks  *ggui.StateValue[Listing[dockerapi.Network]]
+	NetworkQuery    *ggui.StateValue[string]
+	SelectedNetwork *ggui.StateValue[string]
+	Network         *ggui.DerivedValue[dockerapi.Network]
 	KubeconfigReady *ggui.StateValue[bool]
 	// Pods are the k3s cluster's, and PodsWaiting says its sandbox runs
 	// and its API server has yet to answer: k3s is still coming up.
@@ -301,31 +308,32 @@ type Model struct {
 	logSeq    int64
 	quitting  bool
 
-	runCLI                                 cliRunner                  // runs docker and kubectl; tests replace it
-	runVMHelper                            vmHelperRunner             // runs __vm-helper check/install-rosetta; tests replace it
-	syncAmd64NodeHook                      func(on bool)              // overrides syncAmd64Node in tests
-	dockerLoading, dockerAgain             bool                       // LoadDocker runs; it is wanted again after
-	dockerImagesLoading, dockerImagesAgain bool                       // LoadDockerImages runs; it is wanted again after
-	logsLoading, logsAgain                 bool                       // LoadContainerLogs runs; it is wanted again after
-	podsLoading, podsAgain                 bool                       // LoadPods runs; it is wanted again after
-	podLogsLoading, podLogsAgain           bool                       // LoadPodLogs runs; it is wanted again after
-	podsAnswered                           bool                       // the cluster's API server answered since it started
-	sandboxUsageLoading                    bool                       // LoadSandboxUsage runs
-	containerUsageLoading                  bool                       // LoadContainerUsage runs
-	sandboxSamples                         map[string]sandboxSample   // the last of each sandbox's, by ID
-	containerStats                         map[string]dockerapi.Stats // the last of each container's, by ID
-	terms                                  liveTerminals
-	forwards                               liveForwards
-	forwarder                              forwarder // carries port forwards; tests replace it
-	dockerProxy                            *dockerproxy.Proxy
-	dockerProxyStarted                     bool
-	dockerBackend                          string // overrides recipes.DockerBackendHost() in tests
-	engineSpec                             atomic.Pointer[sandbox.Spec]
-	sandboxEngine                          sandboxEngine // in-app Docker Engine API (*engine.Engine); tests may replace
-	sandboxEngineGen                       int
-	amd64Gen                               int
-	buildxSyncGen                          int
-	keepImages                             atomic.Pointer[[]string]
+	runCLI                                     cliRunner                  // runs docker and kubectl; tests replace it
+	runVMHelper                                vmHelperRunner             // runs __vm-helper check/install-rosetta; tests replace it
+	syncAmd64NodeHook                          func(on bool)              // overrides syncAmd64Node in tests
+	dockerLoading, dockerAgain                 bool                       // LoadDocker runs; it is wanted again after
+	dockerNetworksLoading, dockerNetworksAgain bool                       // LoadDockerNetworks runs; it is wanted again after
+	dockerImagesLoading, dockerImagesAgain     bool                       // LoadDockerImages runs; it is wanted again after
+	logsLoading, logsAgain                     bool                       // LoadContainerLogs runs; it is wanted again after
+	podsLoading, podsAgain                     bool                       // LoadPods runs; it is wanted again after
+	podLogsLoading, podLogsAgain               bool                       // LoadPodLogs runs; it is wanted again after
+	podsAnswered                               bool                       // the cluster's API server answered since it started
+	sandboxUsageLoading                        bool                       // LoadSandboxUsage runs
+	containerUsageLoading                      bool                       // LoadContainerUsage runs
+	sandboxSamples                             map[string]sandboxSample   // the last of each sandbox's, by ID
+	containerStats                             map[string]dockerapi.Stats // the last of each container's, by ID
+	terms                                      liveTerminals
+	forwards                                   liveForwards
+	forwarder                                  forwarder // carries port forwards; tests replace it
+	dockerProxy                                *dockerproxy.Proxy
+	dockerProxyStarted                         bool
+	dockerBackend                              string // overrides recipes.DockerBackendHost() in tests
+	engineSpec                                 atomic.Pointer[sandbox.Spec]
+	sandboxEngine                              sandboxEngine // in-app Docker Engine API (*engine.Engine); tests may replace
+	sandboxEngineGen                           int
+	amd64Gen                                   int
+	buildxSyncGen                              int
+	keepImages                                 atomic.Pointer[[]string]
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -395,6 +403,9 @@ func NewModel(st store.Store, dataDir string) *Model {
 		ContainerDetail:   ggui.State(0),
 		ContainerLogs:     ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
 		ComposeFolded:     ggui.State(map[string]bool{}).WithEqual(maps.Equal[map[string]bool]),
+		DockerNetworks:    ggui.State(Listing[dockerapi.Network]{}).WithEqual(nil),
+		NetworkQuery:      ggui.State(""),
+		SelectedNetwork:   ggui.State(""),
 		SandboxUsage:      ggui.State(map[string]Usage(nil)).WithEqual(usageEqual),
 		ContainerUsage:    ggui.State(map[string]Usage(nil)).WithEqual(usageEqual),
 		PodUsage:          ggui.State(map[string]PodUse(nil)).WithEqual(podUsageEqual),
@@ -511,6 +522,9 @@ func NewModel(st store.Store, dataDir string) *Model {
 	m.Container = ggui.Combine(m.DockerContainers, m.SelectedContainer, func(l Listing[dockerapi.Container], id string) dockerapi.Container {
 		return chosenContainer(l.Items, id)
 	}).WithEqual(dockerapi.Container.Equal)
+	m.Network = ggui.Combine(m.DockerNetworks, m.SelectedNetwork, func(l Listing[dockerapi.Network], id string) dockerapi.Network {
+		return chosenNetwork(l.Items, id)
+	}).WithEqual(dockerapi.Network.Equal)
 	m.PodsAccess = ggui.Map(m.Rows, podsAccess)
 	m.PodsOpen = ggui.Map(m.PodsAccess, func(a PodsAccess) bool { return a == PodsOpen })
 	m.RunningPods = ggui.Map(m.Pods, func(l Listing[kubeapi.Pod]) int {
@@ -695,7 +709,7 @@ func (m *Model) RunConfirmed() {
 // Engine runs, and the Pods page only while the cluster does, as the
 // sidebar and the menus that lead there say.
 func (m *Model) Go(page string) {
-	if page == PageContainers && ggui.Peek(m.ContainersAccess) != ContainersOpen ||
+	if (page == PageContainers || page == PageNetworks) && ggui.Peek(m.ContainersAccess) != ContainersOpen ||
 		page == PagePods && ggui.Peek(m.PodsAccess) != PodsOpen {
 		return
 	}
@@ -719,6 +733,9 @@ func (m *Model) Go(page string) {
 		m.LoadDockerImages()
 	case PageContainers:
 		m.LoadDocker()
+	case PageNetworks:
+		m.LoadDocker()
+		m.LoadDockerNetworks()
 	case PageKubernetes:
 		m.CheckKubeconfig()
 		m.LoadPods()

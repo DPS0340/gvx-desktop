@@ -500,3 +500,68 @@ func TestPushToARegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNetworks(t *testing.T) {
+	var calls []string
+	c := engine(t, func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		switch {
+		case r.URL.Path == "/networks" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`[{"Name":"bridge","Id":"aa","Driver":"bridge","IPAM":{"Config":[{"Subnet":"10.0.2.0/24","Gateway":"10.0.2.2"}]},"Containers":{}},
+				{"Name":"shop_default","Id":"bb11223344556677","Created":"2026-11-16T13:18:00.5Z","Driver":"bridge","Internal":true,
+				 "IPAM":{"Config":[{"Subnet":"10.89.1.0/24","Gateway":"10.89.1.1"}]},
+				 "Containers":{"c1":{"Name":"shop-web-1","IPv4Address":"10.89.1.2/24"}},
+				 "Labels":{"com.docker.compose.project":"shop"}}]`))
+		case r.URL.Path == "/networks/prune":
+			_, _ = w.Write([]byte(`{"NetworksDeleted":["old"]}`))
+		case r.URL.Path == "/containers/json":
+			_, _ = w.Write([]byte(`[{"Id":"c1","Names":["/shop-web-1"],"NetworkSettings":{"Networks":{
+				"shop_default":{"NetworkID":"bb","IPAddress":"10.89.1.2","IPPrefixLen":24,"Aliases":["web"],"DNSNames":["shop-web-1","web","c1"]},
+				"a_front":{"IPAddress":"10.89.2.2"}}}}]`))
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	ctx := context.Background()
+	nets, err := c.Networks(ctx)
+	if err != nil || len(nets) != 2 {
+		t.Fatalf("Networks: %v, %v", nets, err)
+	}
+	if !nets[0].Builtin() || nets[1].Builtin() {
+		t.Error("builtin")
+	}
+	n := nets[1]
+	if sub, gw := n.Subnet(); sub != "10.89.1.0/24" || gw != "10.89.1.1" || n.Project() != "shop" || !n.Internal || n.ShortID() != "bb1122334455" {
+		t.Errorf("network %+v", n)
+	}
+	if n.CreatedAt().IsZero() || n.Containers["c1"].IPv4Address != "10.89.1.2/24" {
+		t.Errorf("created %v, members %+v", n.CreatedAt(), n.Containers)
+	}
+	if !n.Equal(n) || n.Equal(nets[0]) {
+		t.Error("Equal")
+	}
+	if err := c.RemoveNetwork(ctx, "shop_default"); err != nil {
+		t.Error(err)
+	}
+	if del, err := c.PruneNetworks(ctx); err != nil || len(del) != 1 || del[0] != "old" {
+		t.Errorf("prune %v %v", del, err)
+	}
+
+	list, err := c.Containers(ctx, true)
+	if err != nil || len(list) != 1 {
+		t.Fatal(list, err)
+	}
+	got := list[0].Networks()
+	if len(got) != 2 || got[0].Name != "a_front" || got[1].IPAddress != "10.89.1.2" || got[1].Aliases[0] != "web" {
+		t.Errorf("container networks %+v", got)
+	}
+	other := list[0]
+	other.NetworkSettings.Networks = map[string]Endpoint{"shop_default": {IPAddress: "10.89.1.9"}}
+	if list[0].Equal(other) {
+		t.Error("Equal ignores networks")
+	}
+	want := []string{"GET /networks", "DELETE /networks/shop_default", "POST /networks/prune", "GET /containers/json?all=1"}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("requests\n%s", strings.Join(calls, "\n"))
+	}
+}

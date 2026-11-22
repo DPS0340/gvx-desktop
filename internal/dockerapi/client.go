@@ -181,6 +181,46 @@ type Container struct {
 	Ports   []Port   `json:"Ports"`
 	Labels  map[string]string
 	Mounts  []Mount `json:"Mounts"`
+	// NetworkSettings holds the networks the container is on, by name.
+	NetworkSettings struct {
+		Networks map[string]Endpoint `json:"Networks"`
+	} `json:"NetworkSettings"`
+}
+
+// Endpoint is a container's place on a network.
+type Endpoint struct {
+	NetworkID   string   `json:"NetworkID"`
+	IPAddress   string   `json:"IPAddress"`
+	IPPrefixLen int      `json:"IPPrefixLen"`
+	Gateway     string   `json:"Gateway"`
+	Aliases     []string `json:"Aliases"`
+	DNSNames    []string `json:"DNSNames"`
+}
+
+// ContainerNetwork is one of a container's networks, with its name.
+type ContainerNetwork struct {
+	Name string
+	Endpoint
+}
+
+// Networks are the container's networks, sorted by name.
+func (c Container) Networks() []ContainerNetwork {
+	out := make([]ContainerNetwork, 0, len(c.NetworkSettings.Networks))
+	for name, ep := range c.NetworkSettings.Networks {
+		out = append(out, ContainerNetwork{Name: name, Endpoint: ep})
+	}
+	slices.SortFunc(out, func(a, b ContainerNetwork) int { return strings.Compare(a.Name, b.Name) })
+	return out
+}
+
+// networksKey is the container's networks and addresses as one string,
+// for Equal.
+func (c Container) networksKey() string {
+	var b strings.Builder
+	for _, n := range c.Networks() {
+		b.WriteString(n.Name + "=" + n.IPAddress + "/" + strings.Join(n.DNSNames, ",") + ";")
+	}
+	return b.String()
 }
 
 // Mount is a mount of a container: a bind mount of a path where dockerd
@@ -240,7 +280,8 @@ func (c Container) PortsText() string {
 // Equal makes Container comparable for signals.
 func (c Container) Equal(o Container) bool {
 	return c.ID == o.ID && c.State == o.State && c.Status == o.Status && c.Image == o.Image &&
-		c.Name() == o.Name() && c.PortsText() == o.PortsText() && slices.Equal(c.Mounts, o.Mounts)
+		c.Name() == o.Name() && c.PortsText() == o.PortsText() && slices.Equal(c.Mounts, o.Mounts) &&
+		c.networksKey() == o.networksKey()
 }
 
 // Containers lists containers, stopped ones too when all is set.
@@ -695,4 +736,99 @@ func (c *Client) stream(ctx context.Context, path string, line func(string), hea
 		}
 	}
 	return sc.Err()
+}
+
+// Network is an entry of GET /networks.
+type Network struct {
+	Name       string `json:"Name"`
+	ID         string `json:"Id"`
+	Created    string `json:"Created"`
+	Driver     string `json:"Driver"`
+	Scope      string `json:"Scope"`
+	Internal   bool   `json:"Internal"`
+	EnableIPv6 bool   `json:"EnableIPv6"`
+	IPAM       struct {
+		Config []struct {
+			Subnet  string `json:"Subnet"`
+			Gateway string `json:"Gateway"`
+		} `json:"Config"`
+	} `json:"IPAM"`
+	Containers map[string]NetworkMember `json:"Containers"`
+	Labels     map[string]string        `json:"Labels"`
+}
+
+// NetworkMember is a container on a network, as the network lists it.
+type NetworkMember struct {
+	Name        string `json:"Name"`
+	IPv4Address string `json:"IPv4Address"` // with its prefix length: 10.89.1.2/24
+	IPv6Address string `json:"IPv6Address"`
+}
+
+// Builtin reports a network the engine always has: bridge, host and none.
+func (n Network) Builtin() bool {
+	switch n.Name {
+	case "bridge", "host", "none":
+		return true
+	}
+	return false
+}
+
+// Subnet is the network's first subnet and its gateway, or "".
+func (n Network) Subnet() (subnet, gateway string) {
+	if len(n.IPAM.Config) == 0 {
+		return "", ""
+	}
+	return n.IPAM.Config[0].Subnet, n.IPAM.Config[0].Gateway
+}
+
+// Project is the Compose project that made the network, if any.
+func (n Network) Project() string { return n.Labels["com.docker.compose.project"] }
+
+// ShortID is the first 12 digits of the network's ID.
+func (n Network) ShortID() string { return n.ID[:min(12, len(n.ID))] }
+
+// CreatedAt is when the network was made, or the zero time.
+func (n Network) CreatedAt() time.Time {
+	t, _ := time.Parse(time.RFC3339Nano, n.Created)
+	return t
+}
+
+// Equal makes Network comparable for signals.
+func (n Network) Equal(o Network) bool {
+	if n.ID != o.ID || n.Name != o.Name || n.Driver != o.Driver || n.Internal != o.Internal || len(n.Containers) != len(o.Containers) {
+		return false
+	}
+	if sa, _ := n.Subnet(); sa != "" || len(o.IPAM.Config) > 0 {
+		if sb, _ := o.Subnet(); sa != sb {
+			return false
+		}
+	}
+	for id, m := range n.Containers {
+		if o.Containers[id] != m {
+			return false
+		}
+	}
+	return true
+}
+
+// Networks lists the networks.
+func (c *Client) Networks(ctx context.Context) ([]Network, error) {
+	var out []Network
+	err := c.do(ctx, http.MethodGet, "/networks", &out)
+	return out, err
+}
+
+// RemoveNetwork removes a network.
+func (c *Client) RemoveNetwork(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/networks/"+url.PathEscape(id), nil)
+}
+
+// PruneNetworks removes the networks no container uses and returns their
+// names.
+func (c *Client) PruneNetworks(ctx context.Context) ([]string, error) {
+	var raw struct {
+		NetworksDeleted []string `json:"NetworksDeleted"`
+	}
+	err := c.do(ctx, http.MethodPost, "/networks/prune", &raw)
+	return raw.NetworksDeleted, err
 }

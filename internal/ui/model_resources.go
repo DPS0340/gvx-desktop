@@ -630,11 +630,18 @@ func (m *Model) followDocker() {
 			return 0
 		}
 		switch m.Page.Get() {
-		case PageDocker, PageContainers:
+		case PageDocker, PageContainers, PageNetworks:
 			return 3 * time.Second
 		}
 		return 10 * time.Second
 	})
+	networksEvery := ggui.Derived(func() time.Duration {
+		if m.ContainersOpen.Get() && m.Page.Get() == PageNetworks {
+			return 3 * time.Second
+		}
+		return 0
+	})
+	m.poll(networksEvery, m.LoadDockerNetworks, m.LoadDockerNetworks)
 	logs := ggui.Derived(m.followsContainerLogs)
 	m.poll(every, m.LoadDocker, func() {
 		m.LoadDocker()

@@ -94,6 +94,29 @@ func renderAll(tmp, out, lang string) error {
 			m.ContainerDetail.Set(1)
 		}},
 		{"containers-folded", func(m *ui.Model) { m.Go(ui.PageContainers); m.ToggleProject("shop") }},
+		// Something on this computer has the port a container publishes.
+		{"containers-port-busy", func(m *ui.Model) {
+			m.Go(ui.PageContainers)
+			states := maps.Clone(ggui.Peek(m.States))
+			st := states[demoIDs[1]]
+			st.Ports = slices.DeleteFunc(slices.Clone(st.Ports), func(p sandbox.PublishedPort) bool { return p.Host == "127.0.0.1:9000" })
+			st.Busy = []string{"127.0.0.1:9000"}
+			states[demoIDs[1]] = st
+			m.States.Set(states)
+			m.ContainerDetail.Set(1)
+		}},
+		// The engine's ports: its API socket, the range opened at start, one
+		// -auto-publish published as a container listened, and one this
+		// computer has.
+		{"sandboxes-ports-auto-whole", func(m *ui.Model) {
+			states := maps.Clone(ggui.Peek(m.States))
+			st := states[demoIDs[1]]
+			st.Ports = append(slices.Clone(st.Ports), sandbox.PublishedPort{Host: "127.0.0.1:3000", Guest: 3000, Proto: "tcp", Source: "auto"})
+			st.Busy = []string{"127.0.0.1:5432"}
+			states[demoIDs[1]] = st
+			m.States.Set(states)
+			m.ShowSandbox(demoIDs[1], 1)
+		}},
 		// A container on two networks, with its addresses and names.
 		{"containers-networks", func(m *ui.Model) {
 			m.Go(ui.PageContainers)
@@ -241,6 +264,8 @@ func renderAll(tmp, out, lang string) error {
 		{"docker", func(m *ui.Model) { m.Page.Set(ui.PageDocker) }},
 		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes); m.Forwards.Set(demoForwards()) }},
 		{"settings", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
+		// The Docker Engine's daemon.json, as it starts when there is none.
+		{"settings-daemon-json", func(m *ui.Model) { m.Page.Set(ui.PageSettings); m.OpenDockerConfig() }},
 		// The whole page, down to the recipes' settings.
 		{"settings-whole", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
 		// The engine shares no folder.

@@ -17,7 +17,7 @@ func TestImageRegistry(t *testing.T) {
 	if addr, ok := HostAddress(r, 5000); !ok || addr != "127.0.0.1:5001" {
 		t.Errorf("reached at %q", addr)
 	}
-	if got := DockerEngine().Command; got != "--tls=false --insecure-registry=host.docker.internal:5001" {
+	if got := DockerEngine().Command; got != "--tls=false" || !HasDockerConfig(DockerEngine()) {
 		t.Errorf("dockerd %q", got)
 	}
 	if got := KubernetesNode().Command; !strings.HasSuffix(got, " --private-registry=/output/registries.yaml") {
@@ -42,13 +42,14 @@ mirrors:
 // everything else of it.
 func TestUpgrade(t *testing.T) {
 	old := DockerEngine()
-	old.Command = "--tls=false --debug"
+	old.Mounts = old.Mounts[:1] // saved before daemon.json
+	old.Command = "--tls=false --debug --insecure-registry=host.docker.internal:5001"
 	old.Memory = "4g"
 	up, changed := Upgrade(old)
-	if !changed || up.Command != "--tls=false --debug --insecure-registry=host.docker.internal:5001" || up.Memory != "4g" {
-		t.Errorf("engine: %v %q", changed, up.Command)
+	if !changed || up.Command != "--tls=false --debug" || up.Memory != "4g" || !HasDockerConfig(up) {
+		t.Errorf("engine: %v %q %+v", changed, up.Command, up.Mounts)
 	}
-	if old.Command != "--tls=false --debug" {
+	if old.Command != "--tls=false --debug --insecure-registry=host.docker.internal:5001" || HasDockerConfig(old) {
 		t.Error("the sandbox given was changed")
 	}
 	if _, changed := Upgrade(up); changed {
@@ -66,10 +67,12 @@ func TestUpgrade(t *testing.T) {
 	if _, changed := Upgrade(before); changed {
 		t.Error("auto-publish turned off by hand was turned on")
 	}
+	// A registry flag of the user's own stays; daemon.json then leaves the
+	// insecure registries to the command line.
 	two := old
 	two.Command = "--insecure-registry host.docker.internal:5001"
-	if _, changed := Upgrade(two); changed {
-		t.Error("the flag in two words was not seen")
+	if up, changed := Upgrade(two); !changed || up.Command != two.Command || !insecureRegistryFlagged(up) {
+		t.Errorf("the flag in two words: %v %q", changed, up.Command)
 	}
 
 	// Old unix and TCP API publishes migrate to the app-private backend socket,

@@ -648,8 +648,8 @@ Pause/Unpause/Update/Shutdown/LiveUpdate.
 4. **Graceful stop for engine containers only** (docker stop semantics: StopSignal, timeout,
    SIGKILL). User sandboxes keep today's immediate Stop (SIGINT): a graceful stop would make
    every sandbox whose PID 1 ignores SIGTERM (a plain `sleep`, many shells) wait the full stop
-   timeout. W3 may opt recipe sandboxes (dockerd, k3s handle SIGTERM and benefit) into
-   `Supervisor.Shutdown`; that is the only UI use of it in this round, and optional.
+   timeout. Recipe sandboxes are opted in (§12.1): `Supervisor.Stop` of a recipe's run with a
+   control socket is `Shutdown(id, "SIGTERM", grace)`.
 5. **The UI's sandbox terminal runs `rungv exec -it` through `internal/term`** (`ExecArgv` +
    `term.Start`) rather than the supervisor's PTY: it is the code path kubectl exec already uses,
    with ConPTY on Windows, so resize works everywhere. The engine's docker exec uses the
@@ -662,3 +662,57 @@ Pause/Unpause/Update/Shutdown/LiveUpdate.
 8. **Per-run feature detection is `State.Control`** (set at launch from the binary's Features), not
    a ping per call; `ping` capabilities are W1's to use if a policy ever restricts a run.
 9. P2 items are designed but not assigned as must-do; each owner may build one when P1 is green.
+
+## 12. The Docker Engine recipe on v0.20 (follow-up)
+
+Verified against docker:dind under rungv v0.20 by `TestDockerEngineHarness`
+(`internal/sandbox/dind_harness_test.go`, `GVX_SANDBOX_HARNESS=1 GVX_DIND_HARNESS=1`). The
+guest's PID 1 is `docker-init` (tini), which forwards signals to dockerd.
+
+### 12.1 Graceful stop of recipe sandboxes
+
+`Spec.gracefulStop`: a sandbox with a `Recipe` (dockerd, k3s, the registry) stops as `docker stop`
+stops a container: SIGTERM to PID 1 through the control socket, SIGKILL after the grace, then the
+SIGINT path. The grace is the stop timeout; dockerd gets at least 20 s (its own
+`shutdown-timeout` is 15 s for its containers, plus cleanup). Every caller of `Stop` (Stop,
+Restart, Delete, Stop all, quitting) gets it. Measured: dockerd with one container ends in
+0.4 s, logging `Processing signal 'terminated'` and `Daemon shutdown complete`. A run without a
+control socket (v0.19), and user sandboxes, keep the SIGINT stop (decision 4).
+
+### 12.2 daemon.json, reloaded on SIGHUP
+
+- The engine mounts `~/.gvx/docker` read-only at `/etc/docker`; dockerd reads
+  `/etc/docker/daemon.json` as it does anywhere. `recipes.Prepare` writes the file before each
+  start: the user's file, with `host.docker.internal:5001` (the registry recipe) added to
+  `insecure-registries` when missing. The recipe's `--insecure-registry` flag moved into the file
+  (dockerd refuses a setting given both ways); a command line that still names an insecure
+  registry keeps the file out of `insecure-registries`.
+- `recipes.Upgrade` adds the mount to an engine saved earlier and drops the recipe's own flag;
+  it takes effect at the next start, as every upgrade does.
+- Settings → Docker → Engine configuration edits the file (written whole: temp file + rename).
+  On save, for a running engine with the mount: no change → nothing; a change to a key dockerd
+  applies only at start (anything outside `debug, labels, live-restore, max-concurrent-*,
+  max-download-attempts, default-runtime, runtimes, authorization-plugins, insecure-registries,
+  registry-mirrors, shutdown-timeout, features`) → a toast offering Restart; otherwise
+  `rungv kill -s SIGHUP` and the engine's log is read for dockerd's verdict:
+  `msg="Reloaded configuration"`, or `level=error msg="Error reloading configuration"
+  error="…"`, whose `error` is shown. A paused engine, or a run without the mount or the control
+  socket, gets a toast instead.
+- The rename on the host is seen by the guest through the directory bind (verified).
+
+### 12.3 Ports as rungv knows them
+
+- `State.Ports` entries carry `Source` (static, auto, dynamic). Besides `rungv: publishing`,
+  the supervisor reads `-auto-publish`'s `gvx: auto-published H -> G/P` and `gvx: unpublished …`
+  lines, and keeps `State.Busy`: the host addresses `gvx: warning: could not auto-publish` named,
+  until that port is published.
+- Runs with a control socket then read `rungv port ls -f json` (debounced 250 ms, one at a time
+  per run) after each such line and at ready, and take its list, which also has ports added
+  with `port add`. Auto-published ports raise no control event (only `port add/rm` do), so the
+  lines stay the trigger.
+- Auto-publish skips guest ports that have a static rule (`TestDynamicLoopbackSkipsStaticRules`
+  upstream), so dockerd's 2375, pinned to the app-private socket, never reaches TCP.
+- UI: the sandbox's Connect tab marks auto-published ports and lists busy ones; a container's
+  Connect tab says whether its published port reached this computer, is taken by something
+  here (Open disabled), or is not published yet.
+

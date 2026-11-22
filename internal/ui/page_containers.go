@@ -3,7 +3,9 @@ package ui
 import (
 	"fmt"
 	"image/color"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -574,6 +576,7 @@ func containerBinds(c dockerapi.Container, engine sandbox.Spec, sandboxEngine bo
 // commands that reach the container itself.
 func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 	parts := []ggui.Widget{sectionTitle(tr("Published ports"), publishedPortsNote(m))}
+	se := ggui.Peek(m.Settings).SandboxEngine
 	ports := containerPorts(c)
 	inside := false
 	for _, p := range ports {
@@ -584,18 +587,29 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 		host := fmt.Sprintf("127.0.0.1:%d", p.PublicPort)
 		label := fmt.Sprintf("%s → %d/%s", host, p.PrivatePort, p.Type)
 		mark := glyph(lucide.Plug, 14).Color(colorGray)
+		reach := hostPortReach(m, se, p)
 		var act ggui.Widget = iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(host, host) })
 		if p.Type == "tcp" {
 			url := "http://" + host
-			if c.State == "running" {
+			if c.State == "running" && reach != portBusy {
 				mark = glyph(lucide.Plug, 14).Color(colorGreen)
 			}
 			act = widget.Row(
-				ui.Button(tr("Open"), func() { m.Open(url) }).Outline().Size(ui.ButtonExtraSmall).Icon(glyph(lucide.ExternalLink, 12)).Disabled(c.State != "running"),
+				ui.Button(tr("Open"), func() { m.Open(url) }).Outline().Size(ui.ButtonExtraSmall).Icon(glyph(lucide.ExternalLink, 12)).Disabled(c.State != "running" || reach == portBusy),
 				iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(url, url) }),
 			).Gap(4)
 		}
-		parts = append(parts, widget.Row(mark, widget.Expanded(ui.Mono(label).Size(12)), act).Gap(10).Align(widget.AlignCenter))
+		var text ggui.Widget = ui.Mono(label).Size(12)
+		switch {
+		case c.State != "running":
+		case reach == portBusy:
+			mark = glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber)
+			text = widget.Column(text, ui.Caption(tr("Something on this computer has port %d, so this one does not reach it.", p.PublicPort)).Size(11)).Gap(1)
+		case reach == portWaiting:
+			mark = glyph(lucide.Plug, 14).Color(colorGray)
+			text = widget.Column(text, ui.Caption(tr("Not published on this computer yet: the engine publishes it once the container listens on it.")).Size(11)).Gap(1)
+		}
+		parts = append(parts, widget.Row(mark, widget.Expanded(text), act).Gap(10).Align(widget.AlignCenter))
 	}
 	if inside {
 		for _, p := range ports {
@@ -608,7 +622,6 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 	if len(ports) == 0 {
 		parts = append(parts, ui.Caption(tr("No ports are published. Publish one with docker run -p 9000:80.")))
 	}
-	se := ggui.Peek(m.Settings).SandboxEngine
 	parts = append(parts, containerNetworks(m, c, se)...)
 	engine, _ := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
 	parts = append(parts, containerBinds(c, engine.Spec, se)...)
@@ -668,6 +681,55 @@ func containerNetworks(m *Model, c dockerapi.Container, se bool) []ggui.Widget {
 		parts = append(parts, widget.Row(row...).Gap(10).Align(widget.AlignCenter))
 	}
 	return parts
+}
+
+// portReach is whether a container's published port reaches this computer,
+// as the Docker Engine's sandbox publishes it.
+type portReach int
+
+const (
+	portUnknown portReach = iota // no word from the sandbox: the sandbox engine, or an older rungv
+	portReached                  // the sandbox has the host port
+	portBusy                     // something on this computer has it
+	portWaiting                  // not published yet
+)
+
+// hostPortReach finds a container's published port among the ports the
+// Docker Engine's sandbox has on this computer: they are the same number
+// there, whether -auto-publish published it or the range opened at start.
+func hostPortReach(m *Model, se bool, p dockerapi.Port) portReach {
+	if se || p.PublicPort == 0 {
+		return portUnknown
+	}
+	engine, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
+	if !ok || engine.State.Status != sandbox.Running {
+		return portUnknown
+	}
+	host := fmt.Sprintf("127.0.0.1:%d", p.PublicPort)
+	for _, q := range engine.State.Ports {
+		if q.Proto == p.Type && hostPortOf(q.Host) == int(p.PublicPort) {
+			return portReached
+		}
+	}
+	if slices.Contains(engine.State.Busy, host) {
+		return portBusy
+	}
+	spec, ok := m.activeSpec(engine.Spec.ID)
+	if !ok || !sandbox.HasAutoPublish(spec) {
+		// Without -auto-publish only the range opened at start reaches
+		// this computer.
+		return portUnknown
+	}
+	return portWaiting
+}
+
+func hostPortOf(host string) int {
+	_, port, err := net.SplitHostPort(host)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(port)
+	return n
 }
 
 // publishedPortsNote tells where a container's published port is reached:

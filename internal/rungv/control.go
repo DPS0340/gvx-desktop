@@ -553,6 +553,29 @@ type PortRule struct {
 	Source     string `json:"source"` // static, auto, dynamic
 }
 
+// Ports lists the host ports the sandbox has now, whatever published
+// them (rungv port ls -f json): -p at start, -auto-publish, or port add.
+func (c *Client) Ports(ctx context.Context, t Target) ([]PortRule, error) {
+	if err := c.checkTarget(t); err != nil {
+		return nil, err
+	}
+	out, err := c.output(ctx, append(targetArgs("port", t), "ls", "-f", "json")...)
+	if err != nil {
+		return nil, err
+	}
+	var rules []PortRule
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var r PortRule
+		if err := dec.Decode(&r); err == io.EOF {
+			return rules, nil
+		} else if err != nil {
+			return nil, err
+		}
+		rules = append(rules, r)
+	}
+}
+
 // Status is the part of rungv status -f json the app reads.
 type Status struct {
 	ID                 string     `json:"id"`

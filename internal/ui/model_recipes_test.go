@@ -152,7 +152,7 @@ func TestSharedFoldersMoveTheSettingAndTheSandbox(t *testing.T) {
 	if got := recipes.SharedFoldersOf(saved[0]); !slices.Equal(got, []string{dir, home}) {
 		t.Errorf("saved %v", got)
 	}
-	if saved[0].Mounts[0].Target != "/var/lib/docker" || len(saved[0].Mounts) != 3 {
+	if saved[0].Mounts[0].Target != "/var/lib/docker" || saved[0].Mounts[1].Target != "/etc/docker" || len(saved[0].Mounts) != 4 {
 		t.Errorf("the other mounts: %+v", saved[0].Mounts)
 	}
 	m.UnshareFolder(dir)
@@ -221,13 +221,15 @@ func TestRegistryRef(t *testing.T) {
 }
 
 // Recipe sandboxes saved by an earlier version start with the registry's
-// flags from then on, kept as the user had them otherwise; the store is
+// flags (the engine: daemon.json from this computer, which names the
+// registry) from then on, kept as the user had them otherwise; the store is
 // written once.
 func TestOldRecipesAreUpgradedAtLoad(t *testing.T) {
 	dir := t.TempDir()
 	st := store.Store{Dir: dir}
 	engine := recipes.DockerEngine()
-	engine.Command, engine.Memory = "--tls=false", "6g"
+	engine.Command, engine.Memory = "--tls=false --insecure-registry=host.docker.internal:5001", "6g"
+	engine.Mounts = slices.DeleteFunc(engine.Mounts, func(m sandbox.Mount) bool { return m.Target == "/etc/docker" })
 	k3s := recipes.KubernetesNode()
 	k3s.Command = "server --disable=traefik,servicelb --write-kubeconfig=/output/kubeconfig.yaml --write-kubeconfig-mode=644"
 	web := sandbox.Spec{ID: "w", Name: "web", Image: "nginx", Command: "nginx -g 'daemon off;'", CreatedAt: k3s.CreatedAt.Add(time.Second)}
@@ -244,7 +246,7 @@ func TestOldRecipesAreUpgradedAtLoad(t *testing.T) {
 	defer p.Close()
 	p.Frame()
 	saved, _ := st.Sandboxes()
-	if len(saved) != 3 || saved[0].Command != "--tls=false --insecure-registry=host.docker.internal:5001" || saved[0].Memory != "6g" ||
+	if len(saved) != 3 || saved[0].Command != "--tls=false" || !recipes.HasDockerConfig(saved[0]) || saved[0].Memory != "6g" ||
 		!strings.HasSuffix(saved[1].Command, " --private-registry=/output/registries.yaml") || recipes.ServiceLBOf(saved[1]) ||
 		!saved[2].Equal(web) {
 		t.Errorf("saved %+v", saved)

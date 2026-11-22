@@ -71,13 +71,13 @@ func TestSharedFolders(t *testing.T) {
 	if got := SharedFoldersOf(moved); !slices.Equal(got, other) {
 		t.Errorf("after the change %v", got)
 	}
-	if len(moved.Mounts) != 5 || moved.Mounts[0].Target != "/var/lib/docker" || moved.Mounts[1].Target != "/srv/data" || moved.Mounts[2].Target != "/ro" {
+	if len(moved.Mounts) != 6 || moved.Mounts[0].Target != "/var/lib/docker" || moved.Mounts[1].Target != "/etc/docker" || moved.Mounts[2].Target != "/srv/data" || moved.Mounts[3].Target != "/ro" {
 		t.Errorf("mounts %+v", moved.Mounts)
 	}
 	if len(SharedFoldersOf(spec)) != 1 {
 		t.Error("the sandbox given was changed")
 	}
-	if got := WithSharedFolders(spec, nil); len(SharedFoldersOf(got)) != 0 || len(got.Mounts) != 3 {
+	if got := WithSharedFolders(spec, nil); len(SharedFoldersOf(got)) != 0 || len(got.Mounts) != 4 {
 		t.Errorf("none shared: %+v", got.Mounts)
 	}
 }

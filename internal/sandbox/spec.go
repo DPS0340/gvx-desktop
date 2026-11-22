@@ -591,3 +591,22 @@ func WithAutoPublish(s Spec, on bool) Spec {
 	s.ExtraArgs = rungv.FormatArgs(out)
 	return s
 }
+
+// dockerdStopGrace is what dockerd takes at most to end: it gives its
+// containers 15 seconds (its shutdown-timeout) to stop, then cleans up.
+const dockerdStopGrace = 20 * time.Second
+
+// gracefulStop reports whether a sandbox ends with SIGTERM to its first
+// process and time to act on it, as docker stop ends a container, rather
+// than at once: a recipe's, whose daemon keeps state (dockerd, k3s, the
+// registry). grace is how long it gets: timeout, and for dockerd at least
+// what it takes itself.
+func (s Spec) gracefulStop(timeout time.Duration) (grace time.Duration, ok bool) {
+	switch s.Recipe {
+	case "":
+		return 0, false
+	case "docker": // recipes.Docker
+		return max(timeout, dockerdStopGrace), true
+	}
+	return timeout, true
+}

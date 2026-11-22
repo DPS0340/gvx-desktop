@@ -100,6 +100,7 @@ func build(m *Model) ggui.Widget {
 		pullDialog(m),
 		explorerDialog(m),
 		volumeDialog(m),
+		dockerConfigDialog(m),
 		forwardDialog(m),
 		scaleDialog(m),
 		quitDialog(m),

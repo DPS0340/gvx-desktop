@@ -184,20 +184,24 @@ func LegacyDockerAPI(spec sandbox.Spec) (DockerAPI, bool) {
 // ~/.gvx/engine/dockerd.sock, the ports its containers publish reaching this
 // computer under the same numbers (rungv's -auto-publish; 9000-9019 are
 // published besides, for a rungv that has no such flag) and the user's home
-// folder shared at its own path (docs/recipes/docker-engine.md).
+// folder shared at its own path (docs/recipes/docker-engine.md). dockerd reads
+// its daemon.json from ~/.gvx/docker, which the app writes (dockerd_config.go).
 func DockerEngine() sandbox.Spec {
 	return WithSharedFolders(dockerEngine(), DefaultSharedFolders())
 }
 
 func dockerEngine() sandbox.Spec {
 	return sandbox.Spec{
-		ID:           sandbox.NewID(),
-		Name:         "docker-engine",
-		Image:        "docker:dind",
-		Command:      "--tls=false " + insecureRegistry(),
-		Env:          []string{"DOCKER_TLS_CERTDIR="},
-		Ports:        []string{DockerBackendPublish, "127.0.0.1:9000-9019:9000-9019"},
-		Mounts:       []sandbox.Mount{{Type: sandbox.MountVolume, Source: "gvx-docker", Target: "/var/lib/docker"}},
+		ID:      sandbox.NewID(),
+		Name:    "docker-engine",
+		Image:   "docker:dind",
+		Command: "--tls=false",
+		Env:     []string{"DOCKER_TLS_CERTDIR="},
+		Ports:   []string{DockerBackendPublish, "127.0.0.1:9000-9019:9000-9019"},
+		Mounts: []sandbox.Mount{
+			{Type: sandbox.MountVolume, Source: "gvx-docker", Target: "/var/lib/docker"},
+			dockerConfigMount(),
+		},
 		ExtraArgs:    "-auto-publish",
 		Recipe:       Docker,
 		ReadyPattern: "API listen on",

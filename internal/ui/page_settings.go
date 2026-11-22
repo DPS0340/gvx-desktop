@@ -432,7 +432,48 @@ func dockerSettings(m *Model) ggui.Widget {
 			proxyErr,
 		).Gap(6).Stretch(),
 		sharedFoldersField(m),
+		dockerConfigField(m),
 		sandboxEngineSettings(m),
+	)
+}
+
+// dockerConfigField leads to the editor of the Docker Engine's daemon.json.
+// In sandbox-engine mode it shows a dimmed note instead: no dockerd runs.
+func dockerConfigField(m *Model) ggui.Widget {
+	return ggui.View(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func(se bool) ggui.Widget {
+		title := widget.Text(tr("Engine configuration")).Size(14).Weight(ggui.WeightMedium)
+		if se {
+			return widget.Column(
+				title.Color(colorGray),
+				ui.Caption(tr("Applies only to the Docker Engine sandbox. The sandbox engine has no dockerd to configure.")),
+			).Gap(4).Stretch()
+		}
+		return widget.Row(
+			widget.Expanded(widget.Column(
+				title,
+				ui.Caption(tr("dockerd's daemon.json, kept at %s: registry mirrors, insecure registries, log levels and the like. A running engine applies what dockerd can without a restart.", tildePath(recipes.DockerConfigFile()))),
+			).Gap(2)),
+			ui.Button(tr("Edit daemon.json…"), m.OpenDockerConfig).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.FileBraces, 14)),
+		).Gap(16).Align(widget.AlignCenter)
+	})
+}
+
+// dockerConfigDialog edits the Docker Engine's daemon.json.
+func dockerConfigDialog(m *Model) ggui.Widget {
+	errText := ggui.If(ggui.Map(m.DockerConfigErr, func(s string) bool { return s != "" }), func() ggui.Widget {
+		return widget.Row(glyph(lucide.TriangleExclamationPoint, 14).Color(colorRed),
+			widget.Expanded(ui.CaptionOf(m.DockerConfigErr).Color(colorRed))).Gap(8).Align(widget.AlignStart)
+	})
+	field := ui.TextField(m.DockerConfigText).NoWrap().Lines(16).Name(tr("daemon.json")).
+		OnChange(func(string) { m.DockerConfigErr.Set("") })
+	return ui.Dialog(m.DockerConfigOpen, widget.Column(
+		ui.Caption(tr("Saved to %s. %s stays among the insecure registries, so the engine can push to the image registry recipe.", tildePath(recipes.DockerConfigFile()), recipes.RegistryHost())),
+		field,
+		errText,
+		ui.Caption(tr("dockerd applies debug, labels, registry-mirrors, insecure-registries, max-concurrent-downloads and a few more on the fly; any other change takes a restart of the engine.")),
+	).Gap(10).Stretch()).Title(tr("Docker Engine configuration")).Width(620).Footer(
+		ui.Button(tr("Cancel"), func() { m.DockerConfigOpen.Set(false) }).Outline(),
+		ui.Button(tr("Save"), m.SaveDockerConfig),
 	)
 }
 

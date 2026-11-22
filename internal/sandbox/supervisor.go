@@ -10,11 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +56,9 @@ type PublishedPort struct {
 	Host  string // 127.0.0.1:8080, or a socket path
 	Guest int
 	Proto string // tcp, udp
+	// Source is what published it: static (-p at start), auto (rungv's
+	// -auto-publish, as the guest listened on it), or dynamic (port add).
+	Source string
 }
 
 // URL is an address a browser can open, or "" for a socket or UDP port.
@@ -96,20 +97,20 @@ type State struct {
 	// Paused reports a run whose guest Supervisor.Pause froze; Status
 	// stays Running. Owner: W1.
 	Paused bool
+	// Busy are the host addresses -auto-publish could not take, because
+	// something on this computer has them, until the guest lets the port
+	// go or it is published after all.
+	Busy []string
 }
 
 // Equal makes State comparable for signals.
 func (s State) Equal(o State) bool {
-	if len(s.Ports) != len(o.Ports) {
+	if !slices.Equal(s.Ports, o.Ports) || !slices.Equal(s.Busy, o.Busy) {
 		return false
-	}
-	for i := range s.Ports {
-		if s.Ports[i] != o.Ports[i] {
-			return false
-		}
 	}
 	a, b := s, o
 	a.Ports, b.Ports = nil, nil
+	a.Busy, b.Busy = nil, nil
 	return a.Status == b.Status && a.PID == b.PID && a.StartedAt.Equal(b.StartedAt) &&
 		a.ReadyAt.Equal(b.ReadyAt) && a.ExitedAt.Equal(b.ExitedAt) && a.ExitCode == b.ExitCode &&
 		a.Error == b.Error && a.Advice == b.Advice && a.Platform == b.Platform &&
@@ -168,6 +169,9 @@ type proc struct {
 	done        chan struct{}
 	stopping    bool
 	interactive bool
+	// portSync is set while syncPorts runs for the proc, portAgain when
+	// it is to read the ports once more as it ends.
+	portSync, portAgain bool
 
 	stdinMu     sync.Mutex
 	stdinW      *os.File
@@ -191,13 +195,6 @@ func (p *proc) closeStdio() {
 		_ = p.term.close()
 	}
 }
-
-var publishRe = regexp.MustCompile(`^rungv: publishing (\S+) -> (\d+)/(\w+)`)
-
-// busyRe is what rungv's -auto-publish says of a port the guest listens on
-// that this computer has taken already: it tries it once, and again only
-// after the guest lets it go.
-var busyRe = regexp.MustCompile(`^gvx: warning: could not auto-publish (\S+)/\w+: `)
 
 func (s *Supervisor) notify(e Event) {
 	if s.Notify != nil {
@@ -231,6 +228,7 @@ func (s *Supervisor) State(id string) State {
 	if p := s.procs[id]; p != nil {
 		st := p.state
 		st.Ports = append([]PublishedPort(nil), st.Ports...)
+		st.Busy = append([]string(nil), st.Busy...)
 		st.LogSeq = s.logsLocked(id).Seq()
 		return st
 	}
@@ -603,11 +601,11 @@ func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sy
 		ev := Event{ID: id, Kind: EventChanged}
 		s.mu.Lock()
 		if stream == Stderr {
-			if m := busyRe.FindStringSubmatch(line); m != nil {
-				ev.Kind, ev.Port = EventPortBusy, m[1]
-			} else if m := publishRe.FindStringSubmatch(line); m != nil {
-				guest, _ := strconv.Atoi(m[2])
-				p.state.Ports = append(p.state.Ports, PublishedPort{Host: m[1], Guest: guest, Proto: m[3]})
+			if busy, ok := p.state.portLine(line); ok {
+				if busy != "" {
+					ev.Kind, ev.Port = EventPortBusy, busy
+				}
+				s.syncPortsLocked(id, p)
 			} else if v, ok := strings.CutPrefix(line, "rungv: platform="); ok {
 				p.state.Platform = strings.TrimSpace(v)
 			}
@@ -616,6 +614,7 @@ func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sy
 			p.state.Status = Running
 			p.state.ReadyAt = time.Now()
 			ev.Kind = EventReady
+			s.syncPortsLocked(id, p)
 		}
 		s.mu.Unlock()
 		ev.State = s.State(id)
@@ -717,13 +716,20 @@ func (s *Supervisor) exited(id string, p *proc, err error) {
 }
 
 // Stop asks a sandbox to end with an interrupt, as Ctrl-C in a terminal
-// does, and kills it when it has not ended after timeout.
+// does, and kills it when it has not ended after timeout. A recipe's
+// sandbox with a control socket ends as docker stop ends a container
+// instead (Shutdown): its daemon, dockerd or k3s, gets SIGTERM and time
+// to stop what it runs and save its state.
 func (s *Supervisor) Stop(id string, timeout time.Duration) error {
 	s.mu.Lock()
 	p := s.procs[id]
 	if p == nil || !p.state.Status.Active() {
 		s.mu.Unlock()
 		return nil
+	}
+	if grace, ok := p.spec.gracefulStop(timeout); ok && p.state.Control && p.paths.ControlSocket != "" {
+		s.mu.Unlock()
+		return s.Shutdown(id, "SIGTERM", grace)
 	}
 	p.stopping = true
 	p.state.Status = Stopping

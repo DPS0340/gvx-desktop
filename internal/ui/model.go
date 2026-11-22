@@ -294,17 +294,21 @@ type Model struct {
 	VolumeOpen      *ggui.StateValue[bool]
 	VolumeName      *ggui.StateValue[string]
 	VolumeDriver    *ggui.StateValue[string]
-	PaletteOpen     *ggui.StateValue[bool]
-	PaletteQuery    *ggui.StateValue[string]
-	QuitOpen        *ggui.StateValue[bool]
-	SidebarNarrow   *ggui.StateValue[bool]
-	SandboxStatus   *ggui.StateValue[string]
-	ImageQuery      *ggui.StateValue[string]
-	VolumeQuery     *ggui.StateValue[string]
-	SnapshotQuery   *ggui.StateValue[string]
-	ExploreSplit    *ggui.StateValue[float64]
-	SelectedImage   *ggui.StateValue[string]
-	SelectedVolume  *ggui.StateValue[string]
+	// The daemon.json editor of the Docker Engine (model_dockerd_config.go).
+	DockerConfigOpen *ggui.StateValue[bool]
+	DockerConfigText *ggui.StateValue[string]
+	DockerConfigErr  *ggui.StateValue[string]
+	PaletteOpen      *ggui.StateValue[bool]
+	PaletteQuery     *ggui.StateValue[string]
+	QuitOpen         *ggui.StateValue[bool]
+	SidebarNarrow    *ggui.StateValue[bool]
+	SandboxStatus    *ggui.StateValue[string]
+	ImageQuery       *ggui.StateValue[string]
+	VolumeQuery      *ggui.StateValue[string]
+	SnapshotQuery    *ggui.StateValue[string]
+	ExploreSplit     *ggui.StateValue[float64]
+	SelectedImage    *ggui.StateValue[string]
+	SelectedVolume   *ggui.StateValue[string]
 
 	dirty     atomic.Bool
 	scheduled atomic.Bool
@@ -446,55 +450,58 @@ func NewModel(st store.Store, dataDir string) *Model {
 		EditorOpen: ggui.State(false),
 		Draft:      ggui.State(Draft{}),
 
-		ConfirmOpen:     ggui.State(false),
-		ConfirmTitle:    ggui.State(""),
-		ConfirmText:     ggui.State(""),
-		ConfirmLabel:    ggui.State(tr("Confirm")),
-		ConfirmSafe:     ggui.State(false),
-		PullOpen:        ggui.State(false),
-		PullTarget:      ggui.State(PullTargetGVX),
-		PullRef:         ggui.State(""),
-		PullLog:         ggui.State(""),
-		Pulling:         ggui.State(false),
-		SearchResults:   ggui.State([]registry.Result(nil)),
-		SearchFor:       ggui.State(""),
-		SearchBusy:      ggui.State(false),
-		SearchErr:       ggui.State(""),
-		SearchTags:      ggui.State([]string(nil)),
-		SearchTagsOf:    ggui.State(""),
-		SearchTagsBusy:  ggui.State(false),
-		ExploreOpen:     ggui.State(false),
-		ExploreTitle:    ggui.State(""),
-		ExploreSource:   ggui.State(""),
-		ExploreTab:      ggui.State(ExploreFiles),
-		ExploreLoading:  ggui.State(false),
-		ExploreProgress: ggui.State(""),
-		ExploreErr:      ggui.State(""),
-		ExploreLayers:   ggui.State([]imagefs.Layer(nil)).WithEqual(func(a, b []imagefs.Layer) bool { return slices.EqualFunc(a, b, imagefs.Layer.Equal) }),
-		ExploreLayer:    ggui.State(0),
-		ExplorePath:     ggui.State("/"),
-		ExploreQuery:    ggui.State(""),
-		ExploreEntries:  ggui.State([]imagefs.Entry(nil)).WithEqual(func(a, b []imagefs.Entry) bool { return slices.EqualFunc(a, b, imagefs.Entry.Equal) }),
-		ExploreSelected: ggui.State(""),
-		ExplorePreview:  ggui.State(FilePreview{}).WithEqual(FilePreview.Equal),
-		ExploreInspect:  ggui.State(""),
-		VolumeOpen:      ggui.State(false),
-		VolumeName:      ggui.State(""),
-		VolumeDriver:    ggui.State("ext4lite"),
-		PaletteOpen:     ggui.State(false),
-		PaletteQuery:    ggui.State(""),
-		QuitOpen:        ggui.State(false),
-		SidebarNarrow:   ggui.State(settings.SidebarNarrow),
-		SandboxStatus:   ggui.State("all"),
-		ImageQuery:      ggui.State(""),
-		VolumeQuery:     ggui.State(""),
-		SnapshotQuery:   ggui.State(""),
-		ExploreSplit:    ggui.State(0.47),
-		SelectedImage:   ggui.State(""),
-		SelectedVolume:  ggui.State(""),
-		runCLI:          runCLI,
-		runVMHelper:     defaultRunVMHelper,
-		forwarder:       forwardThroughCluster,
+		ConfirmOpen:      ggui.State(false),
+		ConfirmTitle:     ggui.State(""),
+		ConfirmText:      ggui.State(""),
+		ConfirmLabel:     ggui.State(tr("Confirm")),
+		ConfirmSafe:      ggui.State(false),
+		PullOpen:         ggui.State(false),
+		PullTarget:       ggui.State(PullTargetGVX),
+		PullRef:          ggui.State(""),
+		PullLog:          ggui.State(""),
+		Pulling:          ggui.State(false),
+		SearchResults:    ggui.State([]registry.Result(nil)),
+		SearchFor:        ggui.State(""),
+		SearchBusy:       ggui.State(false),
+		SearchErr:        ggui.State(""),
+		SearchTags:       ggui.State([]string(nil)),
+		SearchTagsOf:     ggui.State(""),
+		SearchTagsBusy:   ggui.State(false),
+		ExploreOpen:      ggui.State(false),
+		ExploreTitle:     ggui.State(""),
+		ExploreSource:    ggui.State(""),
+		ExploreTab:       ggui.State(ExploreFiles),
+		ExploreLoading:   ggui.State(false),
+		ExploreProgress:  ggui.State(""),
+		ExploreErr:       ggui.State(""),
+		ExploreLayers:    ggui.State([]imagefs.Layer(nil)).WithEqual(func(a, b []imagefs.Layer) bool { return slices.EqualFunc(a, b, imagefs.Layer.Equal) }),
+		ExploreLayer:     ggui.State(0),
+		ExplorePath:      ggui.State("/"),
+		ExploreQuery:     ggui.State(""),
+		ExploreEntries:   ggui.State([]imagefs.Entry(nil)).WithEqual(func(a, b []imagefs.Entry) bool { return slices.EqualFunc(a, b, imagefs.Entry.Equal) }),
+		ExploreSelected:  ggui.State(""),
+		ExplorePreview:   ggui.State(FilePreview{}).WithEqual(FilePreview.Equal),
+		ExploreInspect:   ggui.State(""),
+		VolumeOpen:       ggui.State(false),
+		VolumeName:       ggui.State(""),
+		VolumeDriver:     ggui.State("ext4lite"),
+		DockerConfigOpen: ggui.State(false),
+		DockerConfigText: ggui.State(""),
+		DockerConfigErr:  ggui.State(""),
+		PaletteOpen:      ggui.State(false),
+		PaletteQuery:     ggui.State(""),
+		QuitOpen:         ggui.State(false),
+		SidebarNarrow:    ggui.State(settings.SidebarNarrow),
+		SandboxStatus:    ggui.State("all"),
+		ImageQuery:       ggui.State(""),
+		VolumeQuery:      ggui.State(""),
+		SnapshotQuery:    ggui.State(""),
+		ExploreSplit:     ggui.State(0.47),
+		SelectedImage:    ggui.State(""),
+		SelectedVolume:   ggui.State(""),
+		runCLI:           runCLI,
+		runVMHelper:      defaultRunVMHelper,
+		forwarder:        forwardThroughCluster,
 	}
 	ggui.OnCleanup(m.Toasts.Close)
 	m.sup = &sandbox.Supervisor{

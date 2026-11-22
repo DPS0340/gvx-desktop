@@ -347,7 +347,7 @@ func dockerNotesCard() ggui.Widget {
 		ui.CardHeader(tr("Good to know"), tr("Limits that come from running dockerd in a user-space kernel.")),
 		ui.CardContent(widget.Column(
 			note(tr("Paths in docker run -v"), tr("A -v path names a path in the sandbox. The folders shared in Settings → Docker, your home folder unless you changed them, are at the same paths there, so -v and compose bind mounts of what is in them work; bind mounts outside them are rejected.")),
-			note(tr("Ports"), tr("Host ports are fixed when the sandbox starts. Add more to the range in the sandbox settings and restart.")),
+			note(tr("Ports"), tr("A port a container publishes reaches this computer at 127.0.0.1 under the same number once the container listens on it, unless something here has that port. The container's Connect tab says which.")),
 			note(tr("Architecture"), tr("The engine runs images for this CPU (linux/%s) natively.", goarch())),
 			note(tr("Limits"), tr("docker run -m and --cpus are enforced; BLOCK I/O reads 0B because the guest has no io controller.")),
 		).Gap(10).Stretch()),

@@ -111,9 +111,15 @@ func Upgrade(spec sandbox.Spec) (sandbox.Spec, bool) {
 	switch spec.Recipe {
 	case Docker:
 		changed := false
-		if !slices.Contains(args, insecureRegistry()) && !slices.Contains(args, RegistryHost()) {
-			args = append(args, insecureRegistry())
-			cmdChanged = true
+		if !HasDockerConfig(spec) {
+			// dockerd reads daemon.json from this computer, which names
+			// the registry: the flag would clash with it.
+			spec = spec.Clone()
+			spec.Mounts = append(spec.Mounts, dockerConfigMount())
+			if i := slices.Index(args, insecureRegistry()); i >= 0 {
+				args = slices.Delete(args, i, i+1)
+				cmdChanged = true
+			}
 			changed = true
 		}
 		// -auto-publish=false in the extra flags keeps it off.
@@ -194,10 +200,13 @@ func upgradeDockerPorts(ports []string) ([]string, bool) {
 }
 
 // Prepare writes the files of this computer a recipe's sandbox reads as it
-// starts: the cluster's registries.yaml, in the folder of this computer its
+// starts: the engine's daemon.json, and the cluster's registries.yaml, in the folder of this computer its
 // --private-registry is in. It leaves alone a sandbox that names no such
 // file.
 func Prepare(spec sandbox.Spec) error {
+	if spec.Recipe == Docker {
+		return prepareDockerConfig(spec)
+	}
 	if spec.Recipe != Kubernetes {
 		return nil
 	}

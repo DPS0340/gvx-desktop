@@ -55,7 +55,7 @@ func TestParseMountRejectsRelativeTarget(t *testing.T) {
 func TestWrapCommand(t *testing.T) {
 	got := wrapCommand(recipes.DockerEngine().RunArgs(sandbox.Paths{}))
 	want := "rungv run \\\n  --name docker-engine \\\n  -e DOCKER_TLS_CERTDIR= \\\n"
-	if !strings.HasPrefix(got, want) || !strings.HasSuffix(got, "\\\n  docker:dind --tls=false --insecure-registry=host.docker.internal:5001") {
+	if !strings.HasPrefix(got, want) || !strings.HasSuffix(got, "\\\n  docker:dind --tls=false") {
 		t.Fatalf("got\n%s", got)
 	}
 }

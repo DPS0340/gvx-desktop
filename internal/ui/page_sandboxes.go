@@ -391,10 +391,17 @@ func connectView(m *Model, r Row) ggui.Widget {
 	case recipes.Registry:
 		parts = append(parts, registryConnect(m, r))
 	}
-	parts = append(parts, sectionTitle(tr("Published ports"), tr("Bound on the host before the guest starts. A guest port outside these is reachable only inside the sandbox.")))
-	if r.State.Status.Active() && len(r.State.Ports) > 0 {
+	note := tr("Bound on the host before the guest starts. A guest port outside these is reachable only inside the sandbox.")
+	if sandbox.HasAutoPublish(r.Spec) {
+		note = tr("Bound on the host before the guest starts, and as the guest listens on a port: at 127.0.0.1 under the same number, while it listens.")
+	}
+	parts = append(parts, sectionTitle(tr("Published ports"), note))
+	if r.State.Status.Active() && (len(r.State.Ports) > 0 || len(r.State.Busy) > 0) {
 		for _, p := range r.State.Ports {
 			label := fmt.Sprintf("%s → %d/%s", p.Host, p.Guest, p.Proto)
+			if src := portSourceLabel(p.Source); src != "" {
+				label += " · " + src
+			}
 			var act ggui.Widget = widget.Box()
 			if url := p.URL(); url != "" {
 				act = widget.Row(
@@ -405,6 +412,15 @@ func connectView(m *Model, r Row) ggui.Widget {
 				act = iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(p.Host, p.Host) })
 			}
 			parts = append(parts, widget.Row(glyph(lucide.Plug, 14).Color(colorGreen), widget.Expanded(ui.Mono(label).Size(12)), act).Gap(10).Align(widget.AlignCenter))
+		}
+		for _, host := range r.State.Busy {
+			parts = append(parts, widget.Row(
+				glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber),
+				widget.Expanded(widget.Column(
+					ui.Mono(host).Size(12),
+					ui.Caption(tr("The guest listens on it, but something on this computer has the port. It is published once that lets it go and the guest listens again.")).Size(11),
+				).Gap(1)),
+			).Gap(10).Align(widget.AlignStart))
 		}
 	} else if len(r.Spec.Ports) > 0 {
 		for _, p := range r.Spec.Ports {
@@ -614,4 +630,16 @@ func snapshotList(m *Model, snaps ggui.Readable[[]sandbox.Snapshot], showSandbox
 // sandboxTerminal is a shell in the chosen sandbox, as rungv exec -it runs one.
 func sandboxTerminal(m *Model) ggui.Widget {
 	return terminalTab(m, m.sandboxShell(), tr("A shell in the sandbox, as rungv exec -it runs one."))
+}
+
+// portSourceLabel words what published a port, "" for one published at
+// start, as most are.
+func portSourceLabel(source string) string {
+	switch source {
+	case "auto":
+		return tr("auto")
+	case "dynamic":
+		return tr("added")
+	}
+	return ""
 }

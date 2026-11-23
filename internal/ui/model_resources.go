@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -499,9 +500,9 @@ func (m *Model) SharedFolders() []string {
 }
 
 // SetSharedFolders changes the folders the Docker Engine shares, in the
-// settings and in the engine's sandbox when there is one. A sandbox's
-// mounts are fixed when it starts, so a running engine keeps what it
-// shares until it is restarted, and is told so.
+// settings and in the engine's sandbox when there is one. With rungv v0.21+
+// bind attach on Unix, changes apply live to a running engine; otherwise the
+// engine keeps what it started with until restarted.
 func (m *Model) SetSharedFolders(folders []string) {
 	folders = append([]string{}, folders...) // empty, not nil: none, not the default
 	m.UpdateSettings(func(s *store.Settings) { s.DockerSharedFolders = folders })
@@ -513,9 +514,37 @@ func (m *Model) SetSharedFolders(folders []string) {
 		if slices.Equal(recipes.SharedFoldersOf(spec), folders) {
 			return
 		}
-		specs[i] = recipes.WithSharedFolders(spec, folders)
+		st := m.sup.State(spec.ID)
+		if !st.Status.Active() && m.Offline {
+			st = ggui.Peek(m.States)[spec.ID]
+		}
+		activeSpec, hasActive := m.activeSpec(spec.ID)
+		desiredSpec := recipes.WithSharedFolders(spec, folders)
+		specs[i] = desiredSpec
 		m.saveSpecs(specs)
-		if m.sup.State(spec.ID).Status.Active() {
+		if st.Status.Active() {
+			if st.BindAttach && hasActive {
+				add, remove := recipes.SharedFolderDiff(activeSpec, desiredSpec)
+				if len(add) > 0 || len(remove) > 0 {
+					id := spec.ID
+					diff := sandbox.LiveDiff{AddMounts: add, RemoveMounts: remove}
+					m.async(func(ctx context.Context) error {
+						ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+						defer cancel()
+						return m.applyLiveSandbox(ctx, id, diff)
+					}, func(err error) {
+						if err != nil {
+							m.Toasts.Push(ui.Toast(tr("Restart the Docker Engine to share the change"),
+								err.Error()).Warning().Duration(8 * time.Second))
+							return
+						}
+						m.refreshStates()
+						m.syncEngineSpec(ggui.Peek(m.Rows))
+						m.toastOK(tr("Shared folders updated"), tr("Applied to the running Docker Engine without restarting."))
+					})
+				}
+				return
+			}
 			m.Toasts.Push(ui.Toast(tr("Restart the Docker Engine to share the change"),
 				tr("It sees the folders it started with until then.")).Duration(8 * time.Second))
 		}
@@ -897,7 +926,7 @@ type Draft struct {
 	ID, Name, Image, Command string
 	Entrypoint               string
 	SetEntrypoint            bool
-	Ports, Env               string
+	Ports, UnixForwards, Env string
 	Volumes, Binds, Tmpfs    string
 	Workspace                string
 	WorkspaceRO              bool
@@ -905,6 +934,10 @@ type Draft struct {
 	Memory, CPUs             string
 	Network, WGConf          string
 	IsolateLAN               bool
+	NetTX, NetRX             string
+	NATPolicyFile            string
+	DynamicPortAddrs         string
+	AutoPublishAddr          string
 	Backend                  string
 	Hostname, User, Workdir  string
 	Privileged, HostCACerts  bool
@@ -920,9 +953,11 @@ func DraftFrom(s sandbox.Spec) Draft {
 	d := Draft{
 		ID: s.ID, Name: s.Name, Image: s.Image, Command: s.Command,
 		Entrypoint: s.Entrypoint, SetEntrypoint: s.SetEntrypoint,
-		Ports: strings.Join(s.Ports, "\n"), Env: strings.Join(s.Env, "\n"),
+		Ports: strings.Join(s.Ports, "\n"), UnixForwards: strings.Join(s.UnixForwards, "\n"), Env: strings.Join(s.Env, "\n"),
 		Workspace: s.Workspace, WorkspaceRO: s.WorkspaceRO, RootfsVolume: s.RootfsVolume,
 		Memory: s.Memory, CPUs: s.CPUs, Network: s.Network, WGConf: s.WGConf, IsolateLAN: s.IsolateLAN,
+		NetTX: formatBandwidthBPS(s.NetTXBPS), NetRX: formatBandwidthBPS(s.NetRXBPS),
+		NATPolicyFile: s.NATPolicyFile, DynamicPortAddrs: strings.Join(s.DynamicPortAddrs, "\n"), AutoPublishAddr: s.AutoPublishAddr,
 		Backend: s.Backend, Hostname: s.Hostname, User: s.User, Workdir: s.Workdir,
 		Privileged: !s.Unprivileged, HostCACerts: s.HostCACerts, Pull: s.Pull,
 		Checkpoint: s.Checkpoint, AutoStart: s.AutoStart, ReadyPattern: s.ReadyPattern,
@@ -996,14 +1031,111 @@ func parseMount(line string) (src, dst string, ro bool, err error) {
 	return line[:i], line[i+1:], ro, nil
 }
 
+// parseBandwidthBPS parses a human-friendly NAT bandwidth limit into bits per
+// second (0 = unlimited). Accepts plain bits/s or decimal SI suffixes k/m/g/t
+// (e.g. "500k", "100m", "1.5g", "100Mbps").
+func parseBandwidthBPS(s string) (uint64, error) {
+	raw := strings.TrimSpace(s)
+	if raw == "" {
+		return 0, nil
+	}
+	lower := strings.ToLower(raw)
+	i := 0
+	dots := 0
+	for i < len(lower) {
+		ch := lower[i]
+		if ch >= '0' && ch <= '9' {
+			i++
+		} else if ch == '.' && dots == 0 {
+			dots++
+			i++
+		} else {
+			break
+		}
+	}
+	numStr := lower[:i]
+	unit := strings.TrimSpace(lower[i:])
+	if numStr == "" || numStr == "." {
+		return 0, fmt.Errorf("bandwidth limit %q: write bits/s with an optional k, m or g unit (for example 100m or 1g)", s)
+	}
+	var mult uint64
+	switch unit {
+	case "", "b", "bps", "bit", "bits", "b/s", "bit/s", "bits/s":
+		mult = 1
+	case "k", "kb", "kbps", "kbit", "kbits", "k/s", "kbit/s":
+		mult = 1_000
+	case "m", "mb", "mbps", "mbit", "mbits", "m/s", "mbit/s":
+		mult = 1_000_000
+	case "g", "gb", "gbps", "gbit", "gbits", "g/s", "gbit/s":
+		mult = 1_000_000_000
+	case "t", "tb", "tbps", "tbit", "tbits", "t/s", "tbit/s":
+		mult = 1_000_000_000_000
+	default:
+		return 0, fmt.Errorf("bandwidth limit %q: unknown unit %q (use k, m or g)", s, strings.TrimSpace(raw[i:]))
+	}
+	if dots == 0 {
+		v, err := strconv.ParseUint(numStr, 10, 64)
+		if err != nil || v > math.MaxUint64/mult {
+			return 0, fmt.Errorf("bandwidth limit %q is out of range", s)
+		}
+		return v * mult, nil
+	}
+	v, err := strconv.ParseFloat(numStr, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0, fmt.Errorf("bandwidth limit %q: invalid number", s)
+	}
+	prod := v * float64(mult)
+	if prod >= float64(math.MaxUint64) || (v > 0 && prod < 1) {
+		return 0, fmt.Errorf("bandwidth limit %q is out of range", s)
+	}
+	return uint64(math.Round(prod)), nil
+}
+
+// formatBandwidthBPS formats a bits-per-second limit as a compact string for
+// the editor ("100m", "500k", "1.5g", or plain bits/s); 0 formats as "".
+func formatBandwidthBPS(bps uint64) string {
+	if bps == 0 {
+		return ""
+	}
+	const (
+		k = 1_000
+		m = 1_000_000
+		g = 1_000_000_000
+	)
+	switch {
+	case bps%g == 0:
+		return strconv.FormatUint(bps/g, 10) + "g"
+	case bps >= g && bps%(g/10) == 0:
+		return fmt.Sprintf("%d.%dg", bps/g, (bps%g)/(g/10))
+	case bps%m == 0:
+		return strconv.FormatUint(bps/m, 10) + "m"
+	case bps >= m && bps%(m/10) == 0:
+		return fmt.Sprintf("%d.%dm", bps/m, (bps%m)/(m/10))
+	case bps%k == 0:
+		return strconv.FormatUint(bps/k, 10) + "k"
+	default:
+		return strconv.FormatUint(bps, 10)
+	}
+}
+
 // Spec converts the form to a sandbox spec.
 func (d Draft) Spec() (sandbox.Spec, error) {
+	tx, err := parseBandwidthBPS(d.NetTX)
+	if err != nil {
+		return sandbox.Spec{}, err
+	}
+	rx, err := parseBandwidthBPS(d.NetRX)
+	if err != nil {
+		return sandbox.Spec{}, err
+	}
 	s := sandbox.Spec{
 		ID: d.ID, Name: strings.TrimSpace(d.Name), Image: strings.TrimSpace(d.Image),
 		Command: strings.TrimSpace(d.Command), Entrypoint: strings.TrimSpace(d.Entrypoint), SetEntrypoint: d.SetEntrypoint,
-		Ports: lines(d.Ports), Env: lines(d.Env),
+		Ports: lines(d.Ports), UnixForwards: lines(d.UnixForwards), Env: lines(d.Env),
 		Workspace: strings.TrimSpace(d.Workspace), WorkspaceRO: d.WorkspaceRO, RootfsVolume: strings.TrimSpace(d.RootfsVolume),
 		Memory: strings.TrimSpace(d.Memory), CPUs: strings.TrimSpace(d.CPUs), WGConf: strings.TrimSpace(d.WGConf), IsolateLAN: d.IsolateLAN,
+		NetTXBPS: tx, NetRXBPS: rx, NATPolicyFile: strings.TrimSpace(d.NATPolicyFile),
+		DynamicPortAddrs: lines(d.DynamicPortAddrs), AutoPublishAddr: strings.TrimSpace(d.AutoPublishAddr),
 		Hostname: strings.TrimSpace(d.Hostname), User: strings.TrimSpace(d.User), Workdir: strings.TrimSpace(d.Workdir),
 		Unprivileged: !d.Privileged, HostCACerts: d.HostCACerts,
 		Checkpoint: d.Checkpoint, AutoStart: d.AutoStart, ReadyPattern: strings.TrimSpace(d.ReadyPattern),

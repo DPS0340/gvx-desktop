@@ -331,6 +331,7 @@ type Model struct {
 	pauseSandboxFn                             func(ctx context.Context, id string) error                                    // overrides m.sup.Pause in tests
 	unpauseSandboxFn                           func(ctx context.Context, id string) error                                    // overrides m.sup.Unpause in tests
 	updateSandboxFn                            func(ctx context.Context, id string, u rungv.Update) (rungv.Resources, error) // overrides m.sup.Update in tests
+	applyLiveFn                                func(ctx context.Context, id string, diff sandbox.LiveDiff) error             // overrides m.sup.ApplyLive in tests
 	dockerLoading, dockerAgain                 bool                                                                          // LoadDocker runs; it is wanted again after
 	dockerNetworksLoading, dockerNetworksAgain bool                                                                          // LoadDockerNetworks runs; it is wanted again after
 	dockerImagesLoading, dockerImagesAgain     bool                                                                          // LoadDockerImages runs; it is wanted again after
@@ -617,7 +618,15 @@ func NewModel(st store.Store, dataDir string) *Model {
 		active, ok := m.activeSpec(d.ID)
 		spec, err := d.Spec()
 		if err != nil {
-			return editorAction{running: st.Status.Active(), control: st.Status.Active() && st.Control}
+			run := st.Status.Active()
+			return editorAction{
+				running:      run,
+				control:      run && st.Control,
+				dynamicPorts: run && st.DynamicPorts,
+				bindAttach:   run && st.BindAttach,
+				netQoS:       run && st.NetQoS,
+				natPolicy:    run && st.NATPolicy,
+			}
 		}
 		return editorActionOf(st, active, ok, spec)
 	})
@@ -666,7 +675,11 @@ func wrapCommand(args []string) string {
 
 func takesValue(flag string) bool {
 	switch flag {
-	case "-ro", "-isolate-lan", "--host-ca-certs", "--privileged=false", "-auto-publish", "--auto-publish":
+	case "-ro", "-isolate-lan", "--host-ca-certs", "--privileged=false",
+		"-auto-publish", "--auto-publish",
+		"-dynamic-ports", "--dynamic-ports",
+		"-allow-bind-attach", "--allow-bind-attach",
+		"-keep-blobs", "--keep-blobs":
 		return false
 	}
 	return true
@@ -1254,6 +1267,30 @@ func (m *Model) updateSandbox(ctx context.Context, id string, u rungv.Update) (r
 	return m.sup.Update(ctx, id, u)
 }
 
+func (m *Model) applyLiveSandbox(ctx context.Context, id string, diff sandbox.LiveDiff) error {
+	if m.applyLiveFn != nil {
+		return m.applyLiveFn(ctx, id, diff)
+	}
+	if m.updateSandboxFn != nil && !diff.Update.IsZero() &&
+		diff.NATPolicyFile == "" &&
+		len(diff.AddPorts) == 0 && len(diff.RemovePorts) == 0 &&
+		len(diff.AddMounts) == 0 && len(diff.RemoveMounts) == 0 {
+		_, err := m.updateSandboxFn(ctx, id, diff.Update)
+		return err
+	}
+	return m.sup.ApplyLive(ctx, id, diff)
+}
+
+func liveDiffToastDesc(diff sandbox.LiveDiff) string {
+	if diff.NATPolicyFile == "" &&
+		len(diff.AddPorts) == 0 && len(diff.RemovePorts) == 0 &&
+		len(diff.AddMounts) == 0 && len(diff.RemoveMounts) == 0 &&
+		diff.Update.NetTXBPS == nil && diff.Update.NetRXBPS == nil {
+		return tr("The running sandbox has the new memory, CPU and LAN settings.")
+	}
+	return tr("The running sandbox has been updated without restarting.")
+}
+
 // AskDelete confirms and removes a sandbox.
 func (m *Model) AskDelete(id string) {
 	spec, ok := m.spec(id)
@@ -1381,15 +1418,15 @@ func (m *Model) SaveDraft(start bool) bool {
 	var (
 		applyLive   bool
 		liveChecked bool
-		liveUpdate  rungv.Update
+		liveDiff    sandbox.LiveDiff
 	)
 	if active && st.Control {
 		if runningSpec, ok := m.activeSpec(spec.ID); ok {
-			if u, live := sandbox.LiveUpdate(runningSpec, spec); live {
+			if diff, live := sandbox.ComputeLiveDiff(runningSpec, spec, st); live {
 				liveChecked = true
-				if !u.IsZero() {
+				if !diff.IsZero() {
 					applyLive = true
-					liveUpdate = u
+					liveDiff = diff
 				}
 			}
 		}
@@ -1413,18 +1450,17 @@ func (m *Model) SaveDraft(start bool) bool {
 	m.EditorOpen.Set(false)
 	m.Select(spec.ID)
 	if applyLive {
-		id, name, u := spec.ID, spec.Name, liveUpdate
+		id, name, diff := spec.ID, spec.Name, liveDiff
 		m.async(func(ctx context.Context) error {
 			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			_, err := m.updateSandbox(ctx, id, u)
-			return err
+			return m.applyLiveSandbox(ctx, id, diff)
 		}, func(err error) {
 			if err != nil {
 				m.toastError(tr("Could not change the running sandbox"), err)
 				return
 			}
-			m.toastOK(tr("Applied to %s", name), tr("The running sandbox has the new memory, CPU and LAN settings."))
+			m.toastOK(tr("Applied to %s", name), liveDiffToastDesc(diff))
 			m.refreshStates()
 		})
 		return true

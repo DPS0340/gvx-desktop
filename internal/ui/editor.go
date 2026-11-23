@@ -18,28 +18,42 @@ import (
 // editorAction describes the editor sheet's caption and primary action for a
 // draft against the sandbox's runtime state.
 type editorAction struct {
-	running bool
-	control bool
-	live    bool
-	hasDiff bool
+	running      bool
+	control      bool
+	dynamicPorts bool
+	bindAttach   bool
+	netQoS       bool
+	natPolicy    bool
+	live         bool
+	hasDiff      bool
 }
 
 func editorActionOf(st sandbox.State, active sandbox.Spec, hasActive bool, edited sandbox.Spec) editorAction {
 	if !st.Status.Active() {
 		return editorAction{}
 	}
-	act := editorAction{running: true, control: st.Control}
+	act := editorAction{
+		running:      true,
+		control:      st.Control,
+		dynamicPorts: st.DynamicPorts,
+		bindAttach:   st.BindAttach,
+		netQoS:       st.NetQoS,
+		natPolicy:    st.NATPolicy,
+	}
 	if !st.Control || !hasActive {
 		return act
 	}
-	u, live := sandbox.LiveUpdate(active, edited)
+	diff, live := sandbox.ComputeLiveDiff(active, edited, st)
 	act.live = live
-	act.hasDiff = !u.IsZero()
+	act.hasDiff = !diff.IsZero()
 	return act
 }
 
 func editorCaption(a editorAction) string {
 	if a.running && a.control {
+		if a.dynamicPorts || a.bindAttach || a.netQoS || a.natPolicy {
+			return tr("Resources, bandwidth, NAT policy, loopback ports, and bind/tmpfs mounts apply to a running sandbox without a restart. Other settings take a restart.")
+		}
 		return tr("Memory, CPUs and LAN isolation apply to a running sandbox at once. Ports, mounts and the other settings take a restart.")
 	}
 	return tr("Ports and mounts are opened before the guest starts and stay fixed while it runs.")
@@ -121,6 +135,9 @@ func editorSheet(m *Model) ggui.Widget {
 		ui.Field(tr("Published ports"), ui.TextField(str(func(x *Draft) *string { return &x.Ports })).Multiline().Lines(3).
 			Placeholder("8080:80\n127.0.0.1:9000-9019:9000-9019\nunix:~/.gvx/app.sock:3000").Name(tr("Published ports"))).
 			Help(tr("One per line: [IP:][HOST:]GUEST[/udp]. Bound before the guest starts and fixed for the run: publish every port the guest will use, including ports of nested containers.")),
+		ui.Field(tr("Unix socket forwards"), ui.TextField(str(func(x *Draft) *string { return &x.UnixForwards })).Multiline().Lines(2).
+			Placeholder("/var/run/app.sock=~/.gvx/app.sock").Name(tr("Unix socket forwards"))).
+			Help(tr("One per line: GUEST_PATH=HOST_SOCKET[,uid=N,gid=N,mode=0600]. Relays a guest Unix socket to a host socket under lockdown (rungv v0.21+).")),
 	).Gap(14).Stretch()
 
 	workspace := str(func(x *Draft) *string { return &x.Workspace })
@@ -153,6 +170,7 @@ func editorSheet(m *Model) ggui.Widget {
 
 	network := d.Field(func(x *Draft) *string { return &x.Network })
 	isWG := ggui.Map(network, func(n string) bool { return n == "wg" })
+	isNAT := ggui.Map(network, func(n string) bool { return n == "nat" || n == "" })
 	netSec := widget.Column(
 		ui.Field(tr("Network"), ui.ToggleGroup(network).Options([]string{"nat", "none", "wg"}).Format(func(s string) string {
 			switch s {
@@ -169,6 +187,21 @@ func editorSheet(m *Model) ggui.Widget {
 				widget.Expanded(ui.TextField(wg).Placeholder("~/sandbox-wg.conf").Name(tr("WireGuard config"))),
 				ui.Button(tr("Browse…"), func() { browseFile(m, wg, nil) }).Outline(),
 			).Gap(8))
+		}),
+		ggui.If(isNAT, func() ggui.Widget {
+			pol := str(func(x *Draft) *string { return &x.NATPolicyFile })
+			return widget.Column(
+				widget.Row(
+					widget.Expanded(ui.Field(tr("Upload limit (TX)"), ui.TextField(str(func(x *Draft) *string { return &x.NetTX })).Placeholder(tr("Unlimited")).Name(tr("Upload limit (TX)"))).
+						Help(tr("e.g. 100m, 1g (bits/s)."))),
+					widget.Expanded(ui.Field(tr("Download limit (RX)"), ui.TextField(str(func(x *Draft) *string { return &x.NetRX })).Placeholder(tr("Unlimited")).Name(tr("Download limit (RX)"))).
+						Help(tr("e.g. 100m, 1g (bits/s)."))),
+				).Gap(12).Align(widget.AlignStart),
+				ui.Field(tr("NAT firewall policy"), widget.Row(
+					widget.Expanded(ui.TextField(pol).Placeholder("~/nat-policy.yaml").Name(tr("NAT firewall policy"))),
+					ui.Button(tr("Browse…"), func() { browseFile(m, pol, nil) }).Outline(),
+				).Gap(8)).Help(tr("JSON or YAML NAT firewall rules file.")),
+			).Gap(14).Stretch()
 		}),
 		ui.Switch(flag(func(x *Draft) *bool { return &x.IsolateLAN }), tr("Block access to the local network")).Small(),
 		ui.Switch(flag(func(x *Draft) *bool { return &x.Privileged }), tr("Privileged inside the sandbox (raw sockets, iptables, setuid) — needed by dockerd")).Small(),

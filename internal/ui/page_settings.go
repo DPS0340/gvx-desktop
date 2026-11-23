@@ -508,6 +508,12 @@ func sandboxEngineSettings(m *Model) ggui.Widget {
 					widget.Expanded(ui.Caption(tr("Also diff, export and commit, on stopped containers too. A container keeps the files it changed when it stops, as in Docker.")).Size(12)),
 				).Gap(8).Align(widget.AlignStart),
 			)
+			if f.KeepBlobs {
+				rows = append(rows, widget.Row(
+					widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
+					widget.Expanded(ui.Caption(tr("With rungv v0.21+: docker push, offline docker save, and host Unix socket bind mounts (including /var/run/docker.sock).")).Size(12)),
+				).Gap(8).Align(widget.AlignStart))
+			}
 		} else {
 			rows = append(rows,
 				widget.Row(
@@ -885,7 +891,13 @@ func sharedFoldersField(m *Model) ggui.Widget {
 			rows = append(rows, widget.Row(add))
 			return widget.Column(rows...).Gap(6).Stretch()
 		})
-		help := []ggui.Widget{list, ui.Caption(tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. The engine sees a change when it is restarted."))}
+		caption := ui.CaptionOf(ggui.Map(m.RungvFeatures, func(f rungv.Features) string {
+			if f.BindAttach && runtime.GOOS != "windows" {
+				return tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. Changes apply live to a running engine without restarting.")
+			}
+			return tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. The engine sees a change when it is restarted.")
+		}))
+		help := []ggui.Widget{list, caption}
 		if runtime.GOOS == "windows" {
 			help = append(help, widget.Row(glyph(lucide.Info, 14).Color(colorBlue),
 				widget.Expanded(ui.Caption(tr("A folder such as C:\\Users\\me is at /c/Users/me in the engine. Paths written the Windows way in docker run -v and in compose files are converted on the way there."))),

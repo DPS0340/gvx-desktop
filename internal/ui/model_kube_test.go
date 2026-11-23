@@ -416,7 +416,7 @@ func TestTheKubernetesViews(t *testing.T) {
 
 	m.GoKube(KubeWorkloads)
 	p.Frame()
-	if ggui.Peek(m.Page) != PagePods || !shows("Workloads") || !shows("web") || shows("coredns") {
+	if ggui.Peek(m.Page) != PageWorkloads || !shows("Workloads") || !shows("web") || shows("coredns") {
 		t.Errorf("the Workloads view:\n%s", p.Semantics())
 	}
 	m.GoKube(KubeServices)
@@ -426,7 +426,7 @@ func TestTheKubernetesViews(t *testing.T) {
 	}
 	m.ShowWorkloadPods(web)
 	p.Frame()
-	if ggui.Peek(m.KubeView) != KubePods || !shows("web-7d4b9c8f6d-a") || shows("redis-0") || !shows("Show all pods") {
+	if ggui.Peek(m.Page) != PagePods || !shows("web-7d4b9c8f6d-a") || shows("redis-0") || !shows("Show all pods") {
 		t.Errorf("the pods of web:\n%s", p.Semantics())
 	}
 	if got := ggui.Peek(m.Pod).Name(); got != "web-7d4b9c8f6d-a" {

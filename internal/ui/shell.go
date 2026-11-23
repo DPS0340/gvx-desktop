@@ -55,6 +55,10 @@ func build(m *Model) ggui.Widget {
 			return networksPage(m)
 		case PagePods:
 			return podsPage(m)
+		case PageWorkloads:
+			return workloadsPage(m)
+		case PageServices:
+			return servicesPage(m)
 		case PageImages:
 			return imagesPage(m)
 		case PageVolumes:
@@ -132,25 +136,15 @@ func sidebar(m *Model) ggui.Widget {
 	return ggui.View(open, func(o [2]bool) ggui.Widget { return sidebarFor(m, o[0], o[1]) })
 }
 
-// The sidebar's entries for the Pods page's other views, which are not
-// pages of their own.
-const (
-	navWorkloads = "pods/workloads"
-	navServices  = "pods/services"
-)
-
-// navKey is the sidebar entry of page on the cluster view kubeView.
-func navKey(page string, kubeView int) string {
-	if page != PagePods {
-		return page
-	}
-	switch kubeView {
-	case KubeWorkloads:
-		return navWorkloads
-	case KubeServices:
-		return navServices
-	}
-	return PagePods
+// sidebarHeading starts a section of the sidebar under title, with an
+// icon: ggui's section headings have none, so the section is a nameless
+// one and the heading its first row.
+func sidebarHeading(title string, g *icons.Glyph) []ui.SidebarEntry {
+	head := widget.Padding(widget.Row(
+		glyph(g, 16).Color(colorGray),
+		ui.Caption(title).Size(13).Weight(ggui.WeightSemibold).NoWrap(),
+	).Gap(8).Align(widget.AlignCenter), 8, 8, 6, 8)
+	return []ui.SidebarEntry{ui.SidebarSection(""), ui.SidebarCustom(head)}
 }
 
 // sidebarFor is the sidebar with the Containers (and Networks) and Pods
@@ -158,55 +152,50 @@ func navKey(page string, kubeView int) string {
 func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
 	// The image registry has no page of its own: its entry opens its
 	// sandbox, or offers to set it up.
-	nav := ggui.Bind(func() string { return navKey(m.Page.Get(), m.KubeView.Get()) }, func(key string) {
-		switch key {
-		case navRegistry:
+	nav := ggui.Bind(m.Page.Get, func(key string) {
+		if key == navRegistry {
 			m.OpenRegistry()
-		case PagePods:
-			m.GoKube(KubePods)
-		case navWorkloads:
-			m.GoKube(KubeWorkloads)
-		case navServices:
-			m.GoKube(KubeServices)
-		default:
-			m.Go(key)
+			return
 		}
+		m.Go(key)
 	})
 	item := func(key, label string, g *icons.Glyph) ui.SidebarEntry {
 		return ui.SidebarItem(key, label).Leading(glyph(g, 16)).Tooltip(label)
 	}
-	// Containers, Networks and the cluster's views lead into the recipes'
-	// engines, and are there only while those run.
+	// Containers, Networks and the cluster's Pods, Workloads and Services
+	// lead into the recipes' engines, and are there only while those run.
 	entries := []ui.SidebarEntry{
 		item(PageDashboard, tr("Dashboard"), lucide.LayoutDashboard),
 		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(runningBadge(m.Running, func(n int) string { return trn(n, "%d sandbox running", "%d sandboxes running") })),
-	}
-	if containers {
-		entries = append(entries,
-			item(PageContainers, tr("Containers"), lucide.Container).Action(runningBadge(m.RunningContainers,
-				func(n int) string { return trn(n, "%d container running", "%d containers running") })),
-			item(PageNetworks, tr("Networks"), lucide.Network))
-	}
-	// Kubernetes is the cluster, its nodes and how to reach it; under it,
-	// while it runs, what runs in it.
-	kube := item(PageKubernetes, "Kubernetes", lucide.ShipWheel)
-	if pods {
-		kube = kube.Sub(
-			item(PagePods, tr("Pods"), lucide.Hexagon).Action(runningBadge(m.RunningPods,
-				func(n int) string { return trn(n, "%d pod running", "%d pods running") })),
-			item(navWorkloads, tr("Workloads"), lucide.Boxes),
-			item(navServices, tr("Services"), lucide.Waypoints),
-		)
-	}
-	entries = append(entries,
-		kube,
 		item(PageImages, tr("Images"), lucide.Layers),
 		item(PageVolumes, tr("Volumes"), lucide.HardDrive),
 		item(PageSnapshots, tr("Snapshots"), lucide.Camera),
-		ui.SidebarSection(tr("Recipes")),
-		item(PageDocker, "Docker Engine", dockerIcon),
-		item(navRegistry, tr("Image registry"), recipeIcon(recipes.Registry)),
-	)
+	}
+	// The engine: how to start and reach it; then, while it runs, what runs
+	// in it.
+	entries = append(entries, sidebarHeading("Docker", dockerIcon)...)
+	entries = append(entries, item(PageDocker, "Docker Engine", dockerIcon))
+	if containers {
+		entries = append(entries,
+			item(PageNetworks, tr("Networks"), lucide.Network),
+			item(PageContainers, tr("Containers"), lucide.Container).Action(runningBadge(m.RunningContainers,
+				func(n int) string { return trn(n, "%d container running", "%d containers running") })),
+		)
+	}
+	// The cluster: its nodes, and how to start and reach it; then, while it
+	// runs, what runs in it.
+	entries = append(entries, sidebarHeading("Kubernetes", lucide.ShipWheel)...)
+	entries = append(entries, item(PageKubernetes, tr("Nodes"), lucide.Server))
+	if pods {
+		entries = append(entries,
+			item(PagePods, tr("Pods"), lucide.Hexagon).Action(runningBadge(m.RunningPods,
+				func(n int) string { return trn(n, "%d pod running", "%d pods running") })),
+			item(PageWorkloads, tr("Workloads"), lucide.Boxes),
+			item(PageServices, tr("Services"), lucide.Waypoints),
+		)
+	}
+	entries = append(entries, sidebarHeading(tr("Recipes"), lucide.Package)...)
+	entries = append(entries, item(navRegistry, tr("Image registry"), recipeIcon(recipes.Registry)))
 	brandTop := 4.0
 	if TitlebarHidden {
 		brandTop = 40 // room for the traffic lights

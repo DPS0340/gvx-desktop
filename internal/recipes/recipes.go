@@ -276,7 +276,7 @@ func All() []Recipe {
 		{
 			Key:     Kubernetes,
 			Title:   "Kubernetes (k3s)",
-			Summary: "A single-node k3s cluster with a kubeconfig written to ~/.gvx/k3s.",
+			Summary: "A k3s cluster with a kubeconfig written to ~/.gvx/k3s. Add nodes once it runs.",
 			Image:   K3sImage,
 			Highlights: []string{
 				"API server on 127.0.0.1:6443",

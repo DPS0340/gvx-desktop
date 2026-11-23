@@ -366,7 +366,7 @@ func recipeCopy(r recipes.Recipe) (summary string, highlights []string) {
 			tr("Your home folder is shared, so compose bind mounts work"),
 		}
 	case recipes.Kubernetes:
-		return tr("A single-node k3s cluster with a kubeconfig written to ~/.gvx/k3s."), []string{
+		return tr("A k3s cluster with a kubeconfig written to ~/.gvx/k3s. Add nodes once it runs."), []string{
 			tr("API server on 127.0.0.1:6443"),
 			tr("NodePorts 30000–30019 reachable from the host"),
 			tr("Optional load balancer on 127.0.0.1:8080 and :8443"),

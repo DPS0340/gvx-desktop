@@ -15,9 +15,8 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
-// The Pods page is the app's view of the cluster: its pods, the workloads
-// that keep them, and the services that lead to them, one at a time, as
-// KubeView chooses.
+// The cluster's views, a page each: its pods, the workloads that keep
+// them, and the services that lead to them.
 const (
 	KubePods = iota
 	KubeWorkloads
@@ -51,10 +50,24 @@ func ownedPods(list []kubeapi.Pod, ref WorkloadRef) []kubeapi.Pod {
 	return out
 }
 
-// GoKube opens the Pods page on one of its views.
-func (m *Model) GoKube(view int) {
-	m.KubeView.Set(view)
-	m.Go(PagePods)
+// GoKube opens the page of one of the cluster's views.
+func (m *Model) GoKube(view int) { m.Go(kubePage(view)) }
+
+// kubePage is the page of a view of the cluster.
+func kubePage(view int) string {
+	switch view {
+	case KubeWorkloads:
+		return PageWorkloads
+	case KubeServices:
+		return PageServices
+	}
+	return PagePods
+}
+
+// clusterPage reports whether page shows what runs in the cluster: its
+// pods, workloads or services, which need it running.
+func clusterPage(page string) bool {
+	return page == PagePods || page == PageWorkloads || page == PageServices
 }
 
 // ShowWorkloadPods opens the Pods view on the pods of a workload.
@@ -64,7 +77,6 @@ func (m *Model) ShowWorkloadPods(w kubeapi.Workload) {
 	}
 	m.PodOwner.Set(refOf(w))
 	m.PodQuery.Set("")
-	m.KubeView.Set(KubePods)
 	m.Go(PagePods)
 }
 
@@ -383,7 +395,7 @@ func forwardable(s kubeapi.Service) string {
 // also read while a port forward runs to one, which ends when it goes.
 func (m *Model) wantsDetails() (workloads, services bool) {
 	page := ggui.Peek(m.Page)
-	shown := page == PagePods || page == PageKubernetes
+	shown := clusterPage(page) || page == PageKubernetes
 	return shown, shown || slices.ContainsFunc(ggui.Peek(m.Forwards), func(f PortForward) bool { return f.Target.Service != "" })
 }
 

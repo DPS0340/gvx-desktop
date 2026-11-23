@@ -39,6 +39,8 @@ const (
 	PageContainers = "containers"
 	PageNetworks   = "networks"
 	PagePods       = "pods"
+	PageWorkloads  = "workloads"
+	PageServices   = "services"
 	PageImages     = "images"
 	PageVolumes    = "volumes"
 	PageSnapshots  = "snapshots"
@@ -207,10 +209,8 @@ type Model struct {
 	PodContainer    *ggui.StateValue[string]
 	PodLogContainer *ggui.DerivedValue[string]
 	PodLogs         *ggui.StateValue[ContainerLogs]
-	// KubeView is the view of the cluster the Pods page shows (KubePods,
-	// KubeWorkloads or KubeServices), and PodOwner the workload whose pods
-	// alone the Pods view shows, if one is set.
-	KubeView *ggui.StateValue[int]
+	// PodOwner is the workload whose pods alone the Pods page shows, if
+	// one is set.
 	PodOwner *ggui.StateValue[WorkloadRef]
 	// Workloads and Services are the cluster's, read with its pods while a
 	// page shows them; the queries filter their tables.
@@ -440,7 +440,6 @@ func NewModel(st store.Store, dataDir string) *Model {
 		PodDetail:         ggui.State(0),
 		PodContainer:      ggui.State(""),
 		PodLogs:           ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
-		KubeView:          ggui.State(KubePods),
 		PodOwner:          ggui.State(WorkloadRef{}),
 		Workloads:         ggui.State(Listing[kubeapi.Workload]{}).WithEqual(workloadsEqual),
 		Services:          ggui.State(Listing[kubeapi.Service]{}).WithEqual(servicesEqual),
@@ -755,11 +754,11 @@ func (m *Model) RunConfirmed() {
 }
 
 // Go switches the page. The Containers page opens only while the Docker
-// Engine runs, and the Pods page only while the cluster does, as the
-// sidebar and the menus that lead there say.
+// Engine runs, and the cluster's Pods, Workloads and Services only while
+// the cluster does, as the sidebar and the menus that lead there say.
 func (m *Model) Go(page string) {
 	if (page == PageContainers || page == PageNetworks) && ggui.Peek(m.ContainersAccess) != ContainersOpen ||
-		page == PagePods && ggui.Peek(m.PodsAccess) != PodsOpen {
+		clusterPage(page) && ggui.Peek(m.PodsAccess) != PodsOpen {
 		return
 	}
 	m.Page.Set(page)
@@ -789,7 +788,7 @@ func (m *Model) Go(page string) {
 	case PageKubernetes:
 		m.CheckKubeconfig()
 		m.LoadPods()
-	case PagePods:
+	case PagePods, PageWorkloads, PageServices:
 		m.LoadPods()
 	}
 }
@@ -817,7 +816,6 @@ func (m *Model) Start() {
 	m.followForwards()
 	m.followSandboxUsage()
 	m.followContainerUsage()
-	m.followPodUsage()
 	m.followLinks()
 	// A registration to start at login names the program; one that has
 	// moved since is named again.

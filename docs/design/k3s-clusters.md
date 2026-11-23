@@ -156,10 +156,14 @@ engine and nodes.
 
 ## 3.1 Navigation
 
-Kubernetes leaves the Recipes section of the sidebar for an entry of its
-own, the cluster's page, with Pods, Workloads and Services under it while
-the cluster runs (the Pods page's views; its tabs stay, for a sidebar that
-is hidden).
+The sidebar has a Kubernetes section, under a heading with the ship's
+wheel: Nodes (the cluster's page: start and stop it, its nodes, kubectl),
+then, while the cluster runs, Pods, Workloads and Services, a page each.
+The Docker section is the same: Docker Engine (the engine's page), then,
+while it runs, Networks and Containers. Recipes keeps the image registry.
+Each heading has an icon.
+ggui's section headings take no icon, so each section is a nameless one
+whose first row is the heading (`sidebarHeading`).
 
 ## 4. Phase 3: clusters (design)
 

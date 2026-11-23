@@ -332,7 +332,9 @@ func (m *Model) followPods() {
 	if m.Offline {
 		return
 	}
-	every := ggui.Derived(func() time.Duration { return m.recipePageInterval(recipes.Kubernetes, PagePods, PageKubernetes) })
+	every := ggui.Derived(func() time.Duration {
+		return m.recipePageInterval(recipes.Kubernetes, PagePods, PageWorkloads, PageServices, PageKubernetes)
+	})
 	logs := ggui.Derived(m.followsPodLogs)
 	m.poll(every, m.LoadPods, func() {
 		m.LoadPods()

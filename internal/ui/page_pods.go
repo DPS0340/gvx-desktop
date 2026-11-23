@@ -35,13 +35,18 @@ const (
 	podsListed
 )
 
-// podsPage is the app's view of the k3s cluster: its pods, as the
-// Containers page lists the Docker Engine's containers, with the details
-// of the chosen one under them; the workloads that keep them; and the
-// services that lead to them, one view at a time, with the port forwards
-// that run above each. It tells what to do while the cluster is not
-// running.
-func podsPage(m *Model) ggui.Widget {
+// podsPage, workloadsPage and servicesPage are the app's views of the k3s
+// cluster, a page each: its pods, as the Containers page lists the Docker
+// Engine's containers, with the details of the chosen one under them; the
+// workloads that keep them; and the services that lead to them, with the
+// port forwards that run above each. They tell what to do while the
+// cluster is not running.
+func podsPage(m *Model) ggui.Widget      { return kubeViewPage(m, KubePods, podsView) }
+func workloadsPage(m *Model) ggui.Widget { return kubeViewPage(m, KubeWorkloads, workloadsView) }
+func servicesPage(m *Model) ggui.Widget  { return kubeViewPage(m, KubeServices, servicesView) }
+
+// kubeViewPage is the page of the cluster's view v, which view makes.
+func kubeViewPage(m *Model, v int, view func(*Model) ggui.Widget) ggui.Widget {
 	state := ggui.Derived(func() int {
 		l := m.Pods.Get()
 		switch {
@@ -57,35 +62,27 @@ func podsPage(m *Model) ggui.Widget {
 		return podsAnswered
 	})
 	body := ggui.View(state, func(s int) ggui.Widget {
-		kube := ui.Button(tr("Open Kubernetes page"), func() { m.Go(PageKubernetes) }).Outline()
 		switch s {
 		case 0:
 			stage := ggui.Map(m.PodsAccess, func(a PodsAccess) int { return int(a) })
 			return ggui.View(gateOf(m, recipes.Kubernetes, stage), func(g engineGate) ggui.Widget { return engineNotRunning(m, g, kubeGate()) })
 		case podsWaiting:
 			return ui.Empty(tr("The cluster is starting…"), tr("Its pods show here once the API server answers. k3s takes up to two minutes to come up.")).
-				Media(ui.Spinner().Size(28).Color(colorAmber)).Action(kube).Outline()
+				Media(ui.Spinner().Size(28).Color(colorAmber)).
+				Action(ui.Button(tr("Open Nodes"), func() { m.Go(PageKubernetes) }).Outline()).Outline()
 		case podsFailed:
 			return ui.Alert(tr("Could not reach the API server"), ggui.Peek(m.Pods).Err).Destructive().Icon(icons.Alert)
 		case podsLoading:
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking the API server…"))).Gap(8)
 		}
-		return ui.Tabs(m.KubeView,
-			ui.Tab(tr("Pods"), kubeView(m, podsView(m))),
-			ui.Tab(tr("Workloads"), kubeView(m, workloadsView(m))),
-			ui.Tab(tr("Services"), kubeView(m, servicesView(m))),
-		).Name(tr("Cluster views"))
+		return kubeView(m, view(m))
 	})
-
-	header := ggui.View(m.KubeView, func(v int) ggui.Widget {
-		return pageHeader(kubeViewTitle(v), ui.CaptionOf(ggui.Derived(func() string { return kubeViewSummary(m, v) })),
-			tip(iconButton(lucide.RefreshCw, tr("Refresh"), func() {
-				m.LoadPods()
-				m.LoadPodLogs()
-			}).BindDisabled(ggui.Not(m.PodsOpen)), tr("Refresh")),
-			ui.Button("Kubernetes", func() { m.Go(PageKubernetes) }).Outline().Icon(glyph(lucide.ShipWheel, 16)),
-		)
-	})
+	header := pageHeader(kubeViewTitle(v), ui.CaptionOf(ggui.Derived(func() string { return kubeViewSummary(m, v) })),
+		tip(iconButton(lucide.RefreshCw, tr("Refresh"), func() {
+			m.LoadPods()
+			m.LoadPodLogs()
+		}).BindDisabled(ggui.Not(m.PodsOpen)), tr("Refresh")),
+	)
 	return page(header, body)
 }
 

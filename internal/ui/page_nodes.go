@@ -10,8 +10,8 @@ import (
 	"github.com/ironpark/ggui/widget"
 )
 
-// nodesCard lists the cluster's nodes on the Kubernetes page, with Add
-// node, and Remove for each agent.
+// nodesCard lists the cluster's nodes on the Nodes page, with Add node,
+// and Remove for each agent.
 func nodesCard(m *Model) ggui.Widget {
 	nodes := ggui.Combine(m.Rows, m.KubeNodes, clusterNodes).
 		WithEqual(func(a, b []ClusterNode) bool { return slices.EqualFunc(a, b, ClusterNode.Equal) })
@@ -23,24 +23,24 @@ func nodesCard(m *Model) ggui.Widget {
 		}
 		return b
 	})
-	list := ggui.View(nodes, func(ns []ClusterNode) ggui.Widget {
-		if len(ns) == 0 {
-			return ui.Caption(tr("Set up Kubernetes to add nodes."))
-		}
-		rows := make([]ggui.Widget, 0, len(ns))
-		for i, n := range ns {
-			if i > 0 {
-				rows = append(rows, ui.Divider())
+	return ggui.View(nodes, func(ns []ClusterNode) ggui.Widget {
+		var list ggui.Widget = ui.Caption(tr("Set up Kubernetes to add nodes."))
+		if len(ns) > 0 {
+			rows := make([]ggui.Widget, 0, 2*len(ns))
+			for i, n := range ns {
+				if i > 0 {
+					rows = append(rows, ui.Divider())
+				}
+				rows = append(rows, nodeRow(m, n))
 			}
-			rows = append(rows, nodeRow(m, n))
+			list = widget.Column(rows...).Gap(8).Stretch()
 		}
-		return widget.Column(rows...).Gap(8).Stretch()
+		return ui.Card(
+			ui.CardHeader(trn(len(ns), "%d node", "%d nodes"),
+				tr("Each node runs in a sandbox of its own. Agents join the server on a network the app makes between them.")).Action(add),
+			ui.CardContent(list),
+		)
 	})
-	return ui.Card(
-		ui.CardHeader(tr("Nodes"), tr("Each node runs in a sandbox of its own. Agents join the server on a network the app makes between them.")).
-			Action(add),
-		ui.CardContent(list),
-	)
 }
 
 // nodeRow is a node: its sandbox's state, its name and role, its address,

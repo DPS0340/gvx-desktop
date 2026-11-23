@@ -432,21 +432,7 @@ func (m *Model) followContainerUsage() {
 // wantsPodUsage reports whether what the pods use is read with them: while
 // the Pods view shows them and the cluster is open.
 func (m *Model) wantsPodUsage() bool {
-	return m.Page.Get() == PagePods && m.KubeView.Get() == KubePods && m.PodsOpen.Get()
-}
-
-// followPodUsage lists the pods, and with them what they use, as soon as
-// the Pods page turns to its Pods view; LoadPods reads it every time after,
-// and Go lists them as the page opens. Call it from Start.
-func (m *Model) followPodUsage() {
-	if m.Offline {
-		return
-	}
-	ggui.Watch(ggui.Map(m.KubeView, func(v int) bool { return v == KubePods }), func(on bool) {
-		if on && ggui.Peek(m.Page) == PagePods {
-			m.LoadPods()
-		}
-	})
+	return m.Page.Get() == PagePods && m.PodsOpen.Get()
 }
 
 // ---- Showing ------------------------------------------------------------

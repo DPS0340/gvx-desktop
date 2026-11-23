@@ -32,6 +32,9 @@ icon = "assets/icon.png"
 # ldflags = ""
 # Where ggui build writes its output.
 # output = "build"
+# Graphics driver implementation: "go" (pure-Go) or "zig" (native Metal on
+# macOS, Direct3D 12 on Windows, Vulkan on Linux; requires ggfx v0.1.0+).
+renderer = "zig"
 
 [dev]
 # Build tags for ggui dev. ggui_inspector puts the widget inspector in the

@@ -30,11 +30,12 @@ gocache=${GOCACHE:-$("$go_bin" env GOCACHE)}
 home_dir=${HOME:-/tmp}
 tmp_dir=${TMPDIR:-/tmp}
 
-field() {
-	awk -v key="$1" '
-		/^\[app\][[:space:]]*$/ { in_app = 1; next }
-		/^\[/ { in_app = 0 }
-		in_app && index($0, key " = \"") == 1 {
+section_field() {
+	awk -v sec="[$1]" -v key="$2" '
+		{ line = $0; sub(/[[:space:]]*$/, "", line) }
+		line == sec { in_sec = 1; next }
+		/^\[/ { in_sec = 0 }
+		in_sec && index($0, key " = \"") == 1 {
 			sub(/^[^"]*"/, "")
 			sub(/"[[:space:]]*$/, "")
 			print
@@ -43,9 +44,10 @@ field() {
 	' "$repo_root/ggui.toml"
 }
 
-app_name=$(field name)
-app_id=$(field id)
-app_version=$(field version)
+app_name=$(section_field app name)
+app_id=$(section_field app id)
+app_version=$(section_field app version)
+build_renderer=$(section_field build renderer)
 [ -n "$app_name" ] || { echo "repro-build: ggui.toml has no [app] name" >&2; exit 1; }
 [ -n "$app_id" ] || { echo "repro-build: ggui.toml has no [app] id" >&2; exit 1; }
 [ -n "$app_version" ] || { echo "repro-build: ggui.toml has no [app] version" >&2; exit 1; }
@@ -155,6 +157,14 @@ binary)
 	if [ "$goos" = windows ] && [ "${WINDOWS_GUI:-0}" = 1 ]; then
 		ldflags="$ldflags -H=windowsgui"
 	fi
+	set --
+	if [ "$build_renderer" = zig ]; then
+		case "$goos/$goarch" in
+		darwin/amd64|darwin/arm64|windows/amd64|windows/arm64|linux/amd64|linux/arm64)
+			set -- -tags=ggfxzig
+			;;
+		esac
+	fi
 	exec env -i \
 		PATH="$gobin_dir:/usr/local/bin:/usr/bin:/bin" \
 		HOME="$home_dir" \
@@ -190,6 +200,7 @@ binary)
 			-trimpath \
 			-buildmode=exe \
 			-compiler=gc \
+			"$@" \
 			-ldflags="$ldflags" \
 			-o "$out_abs" \
 			.
@@ -285,9 +296,18 @@ package)
 			run_ggui build --target windows --out "$outdir_abs" --ldflags "-buildid= -X main.version=$version" "$@"
 		)
 		exe="$outdir_abs/$app_name.exe"
+		dll="$outdir_abs/ggfx_driver.dll"
 		zip="$outdir_abs/gvx-desktop-$version-windows-$arch.zip"
 		rm -f "$zip"
-		run_repro_pack zip "$epoch" "$zip" "$exe"
+		if [ -f "$dll" ]; then
+			run_repro_pack zip "$epoch" "$zip" "$exe" "$dll"
+		else
+			if [ "$build_renderer" = zig ]; then
+				echo "repro-build: expected $dll beside $exe for renderer=zig" >&2
+				exit 1
+			fi
+			run_repro_pack zip "$epoch" "$zip" "$exe"
+		fi
 		;;
 	linux)
 		(
@@ -295,6 +315,10 @@ package)
 			run_ggui build --target linux --format tar,deb,rpm --out "$outdir_abs" --ldflags "-buildid= -X main.version=$version" "$@"
 		)
 		tree="$outdir_abs/gvx-desktop-linux-$arch"
+		if [ "$build_renderer" = zig ] && [ ! -f "$tree/usr/lib/gvx-desktop/libggfx_driver.so" ]; then
+			echo "repro-build: expected $tree/usr/lib/gvx-desktop/libggfx_driver.so for renderer=zig" >&2
+			exit 1
+		fi
 		tarball="$outdir_abs/gvx-desktop-$version-linux-$arch.tar.gz"
 		rm -f "$tarball"
 		run_repro_pack tar "$epoch" "$tarball" "$tree"

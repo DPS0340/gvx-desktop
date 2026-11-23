@@ -6,7 +6,7 @@
 //
 // Usage:
 //
-//	go run ./release/repro-pack.go zip EPOCH OUT.zip FILE
+//	go run ./release/repro-pack.go zip EPOCH OUT.zip FILE [FILE...]
 //	go run ./release/repro-pack.go tar EPOCH OUT.tar.gz TREE_DIR
 package main
 
@@ -22,12 +22,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
 func main() {
-	if len(os.Args) != 5 {
-		fmt.Fprintf(os.Stderr, "usage: repro-pack <zip|tar> EPOCH OUT SRC\n")
+	if len(os.Args) < 5 {
+		fmt.Fprintf(os.Stderr, "usage: repro-pack <zip|tar> EPOCH OUT SRC...\n")
 		os.Exit(2)
 	}
 	mode := os.Args[1]
@@ -37,13 +38,17 @@ func main() {
 	}
 	mtime := time.Unix(epoch, 0).UTC()
 	outPath := os.Args[3]
-	srcPath := os.Args[4]
+	srcArgs := os.Args[4:]
 
 	switch mode {
 	case "zip":
-		err = packZip(outPath, srcPath, mtime)
+		err = packZip(outPath, srcArgs, mtime)
 	case "tar":
-		err = packTarGz(outPath, srcPath, mtime)
+		if len(srcArgs) != 1 {
+			fmt.Fprintf(os.Stderr, "usage: repro-pack tar EPOCH OUT.tar.gz TREE_DIR\n")
+			os.Exit(2)
+		}
+		err = packTarGz(outPath, srcArgs[0], mtime)
 	default:
 		fatalf("unknown mode %q (expected zip or tar)", mode)
 	}
@@ -57,12 +62,27 @@ func fatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
-func packZip(outPath, srcFile string, mtime time.Time) (err error) {
-	in, err := os.Open(srcFile)
-	if err != nil {
-		return err
+func packZip(outPath string, srcFiles []string, mtime time.Time) (err error) {
+	type zipEntry struct {
+		name string
+		src  string
+		mode fs.FileMode
 	}
-	defer in.Close()
+	entries := make([]zipEntry, 0, len(srcFiles))
+	seen := make(map[string]bool, len(srcFiles))
+	for _, src := range srcFiles {
+		name := filepath.Base(src)
+		if seen[name] {
+			return fmt.Errorf("duplicate zip entry %q", name)
+		}
+		seen[name] = true
+		mode := fs.FileMode(0o644)
+		if strings.EqualFold(filepath.Ext(name), ".exe") {
+			mode = 0o755
+		}
+		entries = append(entries, zipEntry{name: name, src: src, mode: mode})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 
 	f, err := os.Create(outPath)
 	if err != nil {
@@ -78,18 +98,20 @@ func packZip(outPath, srcFile string, mtime time.Time) (err error) {
 	}()
 
 	zw := zip.NewWriter(f)
-	h := &zip.FileHeader{
-		Name:     filepath.Base(srcFile),
-		Method:   zip.Deflate,
-		Modified: mtime,
-	}
-	h.SetMode(0o755)
-	w, err := zw.CreateHeader(h)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(w, in); err != nil {
-		return err
+	for _, e := range entries {
+		h := &zip.FileHeader{
+			Name:     e.name,
+			Method:   zip.Deflate,
+			Modified: mtime,
+		}
+		h.SetMode(e.mode)
+		w, err := zw.CreateHeader(h)
+		if err != nil {
+			return err
+		}
+		if err := copyFile(w, e.src); err != nil {
+			return err
+		}
 	}
 	return zw.Close()
 }

@@ -49,13 +49,17 @@ type Staged struct {
 	Method Method // Bundle or Program
 	Target string // the bundle or program the update replaces
 
-	fresh   string // the new bundle or program, beside Target
-	old     string // a program: where the one it replaces steps aside to
-	stage   string // a bundle: the folder fresh is in
-	script  string // a bundle: the helper Prepare wrote
-	goos    string
-	args    []string
-	swapped bool // a program: fresh is at Target, and the old one at old
+	fresh     string // the new bundle or program, beside Target
+	old       string // a program: where the one it replaces steps aside to
+	libTarget string // a program: optional companion driver library (ggfx_driver.dll / libggfx_driver.so)
+	libFresh  string
+	libOld    string
+	libHadOld bool
+	stage     string // a bundle: the folder fresh is in
+	script    string // a bundle: the helper Prepare wrote
+	goos      string
+	args      []string
+	swapped   bool // a program: fresh is at Target, and the old one at old
 }
 
 // Stage downloads the build of rel that installs the app as in has it,
@@ -90,18 +94,36 @@ func fetch(ctx context.Context, rel Release, name string, w io.Writer, progress 
 	return ghrelease.Download(ctx, a, want, w, maxDownload, progress)
 }
 
-// programPaths are where a new program waits beside target, and where
-// target steps aside to when the new one takes its place.
+// programPaths are where a new program (or companion library) waits beside
+// target, and where target steps aside to when the new one takes its place.
 func programPaths(target, goos string) (fresh, old string) {
 	if goos == "windows" {
-		base := strings.TrimSuffix(target, filepath.Ext(target))
-		return base + ".new.exe", base + ".old.exe"
+		if ext := filepath.Ext(target); ext != "" {
+			base := strings.TrimSuffix(target, ext)
+			return base + ".new" + ext, base + ".old" + ext
+		}
 	}
 	return target + ".new", target + ".old"
 }
 
+// driverLibraryTarget returns where the bundled Zig renderer shared library
+// sits for a Program install at target: beside the executable on Windows
+// (ggfx_driver.dll), and in ../lib/<package>/libggfx_driver.so on Linux to
+// match the LibraryPath ggui links into the binary.
+func driverLibraryTarget(target, goos string) string {
+	switch goos {
+	case "windows":
+		return filepath.Join(filepath.Dir(target), "ggfx_driver.dll")
+	case "linux":
+		return filepath.Join(filepath.Dir(target), "..", "lib", Package, "libggfx_driver.so")
+	default:
+		return ""
+	}
+}
+
 // stageProgram downloads the archive of rel for goos and goarch beside
-// target, and unpacks its program there, at programPaths' fresh.
+// target, and unpacks its program (and bundled driver library, when present)
+// there, at programPaths' fresh.
 func stageProgram(ctx context.Context, rel Release, target, goos, goarch string, progress func(done, total int64)) (*Staged, error) {
 	name, ok := AssetName(rel.Tag, goos, goarch, Program)
 	if !ok {
@@ -120,17 +142,16 @@ func stageProgram(ctx context.Context, rel Release, target, goos, goarch string,
 		return nil, err
 	}
 	fresh, old := programPaths(target, goos)
-	out, err := os.OpenFile(fresh, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-	if err != nil {
-		return nil, err
+	libTarget := driverLibraryTarget(target, goos)
+	libFresh, libOld := "", ""
+	if libTarget != "" {
+		libFresh, libOld = programPaths(libTarget, goos)
 	}
+	var hasLib bool
 	if goos == "windows" {
-		err = unzipProgram(archive, out)
+		hasLib, err = unzipProgram(archive, fresh, libFresh)
 	} else {
-		err = untarProgram(archive, out)
-	}
-	if cerr := out.Close(); err == nil {
-		err = cerr
+		hasLib, err = untarProgram(archive, fresh, libFresh)
 	}
 	if err == nil {
 		err = checkProgram(fresh, goos)
@@ -138,58 +159,138 @@ func stageProgram(ctx context.Context, rel Release, target, goos, goarch string,
 	if err == nil {
 		err = os.Chmod(fresh, 0o755)
 	}
+	if err == nil && hasLib {
+		err = checkProgram(libFresh, goos)
+	}
 	if err != nil {
 		os.Remove(fresh)
+		if hasLib {
+			os.Remove(libFresh)
+		}
 		return nil, err
 	}
-	return &Staged{Tag: rel.Tag, Method: Program, Target: target, fresh: fresh, old: old, goos: goos}, nil
+	st := &Staged{Tag: rel.Tag, Method: Program, Target: target, fresh: fresh, old: old, goos: goos}
+	if hasLib {
+		st.libTarget, st.libFresh, st.libOld = libTarget, libFresh, libOld
+	}
+	return st, nil
 }
 
-// unzipProgram copies the program out of a Windows release's zip, which
-// holds the .exe alone.
-func unzipProgram(archive *os.File, out io.Writer) error {
-	st, err := archive.Stat()
+func writeStagedFile(dst string, r io.Reader, mode fs.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return err
+	}
+	err = copyCapped(out, r)
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(dst)
+	}
+	return err
+}
+
+// unzipProgram copies the program (and optional ggfx_driver.dll) out of a
+// Windows release's zip.
+func unzipProgram(archive *os.File, exeDst, libDst string) (hasLib bool, err error) {
+	st, err := archive.Stat()
+	if err != nil {
+		return false, err
 	}
 	zr, err := zip.NewReader(archive, st.Size())
 	if err != nil {
-		return err
+		return false, err
 	}
+	var gotExe bool
 	for _, f := range zr.File {
-		if f.FileInfo().IsDir() || !strings.EqualFold(path.Ext(f.Name), ".exe") {
+		if f.FileInfo().IsDir() {
 			continue
 		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
+		base := path.Base(strings.ReplaceAll(f.Name, `\`, "/"))
+		switch {
+		case !gotExe && strings.EqualFold(path.Ext(base), ".exe"):
+			rc, err := f.Open()
+			if err != nil {
+				return hasLib, err
+			}
+			err = writeStagedFile(exeDst, rc, 0o755)
+			rc.Close()
+			if err != nil {
+				return hasLib, err
+			}
+			gotExe = true
+		case libDst != "" && !hasLib && strings.EqualFold(base, "ggfx_driver.dll"):
+			rc, err := f.Open()
+			if err != nil {
+				return hasLib, err
+			}
+			err = writeStagedFile(libDst, rc, 0o644)
+			rc.Close()
+			if err != nil {
+				return hasLib, err
+			}
+			hasLib = true
 		}
-		defer rc.Close()
-		return copyCapped(out, rc)
 	}
-	return errors.New("the archive holds no program")
+	if !gotExe {
+		if hasLib {
+			os.Remove(libDst)
+		}
+		return false, errors.New("the archive holds no program")
+	}
+	return hasLib, nil
 }
 
-// untarProgram copies the program out of a Linux release's tarball, which
-// lays out /usr: usr/bin/gvx-desktop.
-func untarProgram(archive io.Reader, out io.Writer) error {
+// untarProgram copies the program (and optional libggfx_driver.so) out of a
+// Linux release's tarball, which lays out /usr: usr/bin/gvx-desktop and
+// usr/lib/gvx-desktop/libggfx_driver.so.
+func untarProgram(archive io.Reader, exeDst, libDst string) (hasLib bool, err error) {
 	gz, err := gzip.NewReader(archive)
 	if err != nil {
-		return err
+		return false, err
 	}
 	tr := tar.NewReader(gz)
+	wantExe := "usr/bin/" + Package
+	wantLib := "usr/lib/" + Package + "/libggfx_driver.so"
+	var gotExe bool
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return errors.New("the archive holds no program")
+			break
 		}
 		if err != nil {
-			return err
+			return hasLib, err
 		}
-		if h.Typeflag == tar.TypeReg && path.Clean(strings.TrimPrefix(h.Name, "./")) == "usr/bin/"+Package {
-			return copyCapped(out, tr)
+		if h.Typeflag != tar.TypeReg {
+			continue
+		}
+		clean := path.Clean(strings.TrimPrefix(h.Name, "./"))
+		switch clean {
+		case wantExe:
+			if err := writeStagedFile(exeDst, tr, 0o755); err != nil {
+				return hasLib, err
+			}
+			gotExe = true
+		case wantLib:
+			if libDst != "" {
+				if err := writeStagedFile(libDst, tr, 0o644); err != nil {
+					return hasLib, err
+				}
+				hasLib = true
+			}
 		}
 	}
+	if !gotExe {
+		if hasLib {
+			os.Remove(libDst)
+		}
+		return false, errors.New("the archive holds no program")
+	}
+	return hasLib, nil
 }
 
 func copyCapped(out io.Writer, in io.Reader) error {
@@ -253,6 +354,44 @@ func unswap(target, fresh, old string) error {
 	return nil
 }
 
+// swapOptional puts fresh in target's place like swap, allowing target to not
+// exist yet (for example when upgrading from a build without a companion
+// driver library to one with one).
+func swapOptional(target, fresh, old string) (hadOld bool, err error) {
+	if err := os.Remove(old); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("an earlier update left %s, which cannot be removed: %w", old, err)
+	}
+	if err := os.Rename(target, old); err == nil {
+		hadOld = true
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	if err := os.Rename(fresh, target); err != nil {
+		if hadOld {
+			if rerr := os.Rename(old, target); rerr != nil {
+				return hadOld, fmt.Errorf("%w; putting the old file back failed too, and it is at %s: %v", err, old, rerr)
+			}
+		}
+		return false, err
+	}
+	return hadOld, nil
+}
+
+// unswapOptional undoes swapOptional.
+func unswapOptional(target, fresh, old string, hadOld bool) error {
+	if err := os.Rename(target, fresh); err != nil {
+		return err
+	}
+	if !hadOld {
+		return nil
+	}
+	if err := os.Rename(old, target); err != nil {
+		os.Rename(fresh, target)
+		return err
+	}
+	return nil
+}
+
 // Prepare readies the update to go in when the app quits, which starts it
 // with args. A program goes in place now, the one running stepping aside,
 // and back should the new one not go in. A bundle stays where it waits:
@@ -264,7 +403,18 @@ func (s *Staged) Prepare(args []string) error {
 		if s.swapped {
 			return nil
 		}
+		if s.libTarget != "" {
+			hadOld, err := swapOptional(s.libTarget, s.libFresh, s.libOld)
+			if err != nil {
+				return err
+			}
+			s.libHadOld = hadOld
+		}
 		if err := swap(s.Target, s.fresh, s.old); err != nil {
+			if s.libTarget != "" {
+				_ = unswapOptional(s.libTarget, s.libFresh, s.libOld, s.libHadOld)
+				s.libHadOld = false
+			}
 			return err
 		}
 		s.swapped = true
@@ -287,7 +437,13 @@ func (s *Staged) Finish() error {
 			return errors.New("the update was not put in place")
 		}
 		if err := start(s.Target, s.args); err != nil {
-			if uerr := unswap(s.Target, s.fresh, s.old); uerr != nil {
+			uerr := unswap(s.Target, s.fresh, s.old)
+			if s.libTarget != "" {
+				if luerr := unswapOptional(s.libTarget, s.libFresh, s.libOld, s.libHadOld); luerr != nil && uerr == nil {
+					uerr = luerr
+				}
+			}
+			if uerr != nil {
 				return fmt.Errorf("the new program did not start: %w; putting the old one back failed: %v", err, uerr)
 			}
 			if serr := start(s.Target, s.args); serr != nil {
@@ -297,6 +453,9 @@ func (s *Staged) Finish() error {
 		}
 		if s.goos != "windows" {
 			os.Remove(s.old) // a Unix program's file may go while it runs
+			if s.libHadOld {
+				os.Remove(s.libOld)
+			}
 		}
 		return nil
 	case Bundle:
@@ -324,7 +483,16 @@ func (s *Staged) Discard() error {
 		if s.swapped {
 			return nil // it is in place; the old one goes at the next start
 		}
-		return os.Remove(s.fresh)
+		var errs []error
+		if err := os.Remove(s.fresh); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+		if s.libFresh != "" {
+			if err := os.Remove(s.libFresh); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
 	case Bundle:
 		return os.RemoveAll(s.stage)
 	}
@@ -365,6 +533,11 @@ func cleanup(in Install, goos string) error {
 		fresh, old := programPaths(in.Path, goos)
 		remove(fresh, false)
 		remove(old, false)
+		if lib := driverLibraryTarget(in.Path, goos); lib != "" {
+			libFresh, libOld := programPaths(lib, goos)
+			remove(libFresh, false)
+			remove(libOld, false)
+		}
 		left, _ := filepath.Glob(filepath.Join(filepath.Dir(in.Path), downloadPrefix+"*"))
 		for _, p := range left {
 			remove(p, false)
@@ -378,15 +551,22 @@ func cleanup(in Install, goos string) error {
 	return errors.Join(errs...)
 }
 
-// RemoveReplaced removes the program an update replaced, which Windows
-// lets go of once the old app has ended: it reports whether it is gone.
+// RemoveReplaced removes the program (and companion driver library) an update
+// replaced, which Windows lets go of once the old app has ended: it reports
+// whether they are gone.
 func RemoveReplaced(in Install) bool {
 	if in.Method != Program {
 		return true
 	}
 	_, old := programPaths(in.Path, runtime.GOOS)
 	err := os.Remove(old)
-	return err == nil || errors.Is(err, fs.ErrNotExist)
+	ok := err == nil || errors.Is(err, fs.ErrNotExist)
+	if lib := driverLibraryTarget(in.Path, runtime.GOOS); lib != "" {
+		_, libOld := programPaths(lib, runtime.GOOS)
+		lerr := os.Remove(libOld)
+		ok = ok && (lerr == nil || errors.Is(lerr, fs.ErrNotExist))
+	}
+	return ok
 }
 
 // stageBundle downloads the disk image of rel, copies the app out of it

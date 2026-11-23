@@ -215,7 +215,7 @@ V=X.Y.Z  # the release version, in a checkout of the tag vX.Y.Z
 GO111MODULE=on GOPROXY=https://proxy.golang.org/ GOSUMDB=sum.golang.org \
   GOENV=off GOWORK=off GOTELEMETRY=off GOFIPS140=off GOEXPERIMENT= GODEBUG= GOFLAGS= GOBIN= \
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v2 GOTOOLCHAIN=go1.27.4 \
-  go install -trimpath -pgo=off -compiler=gc \
+  go install -trimpath -pgo=off -compiler=gc -tags=ggfxzig \
   -ldflags="-s -w -buildid= -X main.version=$V -X github.com/ironpark/ggui.buildID=io.github.ironpark.gvx-desktop" \
   -- "github.com/ironpark/gvx-desktop@v$V"
 ```

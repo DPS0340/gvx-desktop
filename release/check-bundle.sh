@@ -32,6 +32,9 @@ got() {
 [ -f "$app/Contents/_CodeSignature/CodeResources" ] || fail "the bundle is not signed, so macOS would call it damaged once downloaded"
 exe="$app/Contents/MacOS/$(got CFBundleExecutable)"
 [ -x "$exe" ] || fail "no executable at $exe"
+if [ "$(field renderer)" = "zig" ]; then
+	[ -f "$app/Contents/Frameworks/libggfx_driver.dylib" ] || fail "the bundle has no Contents/Frameworks/libggfx_driver.dylib"
+fi
 ent="com.apple.security.virtualization"
 if command -v codesign >/dev/null 2>&1; then
 	codesign -d --entitlements - --xml "$app" 2>/dev/null | grep -Fq "<key>$ent</key>" ||

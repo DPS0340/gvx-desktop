@@ -77,6 +77,7 @@ jobs:
         run: |
           for arch in amd64 arm64; do
             GOARCH="$arch" ggui build --target windows --out "build/windows-$arch"
+            test -f "build/windows-$arch/ggfx_driver.dll"
           done
       - name: Linux
         run: |
@@ -84,6 +85,7 @@ jobs:
           GOARCH=arm64 ggui build --target linux --format tar --out build/linux-arm64
           sudo apt-get install -y ./build/linux/gvx-desktop_*_amd64.deb
           test -x /usr/bin/gvx-desktop
+          test -f /usr/lib/gvx-desktop/libggfx_driver.so
           test -f /usr/share/applications/io.github.ironpark.gvx-desktop.desktop
 
   # install.ps1 is what the README tells Windows users to pipe into iex:

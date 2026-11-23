@@ -161,12 +161,128 @@ func TestProgramUpdate(t *testing.T) {
 func TestProgramPaths(t *testing.T) {
 	for _, c := range []struct{ goos, target, fresh, old string }{
 		{"windows", `C:\Apps\GVX Desktop\GVX Desktop.exe`, `C:\Apps\GVX Desktop\GVX Desktop.new.exe`, `C:\Apps\GVX Desktop\GVX Desktop.old.exe`},
+		{"windows", `C:\Apps\GVX Desktop\ggfx_driver.dll`, `C:\Apps\GVX Desktop\ggfx_driver.new.dll`, `C:\Apps\GVX Desktop\ggfx_driver.old.dll`},
 		{"linux", "/home/me/.local/bin/gvx-desktop", "/home/me/.local/bin/gvx-desktop.new", "/home/me/.local/bin/gvx-desktop.old"},
+		{"linux", "/home/me/.local/lib/gvx-desktop/libggfx_driver.so", "/home/me/.local/lib/gvx-desktop/libggfx_driver.so.new", "/home/me/.local/lib/gvx-desktop/libggfx_driver.so.old"},
 	} {
 		fresh, old := programPaths(c.target, c.goos)
 		if fresh != c.fresh || old != c.old {
 			t.Errorf("%s: %s, %s", c.target, fresh, old)
 		}
+	}
+}
+
+func TestProgramUpdateWithDriverLibrary(t *testing.T) {
+	zipWithDLL := func(t *testing.T, program, dll []byte) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, _ := zw.Create("GVX Desktop.exe")
+		w.Write(program)
+		w, _ = zw.Create("ggfx_driver.dll")
+		w.Write(dll)
+		zw.Close()
+		return buf.Bytes()
+	}
+	tarWithSO := func(t *testing.T, program, so []byte) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gz)
+		for _, d := range []string{"usr/", "usr/bin/", "usr/lib/", "usr/lib/gvx-desktop/"} {
+			tw.WriteHeader(&tar.Header{Name: d, Typeflag: tar.TypeDir, Mode: 0o755})
+		}
+		for _, f := range []struct {
+			name string
+			mode int64
+			data []byte
+		}{
+			{"usr/bin/gvx-desktop", 0o755, program},
+			{"usr/lib/gvx-desktop/libggfx_driver.so", 0o644, so},
+		} {
+			tw.WriteHeader(&tar.Header{Name: f.name, Typeflag: tar.TypeReg, Mode: f.mode, Size: int64(len(f.data))})
+			tw.Write(f.data)
+		}
+		tw.Close()
+		gz.Close()
+		return buf.Bytes()
+	}
+
+	for _, c := range []struct {
+		goos, magic string
+		hadPrevLib  bool
+	}{
+		{"windows", "MZ", false},
+		{"windows", "MZ", true},
+		{"linux", "\x7fELF", false},
+		{"linux", "\x7fELF", true},
+	} {
+		label := c.goos + "-fresh-lib"
+		if c.hadPrevLib {
+			label = c.goos + "-replace-lib"
+		}
+		t.Run(label, func(t *testing.T) {
+			name, _ := AssetName("v0.6.0", c.goos, "amd64", Program)
+			var body []byte
+			if c.goos == "windows" {
+				body = zipWithDLL(t, []byte(c.magic+" new exe"), []byte(c.magic+" new lib"))
+			} else {
+				body = tarWithSO(t, []byte(c.magic+" new exe"), []byte(c.magic+" new lib"))
+			}
+			rel := serveRelease(t, name, body, "")
+
+			root := t.TempDir()
+			var target string
+			if c.goos == "windows" {
+				target = filepath.Join(root, "GVX Desktop.exe")
+			} else {
+				binDir := filepath.Join(root, "bin")
+				os.MkdirAll(binDir, 0o755)
+				target = filepath.Join(binDir, "gvx-desktop")
+			}
+			os.WriteFile(target, []byte(c.magic+" old exe"), 0o755)
+			libTarget := driverLibraryTarget(target, c.goos)
+			if c.hadPrevLib {
+				os.MkdirAll(filepath.Dir(libTarget), 0o755)
+				os.WriteFile(libTarget, []byte(c.magic+" old lib"), 0o644)
+			}
+
+			s, err := stageProgram(context.Background(), rel, target, c.goos, "amd64", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			libFresh, libOld := programPaths(libTarget, c.goos)
+			if got := read(t, libFresh); got != c.magic+" new lib" {
+				t.Fatalf("staged lib = %q", got)
+			}
+
+			if err := s.Prepare(nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := read(t, target); got != c.magic+" new exe" {
+				t.Errorf("after Prepare exe = %q", got)
+			}
+			if got := read(t, libTarget); got != c.magic+" new lib" {
+				t.Errorf("after Prepare lib = %q", got)
+			}
+			if c.hadPrevLib {
+				if got := read(t, libOld); got != c.magic+" old lib" {
+					t.Errorf("old lib = %q", got)
+				}
+			} else if exists(libOld) {
+				t.Errorf("unexpected old lib at %s", libOld)
+			}
+
+			if err := cleanup(Install{Method: Program, Path: target}, c.goos); err != nil {
+				t.Fatal(err)
+			}
+			if exists(libFresh) || exists(libOld) {
+				t.Errorf("cleanup left staged/old lib files")
+			}
+			if got := read(t, libTarget); got != c.magic+" new lib" {
+				t.Errorf("cleanup touched live lib: %q", got)
+			}
+		})
 	}
 }
 

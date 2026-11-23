@@ -431,7 +431,7 @@ func kubeNotesCard() ggui.Widget {
 			note("CNI", tr("flannel and Calico (VXLAN) work, with NetworkPolicy. Cilium needs eBPF and does not run.")),
 			note("NodePorts", tr("Only the published range 30000–30019 reaches the host. Widen it in the sandbox settings.")),
 			note(tr("Load balancers"), tr("With the service load balancer on (Settings → Kubernetes), a LoadBalancer service's ports 80 and 443 reach 127.0.0.1:8080 and :8443. Off, such a service stays pending; use a NodePort instead.")),
-			note(tr("Images built here"), tr("Push them to the image registry recipe (Images → Docker Engine → Push to cluster registry), and run them as host.docker.internal:5001/NAME:TAG.")),
+			note(tr("Images built here"), tr("Load them into the cluster's nodes (Images → Docker Engine → Load into cluster) and run them by name, with a tag other than latest. Or push them to the image registry recipe (Push to cluster registry) and run them as host.docker.internal:5001/NAME:TAG.")),
 			note(tr("Memory limits"), tr("Pod memory limits are enforced by polling, so a short burst can pass them.")),
 		).Gap(10).Stretch()),
 	)

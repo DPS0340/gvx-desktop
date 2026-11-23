@@ -237,6 +237,7 @@ func dockerImagesView(m *Model) ggui.Widget {
 					ui.MenuItem(tr("Inspect"), func() { m.ExploreDockerImage(img, ExploreInspect) }),
 					ui.MenuItem(tr("Pull again"), func() { m.OpenDockerPull(ref); m.Pull() }).Disabled(!img.Pullable()),
 					ui.MenuItem(tr("Push to cluster registry"), func() { m.PushToRegistry(img) }).Disabled(!img.Pullable()),
+					ui.MenuItem(tr("Load into cluster"), func() { m.LoadIntoCluster(img) }).Disabled(!img.Pullable() || img.ForeignArch()),
 					ui.MenuItem(tr("Copy reference"), func() { m.Copy(ref, ref) }),
 					ui.MenuItem(tr("Copy ID"), func() { m.Copy(img.ID, img.ShortID) }),
 				}

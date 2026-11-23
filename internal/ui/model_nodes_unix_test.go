@@ -78,7 +78,7 @@ func TestAddNode(t *testing.T) {
 	m.CreateFromRecipe(recipes.Kubernetes)
 	server, _ := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Kubernetes)
 	id := server.Spec.ID
-	until(t, p, "the server to be up", func() bool { st := m.sup.State(id); return st.Status == sandbox.Running && st.Control })
+	until(t, p, "the server to be up, as the model shows it", func() bool { return AddNodeBlocked(ggui.Peek(m.Rows)) == "" })
 	firstPID := m.sup.State(id).PID
 
 	m.AddNode()

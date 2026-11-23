@@ -1,6 +1,6 @@
 # Kubernetes clusters, as kind makes them
 
-Status: phase 1 (nodes) implemented; phases 2 and 3 are designs.
+Status: phases 1 (nodes) and 2 (images) implemented; phase 3 is a design.
 
 The Kubernetes recipe runs one k3s server in one sandbox. kind (and k3d,
 its k3s twin) make a cluster of several nodes, one container each, several
@@ -132,14 +132,36 @@ too; their volumes stay, as the server's does.
   cluster stops and starts whole; a node is removed alone; deleting the
   server deletes the cluster.
 
-## 3. Phase 2: images (later)
+## 3. Phase 2: images
 
-`Load into cluster` on an image of the Docker Engine: `docker save` from
-dockerd, piped into `ctr -n k8s.io images import -` on each running node
-through rungv's exec with standard input. Nodes started later get it from
-the server's registry mirror or a new load.
+**Load into cluster**, in a Docker Engine image's menu (Images → Docker
+Engine), puts the image into every running node of the cluster:
 
-## 4. Phase 3: clusters (later)
+- the app saves it from the engine (`GET /images/{name}/get`,
+  `dockerapi.Client.SaveImage`, as `docker save` does) to a temporary file;
+- and pipes the file into `ctr -n k8s.io images import -` on each node
+  through rungv's exec with standard input (`nodenet.ImportImage`), one
+  node after another. k3s's `ctr` finds its containerd by itself.
+
+Pods then run it by its name without pulling it, while their pull policy
+lets them: `IfNotPresent`, the default for a tag other than `latest`. A
+node that is not running, or one added later, does not get it: load it
+again, as with kind. The image needs a tag, and this computer's CPU. It
+needs rungv v0.20 (exec).
+
+Verified in `TestHarnessTwoNodes`: `alpine:3.20`, saved by rungv, goes into
+both nodes, and a pod on the agent runs it with `imagePullPolicy: Never`.
+`internal/ui`'s `TestLoadIntoCluster` checks the model's side with a stand-in
+engine and nodes.
+
+## 3.1 Navigation
+
+Kubernetes leaves the Recipes section of the sidebar for an entry of its
+own, the cluster's page, with Pods, Workloads and Services under it while
+the cluster runs (the Pods page's views; its tabs stay, for a sidebar that
+is hidden).
+
+## 4. Phase 3: clusters (design)
 
 The recipe's single-cluster assumptions (`recipes.Kubeconfig`, the context
 `gvx-k3s`, ports 6443 and 30000-30019, the volume `k3s`,

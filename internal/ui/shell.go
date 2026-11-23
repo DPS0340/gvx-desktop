@@ -132,23 +132,51 @@ func sidebar(m *Model) ggui.Widget {
 	return ggui.View(open, func(o [2]bool) ggui.Widget { return sidebarFor(m, o[0], o[1]) })
 }
 
+// The sidebar's entries for the Pods page's other views, which are not
+// pages of their own.
+const (
+	navWorkloads = "pods/workloads"
+	navServices  = "pods/services"
+)
+
+// navKey is the sidebar entry of page on the cluster view kubeView.
+func navKey(page string, kubeView int) string {
+	if page != PagePods {
+		return page
+	}
+	switch kubeView {
+	case KubeWorkloads:
+		return navWorkloads
+	case KubeServices:
+		return navServices
+	}
+	return PagePods
+}
+
 // sidebarFor is the sidebar with the Containers (and Networks) and Pods
 // items only while they open: while their engine runs.
 func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
 	// The image registry has no page of its own: its entry opens its
 	// sandbox, or offers to set it up.
-	nav := ggui.Bind(m.Page.Get, func(key string) {
-		if key == navRegistry {
+	nav := ggui.Bind(func() string { return navKey(m.Page.Get(), m.KubeView.Get()) }, func(key string) {
+		switch key {
+		case navRegistry:
 			m.OpenRegistry()
-			return
+		case PagePods:
+			m.GoKube(KubePods)
+		case navWorkloads:
+			m.GoKube(KubeWorkloads)
+		case navServices:
+			m.GoKube(KubeServices)
+		default:
+			m.Go(key)
 		}
-		m.Go(key)
 	})
 	item := func(key, label string, g *icons.Glyph) ui.SidebarEntry {
 		return ui.SidebarItem(key, label).Leading(glyph(g, 16)).Tooltip(label)
 	}
-	// Containers, Networks and Pods lead into the recipes' engines, and are
-	// there only while those run.
+	// Containers, Networks and the cluster's views lead into the recipes'
+	// engines, and are there only while those run.
 	entries := []ui.SidebarEntry{
 		item(PageDashboard, tr("Dashboard"), lucide.LayoutDashboard),
 		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(runningBadge(m.Running, func(n int) string { return trn(n, "%d sandbox running", "%d sandboxes running") })),
@@ -159,17 +187,24 @@ func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
 				func(n int) string { return trn(n, "%d container running", "%d containers running") })),
 			item(PageNetworks, tr("Networks"), lucide.Network))
 	}
+	// Kubernetes is the cluster, its nodes and how to reach it; under it,
+	// while it runs, what runs in it.
+	kube := item(PageKubernetes, "Kubernetes", lucide.ShipWheel)
 	if pods {
-		entries = append(entries, item(PagePods, tr("Pods"), lucide.Hexagon).Action(runningBadge(m.RunningPods,
-			func(n int) string { return trn(n, "%d pod running", "%d pods running") })))
+		kube = kube.Sub(
+			item(PagePods, tr("Pods"), lucide.Hexagon).Action(runningBadge(m.RunningPods,
+				func(n int) string { return trn(n, "%d pod running", "%d pods running") })),
+			item(navWorkloads, tr("Workloads"), lucide.Boxes),
+			item(navServices, tr("Services"), lucide.Waypoints),
+		)
 	}
 	entries = append(entries,
+		kube,
 		item(PageImages, tr("Images"), lucide.Layers),
 		item(PageVolumes, tr("Volumes"), lucide.HardDrive),
 		item(PageSnapshots, tr("Snapshots"), lucide.Camera),
 		ui.SidebarSection(tr("Recipes")),
 		item(PageDocker, "Docker Engine", dockerIcon),
-		item(PageKubernetes, "Kubernetes", lucide.ShipWheel),
 		item(navRegistry, tr("Image registry"), recipeIcon(recipes.Registry)),
 	)
 	brandTop := 4.0
@@ -675,8 +710,8 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Networks"), close(func() { m.Go(PageNetworks) })).Icon(ic(lucide.Network)).Group(tr("Go to")).Keywords("docker network ls").Disabled(!st.containers),
 			ui.CommandItem(tr("Remove unused networks"), close(m.AskPruneNetworks)).Icon(ic(lucide.Eraser)).Group(tr("Networks")).Keywords("docker network prune clean").Disabled(!st.containers),
 			ui.CommandItem(tr("Pods"), close(func() { m.GoKube(KubePods) })).Icon(ic(lucide.Hexagon)).Group(tr("Go to")).Shortcut("cmd+4").Keywords("kubectl get pods k8s").Disabled(!st.pods),
-			ui.CommandItem(tr("Workloads"), close(func() { m.GoKube(KubeWorkloads) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Keywords("k8s deployments statefulsets daemonsets jobs").Disabled(!st.pods),
-			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Icon(ic(lucide.Network)).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!st.pods),
+			ui.CommandItem(tr("Workloads"), close(func() { m.GoKube(KubeWorkloads) })).Icon(ic(lucide.Boxes)).Group(tr("Go to")).Keywords("k8s deployments statefulsets daemonsets jobs").Disabled(!st.pods),
+			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Icon(ic(lucide.Waypoints)).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!st.pods),
 			ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Shortcut("cmd+5"),
 			ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Keywords("docker images rmi pull"),
 			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Icon(ic(lucide.HardDrive)).Group(tr("Go to")).Shortcut("cmd+6"),

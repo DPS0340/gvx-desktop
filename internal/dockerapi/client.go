@@ -842,3 +842,28 @@ func (c *Client) PruneNetworks(ctx context.Context) ([]string, error) {
 	err := c.do(ctx, http.MethodPost, "/networks/prune", &raw)
 	return raw.NetworksDeleted, err
 }
+
+// SaveImage streams ref as docker save writes it: a tar of the image's
+// layers, config and manifest, tagged with ref. The caller closes it.
+func (c *Client) SaveImage(ctx context.Context, ref string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/images/"+escapeImagePath(ref)+"/get", nil)
+	if err != nil {
+		return nil, err
+	}
+	// An image can take minutes to write; ctx bounds it, not the short API
+	// timeout.
+	res, err := (&http.Client{Transport: c.http.Transport}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode >= 300 {
+		defer res.Body.Close()
+		var e apiError
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		if json.Unmarshal(body, &e) == nil && e.Message != "" {
+			return nil, fmt.Errorf("%s", e.Message)
+		}
+		return nil, fmt.Errorf("save %s: %s", ref, res.Status)
+	}
+	return res.Body, nil
+}

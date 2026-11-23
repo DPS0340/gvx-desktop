@@ -158,6 +158,33 @@ func TestHarnessTwoNodes(t *testing.T) {
 	if logs := kubectl("logs", "p-gvxd-nodenet-agent"); !strings.Contains(logs, "started") {
 		t.Errorf("logs of the agent's pod: %q", logs)
 	}
+	// An image from this computer, as docker save writes one, goes into
+	// both nodes, and a pod on the agent runs it without pulling it.
+	archive := filepath.Join(run, "alpine.tar")
+	if out, err := exec.Command(bin, "pull", "-cache-dir", cache, "alpine:3.20").CombinedOutput(); err != nil {
+		t.Fatalf("rungv pull: %v\n%s", err, out)
+	}
+	if out, err := exec.Command(bin, "save", "-cache-dir", cache, "-o", archive, "alpine:3.20").CombinedOutput(); err != nil {
+		t.Fatalf("rungv save: %v\n%s", err, out)
+	}
+	for _, id := range []string{server.ID, agent.ID} {
+		nodeCtl, _ := sup.Control(id)
+		f, err := os.Open(archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = ImportImage(context.Background(), nodeCtl, f)
+		f.Close()
+		if err != nil {
+			t.Fatalf("import into %s: %v", id, err)
+		}
+	}
+	kubectl("run", "p-loaded", "--image=alpine:3.20", "--image-pull-policy=Never",
+		`--overrides={"spec":{"nodeName":"gvxd-nodenet-agent"}}`, "--", "sh", "-c", "echo loaded; sleep 300")
+	waitFor(t, 2*time.Minute, "the loaded image to run", func() bool {
+		return strings.Contains(kubectl("logs", "p-loaded"), "loaded")
+	})
+
 	ip := strings.TrimSpace(kubectl("get", "pod", "p-gvxd-nodenet-agent", "-o", "jsonpath={.status.podIP}"))
 	var got string
 	waitFor(t, 30*time.Second, "the agent's pod from the server's", func() bool {

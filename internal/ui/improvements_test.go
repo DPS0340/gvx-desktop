@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ironpark/ggui"
 
 	"github.com/ironpark/gvx-desktop/internal/appupdate"
+	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -213,5 +215,127 @@ func TestCommandPaletteHasRecipesAndSandboxes(t *testing.T) {
 		if !names[want] {
 			t.Errorf("command palette missing %q (have: %v)", want, names)
 		}
+	}
+}
+
+func TestSidebarDockerAndKubernetesSubmenus(t *testing.T) {
+	SetLanguage(LangEnglish)
+	dir := t.TempDir()
+	st := store.Store{Dir: dir}
+	set := store.DefaultSettings()
+	set.Language = LangEnglish
+	_ = st.SaveSettings(set)
+	dind := recipes.DockerEngine()
+	k3s := recipes.KubernetesNode()
+	_ = st.SaveSandboxes([]sandbox.Spec{dind, k3s})
+
+	var m *Model
+	p := ggui.ProbeBuilder(func() ggui.Widget { return ggui.Provide(ggui.ReducedMotionKey, true, Build(m)) }, ggui.Sz(1280, 840))
+	p.Setup(func() {
+		m = NewModel(st, dir)
+		m.Offline = true
+		m.Attach(p)
+	})
+	defer p.Close()
+	p.Frame()
+
+	tabs := func() []string {
+		var out []string
+		for _, n := range p.Semantics().Nodes(ggui.RoleTab) {
+			out = append(out, n.Name)
+		}
+		return out
+	}
+
+	// While both engines are stopped, Docker and Kubernetes appear without
+	// separate subheader rows and without their runtime sub-items.
+	stopped := tabs()
+	for _, want := range []string{"Docker", "Kubernetes"} {
+		if !slices.Contains(stopped, want) {
+			t.Errorf("stopped sidebar missing %q (have: %v)", want, stopped)
+		}
+	}
+	for _, unwanted := range []string{"Docker Engine", "Nodes", "Networks", "Containers", "Pods", "Workloads", "Services"} {
+		if slices.Contains(stopped, unwanted) {
+			t.Errorf("stopped sidebar unexpectedly shows %q (have: %v)", unwanted, stopped)
+		}
+	}
+
+	// While both engines run, Networks & Containers nest under Docker and
+	// Pods, Workloads & Services nest under Kubernetes.
+	m.States.Set(map[string]sandbox.State{
+		dind.ID: {Status: sandbox.Running},
+		k3s.ID:  {Status: sandbox.Running},
+	})
+	p.Frame()
+	running := tabs()
+	idx := func(name string) int { return slices.Index(running, name) }
+	if !(idx("Docker") >= 0 && idx("Docker") < idx("Networks") && idx("Networks") < idx("Containers") && idx("Containers") < idx("Kubernetes")) {
+		t.Errorf("unexpected Docker submenu order: %v", running)
+	}
+	if !(idx("Kubernetes") >= 0 && idx("Kubernetes") < idx("Pods") && idx("Pods") < idx("Workloads") && idx("Workloads") < idx("Services")) {
+		t.Errorf("unexpected Kubernetes submenu order: %v", running)
+	}
+
+	// Folding Docker hides Networks and Containers while keeping Docker clickable.
+	clickRole := func(role ggui.Role, name string, xOffset float64) {
+		t.Helper()
+		var rect ggui.Rect
+		found := false
+		for _, n := range p.Semantics().Nodes(role) {
+			if n.Name == name {
+				rect, found = n.Rect, true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%v %q not found in semantics:\n%s", role, name, p.Semantics())
+		}
+		x := rect.Origin.X + rect.Size.W/2
+		if xOffset >= 0 {
+			x = rect.Origin.X + xOffset
+		}
+		p.Click(ggui.Pt(x, rect.Origin.Y+rect.Size.H/2))
+		p.Frame()
+	}
+	clickRole(ggui.RoleDisclosure, "Fold Docker", -1)
+	if ggui.Peek(m.DockerNavOpen) {
+		t.Fatal("expected Docker submenu to fold after clicking chevron")
+	}
+	if ggui.Peek(m.Page) == PageDocker {
+		t.Fatal("clicking fold chevron should not navigate to Docker page")
+	}
+	folded := tabs()
+	if slices.Contains(folded, "Networks") || slices.Contains(folded, "Containers") {
+		t.Errorf("folded Docker should hide sub-items (have: %v)", folded)
+	}
+	// Clicking Docker itself still navigates to PageDocker.
+	clickRole(ggui.RoleTab, "Docker", 24)
+	if ggui.Peek(m.Page) != PageDocker {
+		t.Fatalf("clicking Docker tab navigated to %q, want %q", ggui.Peek(m.Page), PageDocker)
+	}
+
+	// Unfolding Docker restores Networks and Containers.
+	clickRole(ggui.RoleDisclosure, "Unfold Docker", -1)
+	if !ggui.Peek(m.DockerNavOpen) {
+		t.Fatal("expected Docker submenu to unfold")
+	}
+	if restored := tabs(); !slices.Contains(restored, "Networks") || !slices.Contains(restored, "Containers") {
+		t.Errorf("unfolded Docker missing sub-items (have: %v)", restored)
+	}
+
+	// Folding Kubernetes hides Pods/Workloads/Services; navigating directly
+	// to PagePods auto-expands Kubernetes again.
+	clickRole(ggui.RoleDisclosure, "Fold Kubernetes", -1)
+	if ggui.Peek(m.KubeNavOpen) {
+		t.Fatal("expected Kubernetes submenu to fold")
+	}
+	if kFolded := tabs(); slices.Contains(kFolded, "Pods") || slices.Contains(kFolded, "Workloads") || slices.Contains(kFolded, "Services") {
+		t.Errorf("folded Kubernetes should hide sub-items (have: %v)", kFolded)
+	}
+	m.Go(PagePods)
+	p.Frame()
+	if !ggui.Peek(m.KubeNavOpen) {
+		t.Fatal("navigating to PagePods should auto-expand Kubernetes submenu")
 	}
 }

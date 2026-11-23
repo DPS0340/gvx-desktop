@@ -316,6 +316,8 @@ type Model struct {
 	PaletteQuery     *ggui.StateValue[string]
 	QuitOpen         *ggui.StateValue[bool]
 	SidebarNarrow    *ggui.StateValue[bool]
+	DockerNavOpen    *ggui.StateValue[bool]
+	KubeNavOpen      *ggui.StateValue[bool]
 	SandboxStatus    *ggui.StateValue[string]
 	ImageQuery       *ggui.StateValue[string]
 	VolumeQuery      *ggui.StateValue[string]
@@ -512,6 +514,8 @@ func NewModel(st store.Store, dataDir string) *Model {
 		PaletteQuery:     ggui.State(""),
 		QuitOpen:         ggui.State(false),
 		SidebarNarrow:    ggui.State(settings.SidebarNarrow),
+		DockerNavOpen:    ggui.State(true),
+		KubeNavOpen:      ggui.State(true),
 		SandboxStatus:    ggui.State("all"),
 		ImageQuery:       ggui.State(""),
 		VolumeQuery:      ggui.State(""),
@@ -806,14 +810,17 @@ func (m *Model) Go(page string) {
 		m.LoadDocker()
 		m.LoadDockerImages()
 	case PageContainers:
+		m.DockerNavOpen.Set(true)
 		m.LoadDocker()
 	case PageNetworks:
+		m.DockerNavOpen.Set(true)
 		m.LoadDocker()
 		m.LoadDockerNetworks()
 	case PageKubernetes:
 		m.CheckKubeconfig()
 		m.LoadPods()
 	case PagePods, PageWorkloads, PageServices:
+		m.KubeNavOpen.Set(true)
 		m.LoadPods()
 	}
 }

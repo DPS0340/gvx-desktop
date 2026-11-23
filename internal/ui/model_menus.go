@@ -135,7 +135,7 @@ func (m *Model) RecipeMenu(recipe string, show func()) []ggui.MenuItem {
 	id := e.ID
 	var items []ggui.MenuItem
 	if recipe == recipes.Docker && s.SandboxEngine {
-		items = append(items, off(tr("Sandbox Engine (Experimental)")))
+		items = append(items, off(tr("Docker · Sandbox Engine")))
 	} else {
 		switch {
 		case id == "":

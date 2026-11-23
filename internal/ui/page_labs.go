@@ -8,8 +8,7 @@ import (
 )
 
 // labsPage holds what is still experimental, apart from the settings that
-// are not: running containers without a Docker Engine, and amd64 builds in
-// a Rosetta VM, which needs the former.
+// are not: amd64 builds in a Rosetta VM.
 func labsPage(m *Model) ggui.Widget {
 	warning := widget.Row(
 		glyph(lucide.FlaskConical, 15).Color(colorAmber),
@@ -18,8 +17,7 @@ func labsPage(m *Model) ggui.Widget {
 	return page(
 		headed(pageHeader(tr("Labs"), ui.Caption(tr("Experimental features to try before they are done.")))),
 		widget.Box(warning).Pad(10, 12).Radius(8).Fill(rgbA(0xf59e0b, 0x14)).Border(1, rgbA(0xf59e0b, 0x55)),
-		settingsGroup(lucide.Container, tr("Sandbox engine"),
-			sandboxEngineSettings(m),
+		settingsGroup(lucide.Cpu, tr("Cross-architecture builds"),
 			amd64BuilderSettings(m),
 		),
 	)

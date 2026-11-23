@@ -26,6 +26,7 @@ func TestAmd64BuilderSwitchGatingAndRequirementsUI(t *testing.T) {
 	st := store.Store{Dir: dir}
 	set := store.DefaultSettings()
 	set.Language = LangEnglish
+	set.SandboxEngine = false
 	_ = st.SaveSettings(set)
 
 	var m *Model
@@ -66,12 +67,12 @@ func TestAmd64BuilderSwitchGatingAndRequirementsUI(t *testing.T) {
 	})
 	p.Frame()
 
-	// 1. Sandbox engine off: switch is disabled with caption "Needs the sandbox engine above."
+	// 1. Sandbox engine off (compatibility mode): switch is disabled with caption.
 	if !switchDisabled() {
 		t.Error("switch should be disabled while SandboxEngine is off")
 	}
-	if !shows("Needs the sandbox engine above.") {
-		t.Errorf("missing 'Needs the sandbox engine above.' caption:\n%s", p.Semantics())
+	if !shows("Requires the default sandbox engine. Switch off compatibility mode in Settings → Docker.") {
+		t.Errorf("missing compatibility mode caption:\n%s", p.Semantics())
 	}
 	m.SetAmd64Builds(true)
 	if ggui.Peek(m.Settings).Amd64Builds {

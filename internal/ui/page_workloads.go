@@ -13,11 +13,11 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 )
 
-// workloadsView is the Workloads view of the Pods page: the Deployments,
-// StatefulSets, DaemonSets and Jobs that make the cluster's pods, the
-// system's only when asked for, as one table.
+// workloadsView is the Workloads view of the cluster: the Deployments,
+// StatefulSets, DaemonSets and Jobs that make the cluster's pods, filtered
+// via the toolbar query and System workloads switch.
 func workloadsView(m *Model) ggui.Widget {
-	// 0: not read yet, 1: failed, 2: none, 3: only the system's, hidden, 4: some.
+	// 0: not read yet, 1: failed, 2: loaded.
 	state := ggui.Derived(func() int {
 		l := m.Workloads.Get()
 		switch {
@@ -25,25 +25,15 @@ func workloadsView(m *Model) ggui.Widget {
 			return 0
 		case l.Err != "":
 			return 1
-		case len(l.Items) == 0:
-			return 2
-		case len(userWorkloads(l.Items, m.SystemPods.Get())) == 0:
-			return 3
 		}
-		return 4
+		return 2
 	})
 	return ggui.View(state, func(s int) ggui.Widget {
-		media := glyph(lucide.Layers, 32).Color(colorGray)
 		switch s {
 		case 0:
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking the API server…"))).Gap(8)
 		case 1:
 			return ui.Alert(tr("Could not list the workloads"), ggui.Peek(m.Workloads).Err).Destructive().Icon(icons.Alert)
-		case 2:
-			return ui.Empty(tr("No workloads"), tr("Run one with kubectl: kubectl create deployment web --image=nginx:alpine")).Media(media).Outline()
-		case 3:
-			return ui.Empty(tr("No workloads of your own"), tr("Only the cluster's own run, in kube-system. Run one with kubectl: kubectl create deployment web --image=nginx:alpine")).
-				Media(media).Action(ui.Button(tr("Show system workloads"), func() { m.SystemPods.Set(true) }).Outline()).Outline()
 		}
 		return tableCard(workloadsTable(m))
 	})

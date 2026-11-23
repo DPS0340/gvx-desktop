@@ -143,6 +143,7 @@ func TestAContainerTerminalLivesWithItsTab(t *testing.T) {
 	}
 	set := store.DefaultSettings()
 	set.Language = LangEnglish
+	set.SandboxEngine = false
 	_ = st.SaveSettings(set)
 	var m *Model
 	p := ggui.ProbeBuilder(func() ggui.Widget { return ggui.Provide(ggui.ReducedMotionKey, true, Build(m)) }, ggui.Sz(1200, 900))

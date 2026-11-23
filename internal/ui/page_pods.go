@@ -20,19 +20,12 @@ import (
 )
 
 // The states of the Pods page, past the cluster's sandbox's: k3s is still
-// coming up, the API server did not answer, it has yet to, or it answered;
-// and of its Pods view: the cluster has no pods, it has only the system's
-// and those are hidden, the workload chosen has none, or it has some to
-// show.
+// coming up, the API server did not answer, it has yet to, or it answered.
 const (
 	podsWaiting = iota + 1
 	podsFailed
 	podsLoading
 	podsAnswered
-	podsNone
-	podsOnlySystem
-	podsNoneOwned
-	podsListed
 )
 
 // podsPage, workloadsPage and servicesPage are the app's views of the k3s
@@ -146,43 +139,13 @@ func kubeView(m *Model, view ggui.Widget) ggui.Widget {
 	return widget.Padding(widget.Column(forwardsCard(m), view).Stretch(), 12, 0, 0, 0)
 }
 
-// podsView is the Pods view: the table of pods and the chosen one's
-// details, or why there is none.
+// podsView is the Pods view: the table of pods (filtered via the toolbar
+// query, owner chip, and System pods switch) and the chosen pod's details.
 func podsView(m *Model) ggui.Widget {
-	state := ggui.Derived(func() int {
-		l := m.Pods.Get()
-		mine := userPods(l.Items, m.SystemPods.Get())
-		switch {
-		case len(l.Items) == 0:
-			return podsNone
-		case len(mine) == 0:
-			return podsOnlySystem
-		case len(ownedPods(mine, m.PodOwner.Get())) == 0:
-			return podsNoneOwned
-		}
-		return podsListed
-	})
-	return ggui.View(state, func(s int) ggui.Widget {
-		media := glyph(lucide.Hexagon, 32).Color(colorGray)
-		switch s {
-		case podsNone:
-			return ui.Empty(tr("No pods"), tr("Run one with kubectl: kubectl create deployment web --image=nginx:alpine")).Media(media).Outline()
-		case podsOnlySystem:
-			return ui.Empty(tr("No pods of your own"), tr("Only the cluster's own pods run, in kube-system. Run one with kubectl: kubectl create deployment web --image=nginx:alpine")).
-				Media(media).Action(ui.Button(tr("Show system pods"), func() { m.SystemPods.Set(true) }).Outline()).Outline()
-		case podsNoneOwned:
-			ref := ggui.Peek(m.PodOwner)
-			return widget.Column(
-				tableCard(podsTable(m)),
-				ui.Empty(tr("%s %s has no pods", ref.Kind, ref.Name), tr("It has none running now, or they are in a namespace the System switch hides.")).
-					Media(media).Action(ui.Button(tr("Show all pods"), func() { m.PodOwner.Set(WorkloadRef{}) }).Outline()).Outline(),
-			).Gap(16).Stretch()
-		}
-		return widget.Column(
-			tableCard(podsTable(m)),
-			podDetail(m),
-		).Gap(16).Stretch()
-	})
+	return widget.Column(
+		tableCard(podsTable(m)),
+		podDetail(m),
+	).Gap(16).Stretch()
 }
 
 // kubeGate words the Pods page while the cluster does not run.
@@ -315,10 +278,13 @@ func podMenu(m *Model, p kubeapi.Pod) ggui.Widget {
 // ---- Detail -------------------------------------------------------------
 
 // podDetail is the chosen pod: its state and actions, and tabs with its
-// logs and what it is made of.
+// logs and what it is made of. Nothing shows while no pod matches the filter.
 func podDetail(m *Model) ggui.Widget {
 	key := ggui.Map(m.Pod, kubeapi.Pod.Key)
-	return entering(key, func(string) ggui.Widget {
+	return entering(key, func(k string) ggui.Widget {
+		if k == "" {
+			return widget.Box()
+		}
 		header := ggui.View(m.Pod, func(p kubeapi.Pod) ggui.Widget { return podHeader(m, p) })
 		tabs := ui.Tabs(m.PodDetail,
 			ui.Tab(tr("Logs"), podLogsView(m)),

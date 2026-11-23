@@ -83,6 +83,26 @@ func filterContainers(list []dockerapi.Container, q string) []dockerapi.Containe
 	return out
 }
 
+// filterContainersByStatus narrows list to all, running, or stopped containers
+// matching the Sandboxes page status filter.
+func filterContainersByStatus(list []dockerapi.Container, status string) []dockerapi.Container {
+	if status != "running" && status != "stopped" {
+		return list
+	}
+	var out []dockerapi.Container
+	for _, c := range list {
+		running := c.State == "running" || c.State == "restarting" || c.State == "paused"
+		if status == "running" && !running {
+			continue
+		}
+		if status == "stopped" && running {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // containerRow is a row of the containers' table: a container, or the
 // head of a Compose project, which its containers follow unless it is
 // folded.

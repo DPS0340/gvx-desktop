@@ -232,7 +232,7 @@ func TestContainerShellTargetGating(t *testing.T) {
 			se:       true,
 			features: rungv.Features{Control: false},
 			wantWhy:  "Needs rungv v0.20 or later",
-			wantText: "Container exec in the experimental sandbox engine needs rungv v0.20 or later. Update rungv in Settings, then restart the container.",
+			wantText: "Container exec in the sandbox engine needs rungv v0.20 or later. Update rungv in Settings, then restart the container.",
 		},
 		{
 			name:     "engine mode v0.20 paused",
@@ -692,16 +692,17 @@ func TestV020UIScreensAndGating(t *testing.T) {
 	m.EditorOpen.Set(false)
 	p.Frame()
 
-	// 3. Labs: the sandbox engine's notes for v0.20 vs v0.19.
-	m.Go(PageLabs)
+	// 3. Docker page: sandbox engine notes for v0.20 vs v0.19.
+	m.SetSandboxEngine(true)
+	m.Go(PageDocker)
 	p.Frame()
-	if !shows("Also diff, export and commit, on stopped containers too. A container keeps the files it changed when it stops, as in Docker.") {
-		t.Errorf("Settings v0.20 notes missing:\n%s", p.Semantics())
+	if !shows("Works: docker run (-d, -i, -t, --rm), exec, cp, pause, top, update, stats") {
+		t.Errorf("Docker v0.20 notes missing:\n%s", p.Semantics())
 	}
 	m.RungvFeatures.Set(rungv.Features{})
 	p.Frame()
 	if !shows("Update rungv to v0.20 or later for exec, cp, diff, export, commit, pause, top and update.") {
-		t.Errorf("Settings v0.19 upgrade note missing:\n%s", p.Semantics())
+		t.Errorf("Docker v0.19 upgrade note missing:\n%s", p.Semantics())
 	}
 
 	// 4. Containers page in sandbox-engine mode: Terminal gating with fakeSandboxEngine.
@@ -974,6 +975,7 @@ func TestPausedRecipesGateAndPollingStop(t *testing.T) {
 	}
 	set := store.DefaultSettings()
 	set.Language = LangEnglish
+	set.SandboxEngine = false
 	_ = st.SaveSettings(set)
 
 	dockerHits := 0

@@ -125,6 +125,7 @@ func TestTheContainersItemFollowsTheEngine(t *testing.T) {
 	}
 	set := store.DefaultSettings()
 	set.Language = LangEnglish
+	set.SandboxEngine = false
 	_ = st.SaveSettings(set)
 	var m *Model
 	p := ggui.ProbeBuilder(func() ggui.Widget { return ggui.Provide(ggui.ReducedMotionKey, true, Build(m)) }, ggui.Sz(1200, 800))
@@ -211,5 +212,23 @@ func TestTheContainersItemFollowsTheEngine(t *testing.T) {
 	}
 	if !shows("The Docker Engine is not running") || !shows("Start Docker Engine") {
 		t.Errorf("the page does not tell the engine stopped:\n%s", p.Semantics())
+	}
+}
+
+func TestContainersStatusFilter(t *testing.T) {
+	list := []dockerapi.Container{
+		{ID: "1", Names: []string{"/web"}, State: "running"},
+		{ID: "2", Names: []string{"/worker"}, State: "paused"},
+		{ID: "3", Names: []string{"/migrate"}, State: "exited"},
+		{ID: "4", Names: []string{"/draft"}, State: "created"},
+	}
+	if got := len(filterContainersByStatus(list, "all")); got != 4 {
+		t.Errorf("all = %d, want 4", got)
+	}
+	if got := filterContainersByStatus(list, "running"); len(got) != 2 || got[0].ID != "1" || got[1].ID != "2" {
+		t.Errorf("running = %+v, want ids 1,2", got)
+	}
+	if got := filterContainersByStatus(list, "stopped"); len(got) != 2 || got[0].ID != "3" || got[1].ID != "4" {
+		t.Errorf("stopped = %+v, want ids 3,4", got)
 	}
 }

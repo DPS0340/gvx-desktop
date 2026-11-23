@@ -76,6 +76,7 @@ func TestImagesPageDockerTabFollowsEngine(t *testing.T) {
 	}
 	set := store.DefaultSettings()
 	set.Language = LangEnglish
+	set.SandboxEngine = false
 	_ = st.SaveSettings(set)
 
 	var m *Model

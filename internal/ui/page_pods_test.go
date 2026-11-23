@@ -267,13 +267,57 @@ func TestThePodsItemFollowsTheCluster(t *testing.T) {
 		t.Errorf("System pods on, the page does not show coredns:\n%s", p.Semantics())
 	}
 
-	// Only the system's pods, hidden: the page says so, and offers them.
+	// Only system pods, hidden: the normal Pods table and System pods switch
+	// stay visible (no separate "Show system pods" empty-state button).
 	m.SystemPods.Set(false)
 	m.Pods.Set(Listing[kubeapi.Pod]{Loaded: true, Items: []kubeapi.Pod{testPod("kube-system", "coredns-ccb96694c-7xk2m", "Running")}})
 	p.Frame()
-	if !shows("No pods of your own") || !shows("Show system pods") {
-		t.Errorf("the page does not offer the system's pods:\n%s", p.Semantics())
+	if shows("Show system pods") || shows("No pods of your own") {
+		t.Errorf("expected normal table with switch only, not Show system pods button:\n%s", p.Semantics())
 	}
+	if !shows("System pods") || shows("coredns-ccb96694c-7xk2m") {
+		t.Errorf("expected System pods switch visible and coredns filtered out:\n%s", p.Semantics())
+	}
+	m.SystemPods.Set(true)
+	p.Frame()
+	if !shows("coredns-ccb96694c-7xk2m") {
+		t.Errorf("toggling System pods switch on should show coredns:\n%s", p.Semantics())
+	}
+	m.SystemPods.Set(false)
+
+	// Workloads and Services also always render their normal table + System
+	// switch instead of a "Show system ..." empty-state button.
+	m.Workloads.Set(Listing[kubeapi.Workload]{Loaded: true, Items: []kubeapi.Workload{
+		{Kind: kubeapi.KindDeployment, Metadata: kubeapi.Meta{Namespace: "kube-system", Name: "coredns"}, Desired: 1, Ready: 1, UpToDate: 1},
+	}})
+	m.GoKube(KubeWorkloads)
+	p.Frame()
+	if shows("Show system workloads") || shows("No workloads of your own") {
+		t.Errorf("Workloads should show normal table with switch only:\n%s", p.Semantics())
+	}
+	if !shows("System workloads") || shows("coredns") {
+		t.Errorf("Workloads should show System workloads switch and hide coredns:\n%s", p.Semantics())
+	}
+	m.SystemPods.Set(true)
+	p.Frame()
+	if !shows("coredns") {
+		t.Errorf("toggling System workloads on should show coredns:\n%s", p.Semantics())
+	}
+	m.SystemPods.Set(false)
+
+	m.Services.Set(Listing[kubeapi.Service]{Loaded: true, Items: []kubeapi.Service{
+		{Metadata: kubeapi.Meta{Namespace: "kube-system", Name: "kube-dns"}, Spec: kubeapi.ServiceSpec{Type: "ClusterIP"}},
+	}})
+	m.GoKube(KubeServices)
+	p.Frame()
+	if shows("Show system services") || shows("No services of your own") {
+		t.Errorf("Services should show normal table with switch only:\n%s", p.Semantics())
+	}
+	if !shows("System services") || shows("kube-dns") {
+		t.Errorf("Services should show System services switch and hide kube-dns:\n%s", p.Semantics())
+	}
+	m.Go(PagePods)
+	p.Frame()
 
 	// The palette's entry is open too, and is greyed out with the item.
 	m.PaletteOpen.Set(true)

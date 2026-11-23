@@ -224,6 +224,7 @@ func TestSidebarDockerAndKubernetesSubmenus(t *testing.T) {
 	st := store.Store{Dir: dir}
 	set := store.DefaultSettings()
 	set.Language = LangEnglish
+	set.SandboxEngine = false // test both engines stopped first
 	_ = st.SaveSettings(set)
 	dind := recipes.DockerEngine()
 	k3s := recipes.KubernetesNode()

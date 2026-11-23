@@ -171,6 +171,7 @@ type Model struct {
 	// it, which is the first when none is, the tab of its details, and the
 	// last lines of its logs.
 	ContainerQuery    *ggui.StateValue[string]
+	ContainerStatus   *ggui.StateValue[string]
 	SelectedContainer *ggui.StateValue[string]
 	Container         *ggui.DerivedValue[dockerapi.Container]
 	ContainerDetail   *ggui.StateValue[int]
@@ -433,6 +434,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		DockerExposeLAN:   ggui.State(settings.DockerExposeLAN),
 		DockerSSHAgent:    ggui.State(settings.DockerSSHAgent),
 		ContainerQuery:    ggui.State(""),
+		ContainerStatus:   ggui.State("all"),
 		SelectedContainer: ggui.State(""),
 		ContainerDetail:   ggui.State(0),
 		ContainerLogs:     ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
@@ -809,6 +811,7 @@ func (m *Model) Go(page string) {
 	case PageDocker:
 		m.LoadDocker()
 		m.LoadDockerImages()
+		m.LoadDockerNetworks()
 	case PageContainers:
 		m.DockerNavOpen.Set(true)
 		m.LoadDocker()

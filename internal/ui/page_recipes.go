@@ -82,45 +82,234 @@ func recipeHero(m *Model, key string, row ggui.Readable[Row], title, what string
 
 func dockerPage(m *Model) ggui.Widget {
 	row := recipeRow(m, recipes.Docker)
-	// The model follows the engine's containers; see followDocker.
 	sandboxMode := ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine })
 
 	version := ui.CaptionOf(ggui.Derived(func() string {
 		open, se, v := m.ContainersOpen.Get(), sandboxMode.Get(), m.DockerVersion.Get()
 		if open && v.Version != "" {
+			if se {
+				return fmt.Sprintf("Sandbox Engine %s (API %s) · %s/%s · kernel %s", v.Version, v.APIVersion, v.OS, v.Arch, v.KernelVersion)
+			}
 			return fmt.Sprintf("Docker Engine %s (API %s) · %s/%s · kernel %s", v.Version, v.APIVersion, v.OS, v.Arch, v.KernelVersion)
 		}
 		if se {
 			return tr("Containers run directly as gvx sandboxes; the docker CLI talks to GVX Desktop.")
 		}
-		return tr("Containers run inside the sandbox; the docker CLI on this machine talks to dockerd over a Unix socket.")
+		return tr("Compatibility mode: containers run inside a docker:dind sandbox.")
 	}))
 
-	sandboxBanner := ggui.If(sandboxMode, func() ggui.Widget {
-		return noticeBanner(lucide.FlaskConical, 0x3b82f6, false,
-			tr("Experimental sandbox engine is on"),
-			tr("Containers run directly as gvx sandboxes. The Docker Engine sandbox is not used while this mode is on."),
-			ui.Button(tr("Open Labs"), func() { m.Go(PageLabs) }).Outline(),
+	header := pageHeader("Docker", version,
+		dockerModeToggle(m, ui.ButtonSmall),
+		tip(iconButton(lucide.RefreshCw, tr("Refresh containers"), func() {
+			m.LoadDocker()
+			m.LoadDockerImages()
+			m.LoadDockerNetworks()
+			m.CheckLink(m.DockerLink)
+		}), tr("Refresh")),
+		ui.Button(tr("Settings"), func() { m.Go(PageSettings) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.Settings, 14)),
+	)
+
+	body := ggui.View(sandboxMode, func(se bool) ggui.Widget {
+		if se {
+			return sandboxDockerBody(m, row)
+		}
+		return compatDockerBody(m, row)
+	})
+
+	return page(header, body)
+}
+
+// sandboxDockerBody is the default Docker page: native sandbox engine status,
+// BuildKit builder status, quick resource metrics, CLI setup, and notes.
+func sandboxDockerBody(m *Model, dindRow ggui.Readable[Row]) ggui.Widget {
+	dindActive := ggui.Map(dindRow, func(r Row) string {
+		if r.Spec.ID != "" && r.State.Status.Active() {
+			return r.Spec.ID
+		}
+		return ""
+	})
+	dindNotice := ggui.View(dindActive, func(id string) ggui.Widget {
+		if id == "" {
+			return widget.Box()
+		}
+		return noticeBanner(lucide.Info, 0xf59e0b, false,
+			tr("Compatibility docker:dind sandbox is still running"),
+			tr("Your Docker Engine sandbox is still running, but docker no longer reaches it while this mode is on. Stop it manually if you do not need it."),
+			ui.Button(tr("Stop"), func() { m.StopSandbox(id) }).Outline(),
 		)
 	})
 
-	return page(
-		pageHeader("Docker Engine", version,
-			tip(iconButton(lucide.RefreshCw, tr("Refresh containers"), func() { m.LoadDocker(); m.LoadDockerImages(); m.CheckLink(m.DockerLink) }), tr("Refresh")),
+	hero := ggui.View(m.Engine, func(e Engine) ggui.Widget {
+		state := stateLabel(colorGreen, tr("Running"), false, "")
+		if e.Checked && !e.Ready() {
+			state = stateLabel(colorRed, tr("Engine unavailable"), false, e.Err)
+		}
+		hostLine := ui.CaptionOf(ggui.Map(m.DockerEndpoint, func(h string) string {
+			return tr("Each container runs as its own unprivileged gvx sandbox. The Docker API is served on %s.", displayDockerHost(h))
+		}))
+		actions := widget.Row(
+			ui.Button(tr("Pull image"), func() { m.OpenDockerPull("") }).Outline().Icon(glyph(lucide.Download, 14)),
+			ui.Button(tr("Open Containers"), func() { m.Go(PageContainers) }).Icon(glyph(lucide.Container, 14)),
+		).Gap(8)
+		top := widget.Row(
+			widget.Box(glyph(dockerIcon, 26).Color(colorBlue)).Pad(12).Radius(12).Fill(rgbA(0x3b82f6, 0x22)),
+			widget.Expanded(widget.Column(
+				widget.Row(ui.Heading(tr("Sandbox engine")).Size(18), state).Gap(12).Align(widget.AlignCenter),
+				hostLine,
+			).Gap(6)),
+			actions,
+		).Gap(16).Align(widget.AlignCenter)
+		return ui.Card(widget.Column(
+			top,
+			sandboxBuilderStatus(m),
+			ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.Amd64Builds }), func() ggui.Widget {
+				return amd64BuilderStatus(m)
+			}),
+		).Gap(12).Stretch())
+	})
+
+	return widget.Column(
+		dindNotice,
+		hero,
+		dockerMetricsRow(m),
+		widget.Responsive(900,
+			widget.Row(widget.Flex(dockerCLICard(m), 1), widget.Flex(sandboxEngineNotesCard(m), 1)).Gap(16).Stretch(),
+			widget.Column(dockerCLICard(m), sandboxEngineNotesCard(m)).Gap(16).Stretch(),
 		),
-		sandboxBanner,
+	).Gap(16).Stretch()
+}
+
+// compatDockerBody is the Docker page in compatibility mode (docker:dind).
+func compatDockerBody(m *Model, row ggui.Readable[Row]) ggui.Widget {
+	compatBanner := noticeBanner(lucide.Info, 0x3b82f6, false,
+		tr("Compatibility mode (docker:dind)"),
+		tr("Containers run inside an unmodified dockerd sandbox. Switch back to the default sandbox engine to run each container directly as a gvx sandbox."),
+		ui.Button(tr("Use sandbox engine"), func() { m.SetSandboxEngine(true) }).Outline(),
+	)
+	return widget.Column(
+		compatBanner,
 		recipeHero(m, recipes.Docker, row, "docker:dind",
 			tr("An unmodified dockerd in one sandbox. Images and containers persist in the gvx-docker volume; the API is published on %s.", displayDockerHost(m.DockerHost())),
 			dockerIcon),
-		widget.Column(
-			sectionTitle(tr("Containers"), publishedPortsNote(m)),
-			containersSummary(m),
-			dockerImagesSummary(m),
-		).Gap(10).Stretch(),
+		dockerMetricsRow(m),
 		widget.Responsive(900,
 			widget.Row(widget.Flex(dockerCLICard(m), 1), widget.Flex(dockerNotesCard(m), 1)).Gap(16).Stretch(),
 			widget.Column(dockerCLICard(m), dockerNotesCard(m)).Gap(16).Stretch(),
 		),
+	).Gap(16).Stretch()
+}
+
+// dockerMetricsRow shows Containers, Networks, and Images overview cards in
+// the same style as the Dashboard metrics strip.
+func dockerMetricsRow(m *Model) ggui.Widget {
+	big := func(r ggui.Readable[string]) ggui.Widget { return ui.TitleOf(r).Size(24) }
+	pair := func(count, sub ggui.Readable[string]) ggui.Widget {
+		return widget.Row(
+			big(count),
+			ui.CaptionOf(sub).Size(12).NoWrap().Ellipsis(),
+		).Gap(8).Align(widget.AlignBaseline)
+	}
+	ctrRunning := ggui.Derived(func() string {
+		if !m.ContainersOpen.Get() {
+			return "—"
+		}
+		l := m.DockerContainers.Get()
+		if !l.Loaded {
+			return "…"
+		}
+		return itoa(m.RunningContainers.Get())
+	})
+	ctrSub := ggui.Derived(func() string {
+		if !m.ContainersOpen.Get() {
+			return m.ContainersAccess.Get().Reason()
+		}
+		l := m.DockerContainers.Get()
+		if l.Err != "" {
+			return l.Err
+		}
+		if !l.Loaded {
+			return ""
+		}
+		return tr("of %s", itoa(len(l.Items)))
+	})
+	netCount := ggui.Derived(func() string {
+		if !m.ContainersOpen.Get() {
+			return "—"
+		}
+		l := m.DockerNetworks.Get()
+		if !l.Loaded {
+			return "…"
+		}
+		return itoa(len(l.Items))
+	})
+	netSub := ggui.Derived(func() string {
+		if !m.ContainersOpen.Get() {
+			return ""
+		}
+		l := m.DockerNetworks.Get()
+		if !l.Loaded || l.Err != "" {
+			return ""
+		}
+		user := 0
+		for _, n := range l.Items {
+			if !n.Builtin() {
+				user++
+			}
+		}
+		return trn(user, "%d custom", "%d custom")
+	})
+	imgCount := ggui.Derived(func() string {
+		if !m.ContainersOpen.Get() {
+			return "—"
+		}
+		l := m.DockerImages.Get()
+		if !l.Loaded {
+			return "…"
+		}
+		return itoa(len(l.Items))
+	})
+	imgSub := ggui.Derived(func() string {
+		if !m.ContainersOpen.Get() {
+			return ""
+		}
+		l := m.DockerImages.Get()
+		if !l.Loaded || l.Err != "" || len(l.Items) == 0 {
+			return ""
+		}
+		return formatBytes(dockerImagesTotalSize(l.Items))
+	})
+	cards := []ggui.Widget{
+		metric(tr("Containers"), pair(ctrRunning, ctrSub), lucide.Container, func() { m.Go(PageContainers) }),
+		metric(tr("Networks"), pair(netCount, netSub), lucide.Network, func() { m.Go(PageNetworks) }),
+		metric(tr("Images"), pair(imgCount, imgSub), lucide.Layers, func() { m.GoImages(ImagesDocker) }),
+	}
+	return widget.Responsive(760, widget.Grid(3, cards...).Gap(12), widget.Column(cards...).Gap(12).Stretch())
+}
+
+func sandboxEngineNotesCard(m *Model) ggui.Widget {
+	note := func(title, text string) ggui.Widget {
+		return widget.Column(widget.Text(title).Size(13).Weight(ggui.WeightMedium), ui.Caption(text)).Gap(2)
+	}
+	featuresNote := ggui.View(m.RungvFeatures, func(f rungv.Features) ggui.Widget {
+		var text string
+		switch {
+		case f.Control && f.KeepBlobs:
+			text = tr("Supports docker run, exec, cp, pause, top, update, stats (with BLOCK I/O), diff, export, commit, build (BuildKit and Compose), push, offline save, networks, and host Unix socket bind mounts (including /var/run/docker.sock).")
+		case f.Control:
+			text = tr("Works: docker run (-d, -i, -t, --rm), exec, cp, pause, top, update, stats, build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.")
+		default:
+			text = tr("Update rungv to v0.20 or later for exec, cp, diff, export, commit, pause, top and update.")
+		}
+		return note(tr("Capabilities"), text)
+	})
+	return ui.Card(
+		ui.CardHeader(tr("Good to know"), tr("How containers run in the default sandbox engine.")),
+		ui.CardContent(widget.Column(
+			note(tr("Host bind mounts"), tr("Host paths in docker run -v and Compose bind mounts mount directly into each container's sandbox — no shared-folder list is needed.")),
+			note(tr("Ports"), tr("Published ports default to 127.0.0.1 only. Opt in to local network (0.0.0.0) publishing in Settings → Docker.")),
+			note(tr("Architecture"), tr("The engine runs images for this CPU (linux/%s) natively.", goarch())),
+			featuresNote,
+		).Gap(10).Stretch()),
 	)
 }
 
@@ -131,85 +320,6 @@ func displayDockerHost(host string) string {
 		return "unix://" + tildePath(p)
 	}
 	return host
-}
-
-// dockerImagesSummary counts the engine's images and leads to the Docker
-// Engine tab of the Images page.
-func dockerImagesSummary(m *Model) ggui.Widget {
-	line := ggui.Derived(func() [2]string {
-		a, l, se := m.ContainersAccess.Get(), m.DockerImages.Get(), m.Settings.Get().SandboxEngine
-		switch {
-		case a != ContainersOpen:
-			return [2]string{tr("Images inside the Docker Engine"), a.Reason()}
-		case l.Err != "":
-			return [2]string{tr("Could not list Docker images"), l.Err}
-		case !l.Loaded:
-			if se {
-				return [2]string{tr("Loading images…"), ""}
-			}
-			return [2]string{tr("Asking dockerd…"), ""}
-		}
-		sub := tr("Built or pulled inside the Docker Engine sandbox.")
-		if se {
-			sub = tr("Shared with gvx's image cache.")
-		}
-		return [2]string{tr("%d images · %s", len(l.Items), formatBytes(dockerImagesTotalSize(l.Items))), sub}
-	})
-	text := ggui.View(line, func(t [2]string) ggui.Widget {
-		col := []ggui.Widget{widget.Text(t[0]).Size(13).Weight(ggui.WeightMedium)}
-		if t[1] != "" {
-			col = append(col, ui.Caption(t[1]).Size(12).NoWrap().Ellipsis())
-		}
-		return widget.Column(col...).Gap(2)
-	})
-	return ui.Card(widget.Row(
-		glyph(lucide.Layers, 20).Color(colorGray),
-		widget.Expanded(text),
-		ui.Button(tr("Open Images"), func() { m.GoImages(ImagesDocker) }).Outline().Size(ui.ButtonSmall).
-			Icon(glyph(lucide.ArrowRight, 14)),
-	).Gap(14).Align(widget.AlignCenter))
-}
-
-// containersSummary counts the engine's containers and leads to the
-// Containers page, which lists them.
-func containersSummary(m *Model) ggui.Widget {
-	line := ggui.Derived(func() [2]string {
-		a, l, se := m.ContainersAccess.Get(), m.DockerContainers.Get(), m.Settings.Get().SandboxEngine
-		switch {
-		case a != ContainersOpen:
-			return [2]string{a.Reason(), ""}
-		case l.Err != "":
-			if se {
-				return [2]string{tr("Could not reach the sandbox engine"), l.Err}
-			}
-			return [2]string{tr("Could not reach dockerd"), l.Err}
-		case !l.Loaded:
-			if se {
-				return [2]string{tr("Loading containers…"), ""}
-			}
-			return [2]string{tr("Asking dockerd…"), ""}
-		}
-		var running []string
-		for _, c := range l.Items {
-			if c.State == "running" {
-				running = append(running, c.Name())
-			}
-		}
-		return [2]string{tr("%d running · %d total", len(running), len(l.Items)), strings.Join(running, ", ")}
-	})
-	text := ggui.View(line, func(t [2]string) ggui.Widget {
-		col := []ggui.Widget{widget.Text(t[0]).Size(13).Weight(ggui.WeightMedium)}
-		if t[1] != "" {
-			col = append(col, ui.Caption(t[1]).Size(12).NoWrap().Ellipsis())
-		}
-		return widget.Column(col...).Gap(2)
-	})
-	return ui.Card(widget.Row(
-		glyph(lucide.Container, 20).Color(colorGray),
-		widget.Expanded(text),
-		ui.Button(tr("Open Containers"), func() { m.Go(PageContainers) }).Outline().Size(ui.ButtonSmall).
-			Icon(glyph(lucide.ArrowRight, 14)).BindDisabled(ggui.Not(m.ContainersOpen)),
-	).Gap(14).Align(widget.AlignCenter))
 }
 
 func dockerCLICard(m *Model) ggui.Widget {

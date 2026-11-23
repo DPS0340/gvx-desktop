@@ -277,60 +277,94 @@ func engineCard(m *Model) ggui.Widget {
 }
 
 func recipeCards(m *Model) ggui.Widget {
-	var cards []ggui.Widget
-	for _, r := range recipes.All() {
-		icon := recipeIcon(r.Key)
-		open := func() { m.OpenRecipe(r.Key) }
-		summary, highlights := recipeCopy(r)
-		var points []ggui.Widget
-		for _, h := range highlights {
-			points = append(points, widget.Row(glyph(lucide.Check, 14).Color(colorGreen), ui.Caption(h)).Gap(8).Align(widget.AlignStart))
-		}
-		type recipeCardState struct {
-			exists bool
-			id     string
-			state  sandbox.State
-		}
-		state := ggui.Map(m.Rows, func(rows []Row) recipeCardState {
-			if row, ok := m.RecipeSandbox(rows, r.Key); ok {
-				return recipeCardState{exists: true, id: row.Spec.ID, state: row.State}
+	return ggui.View(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func(se bool) ggui.Widget {
+		var cards []ggui.Widget
+		for _, r := range recipes.All() {
+			icon := recipeIcon(r.Key)
+			open := func() { m.OpenRecipe(r.Key) }
+			if r.Key == recipes.Docker && se {
+				highlights := []string{
+					tr("API on ~/.gvx/docker.sock (docker context \"gvx\")"),
+					tr("Host paths in -v and compose mount directly"),
+					tr("Published container ports reach this computer under the same number"),
+					tr("Images share gvx's read-only EROFS layer cache"),
+				}
+				var points []ggui.Widget
+				for _, h := range highlights {
+					points = append(points, widget.Row(glyph(lucide.Check, 14).Color(colorGreen), ui.Caption(h)).Gap(8).Align(widget.AlignStart))
+				}
+				action := widget.Row(
+					stateLabel(colorGreen, tr("Running"), false, ""),
+					widget.Spacer(),
+					ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall),
+				).Align(widget.AlignCenter)
+				cards = append(cards, ui.Card(widget.Column(
+					widget.Row(
+						widget.Box(glyph(icon, 20).Color(colorBlue)).Pad(8).Radius(10).Fill(rgbA(0x3b82f6, 0x22)),
+						widget.Column(ui.Heading("Docker").Size(15), ui.Mono(tr("Sandbox engine")).Size(11)).Gap(2),
+					).Gap(12),
+					ui.Caption(tr("Containers run directly as unprivileged gvx sandboxes — no VM, no dockerd daemon, no root.")),
+					widget.Column(points...).Gap(6),
+					widget.Spacer(),
+					action,
+				).Gap(12).Stretch()))
+				continue
 			}
-			return recipeCardState{}
-		}).WithEqual(func(a, b recipeCardState) bool {
-			return a.exists == b.exists && a.id == b.id && a.state.Status == b.state.Status && a.state.Paused == b.state.Paused
-		})
-		action := ggui.View(state, func(s recipeCardState) ggui.Widget {
-			switch {
-			case s.exists && s.state.Status.Active() && s.state.Paused:
-				return widget.Row(statusLabel(s.state), widget.Spacer(),
-					ui.Button(tr("Resume"), func() { m.ResumeSandbox(s.id) }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14)),
-					ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall)).Gap(6).Align(widget.AlignCenter)
-			case s.exists && s.state.Status.Active():
-				return widget.Row(statusLabel(s.state), widget.Spacer(),
-					ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall)).Align(widget.AlignCenter)
-			case s.exists:
-				return widget.Row(ui.Button(tr("Start"), func() { m.CreateFromRecipe(r.Key); open() }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14)),
-					ui.Button(tr("Details"), open).Ghost().Size(ui.ButtonSmall)).Gap(8)
+			summary, highlights := recipeCopy(r)
+			var points []ggui.Widget
+			for _, h := range highlights {
+				points = append(points, widget.Row(glyph(lucide.Check, 14).Color(colorGreen), ui.Caption(h)).Gap(8).Align(widget.AlignStart))
 			}
-			return ui.Button(tr("Set up %s", recipeTitle(r)), func() { m.CreateFromRecipe(r.Key); open() }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14))
-		})
-		cards = append(cards, ui.Card(widget.Column(
-			widget.Row(
-				widget.Box(glyph(icon, 20).Color(colorBlue)).Pad(8).Radius(10).Fill(rgbA(0x3b82f6, 0x22)),
-				widget.Column(ui.Heading(recipeTitle(r)).Size(15), ui.Mono(r.Image).Size(11)).Gap(2),
-			).Gap(12),
-			ui.Caption(summary),
-			widget.Column(points...).Gap(6),
-			widget.Spacer(),
-			action,
-		).Gap(12).Stretch()))
-	}
-	rowCards := make([]ggui.Widget, len(cards))
-	for i, c := range cards {
-		rowCards[i] = widget.Expanded(c)
-	}
-	return widget.Responsive(860, widget.Row(rowCards...).Gap(12).Stretch(),
-		widget.Responsive(600, widget.Grid(2, cards...).Gap(12), widget.Column(cards...).Gap(12).Stretch()))
+			type recipeCardState struct {
+				exists bool
+				id     string
+				state  sandbox.State
+			}
+			state := ggui.Map(m.Rows, func(rows []Row) recipeCardState {
+				if row, ok := m.RecipeSandbox(rows, r.Key); ok {
+					return recipeCardState{exists: true, id: row.Spec.ID, state: row.State}
+				}
+				return recipeCardState{}
+			}).WithEqual(func(a, b recipeCardState) bool {
+				return a.exists == b.exists && a.id == b.id && a.state.Status == b.state.Status && a.state.Paused == b.state.Paused
+			})
+			action := ggui.View(state, func(s recipeCardState) ggui.Widget {
+				switch {
+				case s.exists && s.state.Status.Active() && s.state.Paused:
+					return widget.Row(statusLabel(s.state), widget.Spacer(),
+						ui.Button(tr("Resume"), func() { m.ResumeSandbox(s.id) }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14)),
+						ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall)).Gap(6).Align(widget.AlignCenter)
+				case s.exists && s.state.Status.Active():
+					return widget.Row(statusLabel(s.state), widget.Spacer(),
+						ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall)).Align(widget.AlignCenter)
+				case s.exists:
+					return widget.Row(ui.Button(tr("Start"), func() { m.CreateFromRecipe(r.Key); open() }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14)),
+						ui.Button(tr("Details"), open).Ghost().Size(ui.ButtonSmall)).Gap(8)
+				}
+				return ui.Button(tr("Set up %s", recipeTitle(r)), func() { m.CreateFromRecipe(r.Key); open() }).Size(ui.ButtonSmall).Icon(glyph(lucide.Play, 14))
+			})
+			title := recipeTitle(r)
+			if r.Key == recipes.Docker {
+				title = tr("Docker Engine (Compatibility)")
+			}
+			cards = append(cards, ui.Card(widget.Column(
+				widget.Row(
+					widget.Box(glyph(icon, 20).Color(colorBlue)).Pad(8).Radius(10).Fill(rgbA(0x3b82f6, 0x22)),
+					widget.Column(ui.Heading(title).Size(15), ui.Mono(r.Image).Size(11)).Gap(2),
+				).Gap(12),
+				ui.Caption(summary),
+				widget.Column(points...).Gap(6),
+				widget.Spacer(),
+				action,
+			).Gap(12).Stretch()))
+		}
+		rowCards := make([]ggui.Widget, len(cards))
+		for i, c := range cards {
+			rowCards[i] = widget.Expanded(c)
+		}
+		return widget.Responsive(860, widget.Row(rowCards...).Gap(12).Stretch(),
+			widget.Responsive(600, widget.Grid(2, cards...).Gap(12), widget.Column(cards...).Gap(12).Stretch()))
+	})
 }
 
 // recipeIcon pictures a recipe.

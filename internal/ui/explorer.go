@@ -56,8 +56,8 @@ func explorerDialog(m *Model) ggui.Widget {
 
 func explorerUnsupportedView() ggui.Widget {
 	return widget.Box(ui.Empty(
-		tr("Not supported in the experimental sandbox engine"),
-		tr("Browsing Docker image files is not supported in the experimental sandbox engine yet. Browse the same image under GVX Sandboxes instead."),
+		tr("Not supported in the sandbox engine"),
+		tr("Browsing Docker image files is not supported in the sandbox engine yet. Browse the same image under GVX Sandboxes instead."),
 	).Media(glyph(lucide.FolderSearch, 32).Color(colorGray)).Outline()).Height(470)
 }
 

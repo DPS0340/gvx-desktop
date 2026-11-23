@@ -102,7 +102,7 @@ func containersPage(m *Model) ggui.Widget {
 				m.LoadDocker()
 				m.LoadContainerLogs()
 			}).BindDisabled(ggui.Not(m.ContainersOpen)), tr("Refresh")),
-			ui.Button("Docker Engine", func() { m.Go(PageDocker) }).Outline().Icon(glyph(dockerIcon, 16)),
+			ui.Button("Docker", func() { m.Go(PageDocker) }).Outline().Icon(glyph(dockerIcon, 16)),
 		),
 		body,
 	)
@@ -123,16 +123,32 @@ func dockerGate() gateWords {
 	}
 }
 
-// containersTable is the engine's containers, filtered by the query, each
-// Compose project's under a head that folds them away.
+// containersTable is the engine's containers, filtered by status and query,
+// each Compose project's under a head that folds them away.
 func containersTable(m *Model) ggui.Widget {
 	all := ggui.Map(m.DockerContainers, func(l Listing[dockerapi.Container]) []dockerapi.Container { return l.Items }).WithEqual(nil)
+	byStatus := ggui.Combine(all, m.ContainerStatus, filterContainersByStatus).WithEqual(nil)
 	rows := ggui.Derived(func() []containerRow {
-		return containerRows(all.Get(), m.ContainerQuery.Get(), m.ComposeFolded.Get())
+		return containerRows(byStatus.Get(), m.ContainerQuery.Get(), m.ComposeFolded.Get())
 	}).WithEqual(nil)
-	count := ggui.Combine(all, m.ContainerQuery, func(a []dockerapi.Container, q string) string {
-		return showing(len(filterContainers(a, q)), len(a))
+	count := ggui.Derived(func() string {
+		total := all.Get()
+		shown := filterContainers(byStatus.Get(), m.ContainerQuery.Get())
+		return showing(len(shown), len(total))
 	})
+	statusFilter := ui.ToggleGroup(m.ContainerStatus).Options([]string{"all", "running", "stopped"}).Format(func(v string) string {
+		switch v {
+		case "running":
+			return tr("Running")
+		case "stopped":
+			return tr("Stopped")
+		}
+		return tr("All")
+	}).Outline().Size(ui.ButtonExtraSmall).Spacing(0).Name(tr("Status"))
+	toolbar := widget.Row(
+		widget.Expanded(filterBar(m.ContainerQuery, tr("Filter by name, image or project"), count)),
+		statusFilter,
+	).Gap(12).Align(widget.AlignCenter)
 	// A head is no container to choose: choosing one leaves the choice.
 	selected := ggui.Bind(ggui.Map(m.Container, func(c dockerapi.Container) string { return c.ID }).Get, func(id string) {
 		if !strings.HasPrefix(id, composeKey("")) {
@@ -220,7 +236,7 @@ func containersTable(m *Model) ggui.Widget {
 			})
 		})).W(84).Identified("actions"),
 	).BindSelected(selected).RowName(containerRow.name).RowHeight(48).MaxRows(5).
-		Toolbar(filterBar(m.ContainerQuery, tr("Filter by name, image or project"), count))
+		Toolbar(toolbar)
 }
 
 // projectIndent is how far a project's containers stand in from its name.

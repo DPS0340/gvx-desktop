@@ -89,6 +89,7 @@ func renderAll(tmp, out, lang string) error {
 		// containers.
 		// A container whose bind mount is of a folder the engine does not share.
 		{"containers-unshared", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = false })
 			m.Go(ui.PageContainers)
 			m.SelectContainer(demoContainers()[2].ID)
 			m.ContainerDetail.Set(1)
@@ -96,6 +97,7 @@ func renderAll(tmp, out, lang string) error {
 		{"containers-folded", func(m *ui.Model) { m.Go(ui.PageContainers); m.ToggleProject("shop") }},
 		// Something on this computer has the port a container publishes.
 		{"containers-port-busy", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = false })
 			m.Go(ui.PageContainers)
 			states := maps.Clone(ggui.Peek(m.States))
 			st := states[demoIDs[1]]
@@ -143,12 +145,14 @@ func renderAll(tmp, out, lang string) error {
 		// The engine stopped while its containers were on screen: the page
 		// says so, and the sidebar's item is greyed out.
 		{"containers-stopped", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = false })
 			m.Go(ui.PageContainers)
 			stopEngine(m)
 		}},
 		// The engine paused while its containers were on screen: the page
 		// offers Resume instead of polling the frozen VM.
 		{"containers-paused-engine", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = false })
 			m.Go(ui.PageContainers)
 			states := maps.Clone(ggui.Peek(m.States))
 			st := states[demoIDs[1]]
@@ -261,7 +265,14 @@ func renderAll(tmp, out, lang string) error {
 			})
 			m.ExploreOpen.Set(true)
 		}},
-		{"docker", func(m *ui.Model) { m.Page.Set(ui.PageDocker) }},
+		{"docker", func(m *ui.Model) {
+			m.BuildxStatus.Set(ui.BuildxStatus{Checked: true, Ready: true, Selected: true})
+			m.Page.Set(ui.PageDocker)
+		}},
+		{"docker-compat", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = false })
+			m.Page.Set(ui.PageDocker)
+		}},
 		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes); m.Forwards.Set(demoForwards()) }},
 		// A cluster of three nodes: the server and two agents, one of them
 		// still joining.
@@ -270,11 +281,19 @@ func renderAll(tmp, out, lang string) error {
 		// What is still experimental, under its own item above Settings.
 		{"labs-whole", func(m *ui.Model) { m.Page.Set(ui.PageLabs) }},
 		// The Docker Engine's daemon.json, as it starts when there is none.
-		{"settings-daemon-json", func(m *ui.Model) { m.Page.Set(ui.PageSettings); m.OpenDockerConfig() }},
+		{"settings-daemon-json", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = false })
+			m.Page.Set(ui.PageSettings)
+			m.OpenDockerConfig()
+		}},
 		// The whole page, down to the recipes' settings.
 		{"settings-whole", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
 		// The engine shares no folder.
-		{"settings-unshared-whole", func(m *ui.Model) { m.SetSharedFolders(nil); m.Page.Set(ui.PageSettings) }},
+		{"settings-unshared-whole", func(m *ui.Model) {
+			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = false })
+			m.SetSharedFolders(nil)
+			m.Page.Set(ui.PageSettings)
+		}},
 		// Labs with the sandbox engine on.
 		{"labs-sandbox-engine", func(m *ui.Model) {
 			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = true })

@@ -179,6 +179,7 @@ func TestSandboxEngineSwitchLifecycle(t *testing.T) {
 	st := store.Store{Dir: dir}
 	set := store.DefaultSettings()
 	set.StopTimeout = 7
+	set.SandboxEngine = false
 	_ = st.SaveSettings(set)
 
 	var m *Model
@@ -748,6 +749,7 @@ func TestSandboxEngineUIAndGating(t *testing.T) {
 	st := store.Store{Dir: dir}
 	set := store.DefaultSettings()
 	set.Language = LangEnglish
+	set.SandboxEngine = false
 	_ = st.SaveSettings(set)
 	docker := recipes.WithSharedFolders(recipes.DockerEngine(), []string{"/Users/me"})
 	_ = st.SaveSandboxes([]sandbox.Spec{docker})
@@ -806,14 +808,11 @@ func TestSandboxEngineUIAndGating(t *testing.T) {
 	if !shows("How docker reaches GVX Desktop's sandbox engine") {
 		t.Errorf("on: Settings missing sandbox-engine Engine API caption:\n%s", p.Semantics())
 	}
-	// Labs has the switch, and the note on the engine still running.
-	m.Go(PageLabs)
-	p.Frame()
-	if !shows("Run containers as sandboxes, without a Docker Engine") {
-		t.Errorf("Labs page missing experimental switch:\n%s", p.Semantics())
+	if !shows("Engine mode") {
+		t.Errorf("Settings missing Engine mode selector:\n%s", p.Semantics())
 	}
 	if !shows("Your Docker Engine sandbox is still running") {
-		t.Errorf("Labs page missing running Docker Engine note:\n%s", p.Semantics())
+		t.Errorf("Settings missing running Docker Engine note:\n%s", p.Semantics())
 	}
 
 	// Containers page opens, shows containers, and Terminal tab shows the
@@ -840,23 +839,25 @@ func TestSandboxEngineUIAndGating(t *testing.T) {
 		t.Errorf("Terminal tab started %d shell(s) in sandbox-engine mode", liveTerms)
 	}
 
-	// Docker Engine page shows the experimental banner.
+	// Docker page shows the Sandbox Engine management view and builder status.
 	m.Go(PageDocker)
+	m.BuilderState.Set(engine.BuilderState{Status: engine.BuilderIdle})
+	m.BuildxStatus.Set(BuildxStatus{Checked: true, Ready: true, Selected: true})
 	p.Frame()
-	if !shows("Experimental sandbox engine is on") {
-		t.Errorf("Docker page missing experimental banner:\n%s", p.Semantics())
+	if !shows("Sandbox engine") || !shows("Image builder: idle") {
+		t.Errorf("Docker page missing sandbox engine view or builder state:\n%s", p.Semantics())
 	}
 
 	// Docker image explorer in sandbox-engine mode shows the unsupported message on Files tab.
 	m.ExploreDockerImage(DockerImageRow{ID: "sha256:1234", Repository: "nginx", Tag: "alpine"}, ExploreFiles)
 	p.Frame()
-	if !shows("Not supported in the experimental sandbox engine") {
+	if !shows("Not supported in the sandbox engine") {
 		t.Errorf("Explorer Files tab missing unsupported message:\n%s", p.Semantics())
 	}
 
-	// Labs shows builder state (idle / running) and gvx-desktop builder status line.
+	// Settings → Docker shows builder state (idle / running) and gvx-desktop builder status line.
 	m.ExploreOpen.Set(false)
-	m.Go(PageLabs)
+	m.Go(PageSettings)
 	m.BuilderState.Set(engine.BuilderState{Status: engine.BuilderIdle})
 	m.BuildxStatus.Set(BuildxStatus{Checked: true, Ready: true, Selected: true})
 	p.Frame()

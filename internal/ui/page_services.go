@@ -15,11 +15,11 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
-// servicesView is the Services view of the Pods page: the services of the
-// cluster, the system's only when asked for, with the NodePorts that reach
-// this computer and a way to forward a port to any of them.
+// servicesView is the Services view of the cluster: the services of the
+// cluster, filtered via the toolbar query and System services switch, with
+// the NodePorts that reach this computer and a way to forward a port to any.
 func servicesView(m *Model) ggui.Widget {
-	// 0: not read yet, 1: failed, 2: only the system's, hidden, 3: some.
+	// 0: not read yet, 1: failed, 2: loaded.
 	state := ggui.Derived(func() int {
 		l := m.Services.Get()
 		switch {
@@ -27,10 +27,8 @@ func servicesView(m *Model) ggui.Widget {
 			return 0
 		case l.Err != "":
 			return 1
-		case len(userServices(l.Items, m.SystemPods.Get())) == 0:
-			return 2
 		}
-		return 3
+		return 2
 	})
 	return ggui.View(state, func(s int) ggui.Widget {
 		switch s {
@@ -38,10 +36,6 @@ func servicesView(m *Model) ggui.Widget {
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking the API server…"))).Gap(8)
 		case 1:
 			return ui.Alert(tr("Could not list the services"), ggui.Peek(m.Services).Err).Destructive().Icon(icons.Alert)
-		case 2:
-			return ui.Empty(tr("No services of your own"), tr("Expose a Deployment with kubectl: kubectl expose deployment web --port=80")).
-				Media(glyph(lucide.Network, 32).Color(colorGray)).
-				Action(ui.Button(tr("Show system services"), func() { m.SystemPods.Set(true) }).Outline()).Outline()
 		}
 		return tableCard(servicesTable(m))
 	})

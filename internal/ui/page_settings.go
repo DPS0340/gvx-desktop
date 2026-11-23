@@ -405,6 +405,7 @@ func dockerSettings(m *Model) ggui.Widget {
 	sshAgent := ggui.Bind(m.DockerSSHAgent.Get, m.SetDockerSSHAgent)
 
 	return settingsGroup(dockerIcon, "Docker",
+		dockerModeSettings(m),
 		widget.Column(
 			settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Row(
 				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, Homebrew, Docker Desktop)")).Name(tr("docker path")).OnCommit(setPath)),
@@ -489,9 +490,28 @@ func dockerConfigDialog(m *Model) ggui.Widget {
 	)
 }
 
-// sandboxEngineSettings is the sandbox engine's switch and notes, in Labs.
-func sandboxEngineSettings(m *Model) ggui.Widget {
-	enabled := ggui.Bind(func() bool { return m.Settings.Get().SandboxEngine }, m.SetSandboxEngine)
+// dockerModeToggle returns a compact mode selector switching between the
+// default native sandbox engine and docker:dind compatibility mode.
+func dockerModeToggle(m *Model, size *ui.ButtonSizeVariant) ggui.Widget {
+	mode := ggui.Bind(func() string {
+		if m.Settings.Get().SandboxEngine {
+			return "sandbox"
+		}
+		return "compat"
+	}, func(v string) {
+		m.SetSandboxEngine(v == "sandbox")
+	})
+	return ui.ToggleGroup(mode).Options([]string{"sandbox", "compat"}).Format(func(v string) string {
+		if v == "compat" {
+			return tr("Compatibility (docker:dind)")
+		}
+		return tr("Sandbox engine")
+	}).Outline().Size(size).Spacing(0).Name(tr("Docker engine mode"))
+}
+
+// dockerModeSettings chooses between the default native sandbox engine and
+// compatibility mode (docker:dind), with BuildKit builder status when active.
+func dockerModeSettings(m *Model) ggui.Widget {
 	dockerRunning := ggui.Combine(m.Settings, m.Rows, func(s storeSettings, rows []Row) bool {
 		if !s.SandboxEngine {
 			return false
@@ -506,54 +526,28 @@ func sandboxEngineSettings(m *Model) ggui.Widget {
 		).Gap(8).Align(widget.AlignStart)
 	})
 	builderStatus := ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func() ggui.Widget {
-		return sandboxBuilderStatus(m)
+		return widget.Column(
+			sandboxBuilderStatus(m),
+			widget.Row(
+				widget.Padding(glyph(lucide.Info, 13).Color(colorBlue), 2, 0, 0, 0),
+				widget.Expanded(ui.Caption(tr("Turning this on routes docker build through buildx (docker buildx install) and selects the gvx-desktop builder for the gvx context and engine endpoint; turning it off puts both back.")).Size(12)),
+			).Gap(8).Align(widget.AlignStart),
+		).Gap(6).Stretch()
 	})
-	notes := ggui.View(m.RungvFeatures, func(f rungv.Features) ggui.Widget {
-		var rows []ggui.Widget
-		if f.Control {
-			rows = append(rows,
-				widget.Row(
-					widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
-					widget.Expanded(ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), exec, cp, pause, top, update, stats, build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.")).Size(12)),
-				).Gap(8).Align(widget.AlignStart),
-				widget.Row(
-					widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
-					widget.Expanded(ui.Caption(tr("Also diff, export and commit, on stopped containers too. A container keeps the files it changed when it stops, as in Docker.")).Size(12)),
-				).Gap(8).Align(widget.AlignStart),
-			)
-			if f.KeepBlobs {
-				rows = append(rows, widget.Row(
-					widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
-					widget.Expanded(ui.Caption(tr("With rungv v0.21+: docker push, offline docker save, and host Unix socket bind mounts (including /var/run/docker.sock).")).Size(12)),
-				).Gap(8).Align(widget.AlignStart))
-			}
-		} else {
-			rows = append(rows,
-				widget.Row(
-					widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
-					widget.Expanded(ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.")).Size(12)),
-				).Gap(8).Align(widget.AlignStart),
-				widget.Row(
-					widget.Padding(glyph(lucide.CircleMinus, 13).Color(colorGray), 2, 0, 0, 0),
-					widget.Expanded(ui.Caption(tr("Not yet supported: exec, cp, diff, export and commit.")).Size(12)),
-				).Gap(8).Align(widget.AlignStart),
-				widget.Row(
-					widget.Padding(glyph(lucide.Info, 13).Color(colorAmber), 2, 0, 0, 0),
-					widget.Expanded(ui.Caption(tr("Update rungv to v0.20 or later for exec, cp, diff, export, commit, pause, top and update.")).Size(12)),
-				).Gap(8).Align(widget.AlignStart),
-			)
+	desc := ui.CaptionOf(ggui.Map(m.Settings, func(s storeSettings) string {
+		if s.SandboxEngine {
+			return tr("Default: GVX Desktop serves the Docker API directly and runs each container as its own gvx sandbox. Switching to compatibility mode stops running sandbox-engine containers.")
 		}
-		rows = append(rows, widget.Row(
-			widget.Padding(glyph(lucide.Info, 13).Color(colorBlue), 2, 0, 0, 0),
-			widget.Expanded(ui.Caption(tr("Turning this on routes docker build through buildx (docker buildx install) and selects the gvx-desktop builder for the gvx context and engine endpoint; turning it off puts both back.")).Size(12)),
-		).Gap(8).Align(widget.AlignStart))
-		return widget.Box(widget.Column(rows...).Gap(6).Stretch()).Pad(10, 12).Radius(8).Fill(colorSurfaceInset).Border(1, colorBorder)
-	})
+		return tr("Compatibility mode: runs an unmodified dockerd inside a gvx sandbox (docker:dind). Use this for workloads that need dockerd internals or daemon.json.")
+	}))
 	return widget.Column(
-		settingRow(tr("Run containers as sandboxes, without a Docker Engine"),
-			tr("GVX Desktop answers the Docker API directly and runs each container as its own gvx sandbox. Takes effect immediately; turning it off stops those containers."),
-			ui.Switch(enabled, "")),
-		notes,
+		widget.Row(
+			widget.Expanded(widget.Column(
+				widget.Text(tr("Engine mode")).Size(14).Weight(ggui.WeightMedium),
+				desc,
+			).Gap(2)),
+			dockerModeToggle(m, ui.ButtonSmall),
+		).Gap(24).Align(widget.AlignCenter),
 		builderStatus,
 		runningNote,
 	).Gap(8).Stretch()
@@ -572,7 +566,7 @@ func amd64BuilderSettings(m *Model) ggui.Widget {
 		return !c.OK() || c.Checking || c.Installing
 	})
 	needsEngine := ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return !s.SandboxEngine }), func() ggui.Widget {
-		return ui.Caption(tr("Needs the sandbox engine above."))
+		return ui.Caption(tr("Requires the default sandbox engine. Switch off compatibility mode in Settings → Docker."))
 	})
 	statusBox := ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine && s.Amd64Builds }), func() ggui.Widget {
 		return amd64BuilderStatus(m)

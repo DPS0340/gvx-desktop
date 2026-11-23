@@ -197,7 +197,7 @@ func containerShellTarget(c dockerapi.Container, sandboxEngine bool, features ru
 	if sandboxEngine && !features.Control {
 		return shellTarget{
 			Why:     tr("Needs rungv v0.20 or later"),
-			WhyText: tr("Container exec in the experimental sandbox engine needs rungv v0.20 or later. Update rungv in Settings, then restart the container."),
+			WhyText: tr("Container exec in the sandbox engine needs rungv v0.20 or later. Update rungv in Settings, then restart the container."),
 		}
 	}
 	if c.State == "paused" {

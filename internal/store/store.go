@@ -62,10 +62,10 @@ type Settings struct {
 	// KubeContextBefore is kubectl's current context when the app switched
 	// kubectl to gvx-k3s, to switch back to.
 	KubeContextBefore string `json:"kubeContextBefore,omitempty"`
-	// SandboxEngine is the experimental mode where the app itself serves
-	// the Docker API and runs every container as a sandbox of its own, with
-	// no Docker Engine.
-	SandboxEngine bool `json:"sandboxEngine,omitempty"`
+	// SandboxEngine runs containers directly as individual gvx sandboxes
+	// served by the in-app Docker API (default). When false, the app uses
+	// compatibility mode with the docker:dind sandbox recipe.
+	SandboxEngine bool `json:"sandboxEngine"`
 	// Amd64Builds adds a linux/amd64 node to the sandbox engine's
 	// gvx-desktop builder, served by a small Virtualization.framework VM
 	// with Rosetta (experimental, macOS on Apple silicon; meaningful only
@@ -92,7 +92,7 @@ func (s Settings) Equal(o Settings) bool {
 
 // DefaultSettings are the settings of a first launch.
 func DefaultSettings() Settings {
-	return Settings{Theme: "system", StopOnQuit: true, HideOnClose: true, StopTimeout: 15}
+	return Settings{Theme: "system", StopOnQuit: true, HideOnClose: true, StopTimeout: 15, SandboxEngine: true}
 }
 
 // Store reads and writes the files under Dir.

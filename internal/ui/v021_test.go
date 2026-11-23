@@ -432,37 +432,35 @@ func TestLabsAndSettingsV021Notes(t *testing.T) {
 		return false
 	}
 
-	// Labs page: v0.20 (Control only) vs v0.21 (Control + KeepBlobs).
-	const v21LabsNote = "With rungv v0.21+: docker push, offline docker save, and host Unix socket bind mounts (including /var/run/docker.sock)."
+	// Docker page in default sandbox engine mode: v0.20 vs v0.21 capabilities note.
+	const v21SandboxNote = "Supports docker run, exec, cp, pause, top, update, stats (with BLOCK I/O), diff, export, commit, build (BuildKit and Compose), push, offline save, networks, and host Unix socket bind mounts (including /var/run/docker.sock)."
 	m.RungvFeatures.Set(rungv.Features{Control: true})
-	m.Go(PageLabs)
+	m.Go(PageDocker)
 	p.Frame()
-	if shows(v21LabsNote) {
-		t.Error("v0.20 features should not show v0.21 Labs note")
+	if shows(v21SandboxNote) {
+		t.Error("v0.20 features should not show v0.21 sandbox engine capabilities note")
 	}
 	m.RungvFeatures.Set(rungv.Features{Control: true, KeepBlobs: true})
 	p.Frame()
-	if !shows(v21LabsNote) {
-		t.Errorf("v0.21 features missing Labs note:\n%s", p.Semantics())
-	}
-	if !shows("Also diff, export and commit, on stopped containers too.") {
-		t.Error("v0.21 Labs page should keep v0.20 notes intact")
+	if !shows(v21SandboxNote) {
+		t.Errorf("v0.21 features missing Docker sandbox engine capabilities note:\n%s", p.Semantics())
 	}
 
-	// Docker page (#235): BLOCK I/O note reacts to KeepBlobs.
+	// Docker page in compatibility mode (#235): BLOCK I/O note reacts to KeepBlobs.
+	m.SetSandboxEngine(false)
 	m.RungvFeatures.Set(rungv.Features{Control: true})
 	m.Go(PageDocker)
 	p.Frame()
 	if !shows("BLOCK I/O reads 0B because the guest has no io controller.") {
-		t.Errorf("v0.20 Docker page missing legacy BLOCK I/O note")
+		t.Errorf("v0.20 Docker compatibility page missing legacy BLOCK I/O note")
 	}
 	m.RungvFeatures.Set(rungv.Features{Control: true, KeepBlobs: true})
 	p.Frame()
 	if !shows("docker run -m and --cpus are enforced, and docker stats reports per-container BLOCK I/O.") {
-		t.Errorf("v0.21 Docker page missing updated BLOCK I/O note")
+		t.Errorf("v0.21 Docker compatibility page missing updated BLOCK I/O note")
 	}
 	if shows("BLOCK I/O reads 0B") {
-		t.Errorf("v0.21 Docker page still shows outdated BLOCK I/O 0B note")
+		t.Errorf("v0.21 Docker compatibility page still shows outdated BLOCK I/O 0B note")
 	}
 
 	// Settings page (#231/#232/#233/#234): shared folders caption reacts to BindAttach || KeepBlobs,
@@ -518,6 +516,7 @@ func TestUnsharedBindErrorAndContainerCopyLiveMounts(t *testing.T) {
 	st := store.Store{Dir: dir}
 	set := store.DefaultSettings()
 	set.Language = LangEnglish
+	set.SandboxEngine = false
 	_ = st.SaveSettings(set)
 	dockerSpec := recipes.WithSharedFolders(recipes.DockerEngine(), []string{"/Users/me"})
 	_ = st.SaveSandboxes([]sandbox.Spec{dockerSpec})

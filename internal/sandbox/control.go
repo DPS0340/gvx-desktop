@@ -9,14 +9,19 @@ package sandbox
 // their own tests. Bodies are W1's.
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -601,7 +606,7 @@ func ComputeLiveDiff(running, edited Spec, st State) (LiveDiff, bool) {
 		case MountTmpfs:
 			return st.Control
 		case MountBind:
-			return st.Control && st.BindAttach
+			return st.Control && (st.BindAttach || st.LiveMounts)
 		default:
 			return false
 		}
@@ -766,9 +771,259 @@ func upsertMountInSpec(mounts []Mount, m Mount) []Mount {
 }
 
 func removeMountFromSpec(mounts []Mount, target string) []Mount {
+	want := path.Clean(strings.TrimSpace(target))
 	return slices.DeleteFunc(append([]Mount(nil), mounts...), func(m Mount) bool {
-		return m.Target == target
+		return m.Target == target || (want != "" && path.Clean(strings.TrimSpace(m.Target)) == want)
 	})
+}
+
+const mountServeSilentGrace = 200 * time.Millisecond
+
+type serveProc struct {
+	cmd      *exec.Cmd
+	cancel   context.CancelFunc
+	done     chan struct{}
+	stopOnce sync.Once
+	exitErr  error
+	stderr   string
+}
+
+func (sp *serveProc) stop() {
+	sp.stopOnce.Do(func() {
+		sp.cancel()
+		select {
+		case <-sp.done:
+			return
+		case <-time.After(3 * time.Second):
+		}
+		if sp.cmd != nil && sp.cmd.Process != nil {
+			_ = sp.cmd.Process.Kill()
+		}
+		<-sp.done
+	})
+}
+
+func (s *Supervisor) stopAllServes(p *proc) {
+	s.mu.Lock()
+	p.servesClosed = true
+	var list []*serveProc
+	if len(p.serves) > 0 {
+		list = make([]*serveProc, 0, len(p.serves))
+		for _, sp := range p.serves {
+			list = append(list, sp)
+		}
+		p.serves = nil
+	}
+	s.mu.Unlock()
+	if len(list) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, sp := range list {
+		wg.Go(func() {
+			sp.stop()
+		})
+	}
+	wg.Wait()
+}
+
+func (s *Supervisor) startServeMount(ctx context.Context, id string, p *proc, client *rungv.Client, target rungv.Target, m Mount) error {
+	key := path.Clean(strings.TrimSpace(m.Target))
+	hostPath := rungv.ExpandHome(strings.TrimSpace(m.Source))
+
+	s.mu.Lock()
+	active := s.procs[id] == p && p.state.Status.Active() && !p.servesClosed
+	s.mu.Unlock()
+	if !active {
+		return errNotRunning
+	}
+
+	args := client.MountServeArgs(target, hostPath, key, m.ReadOnly)
+	serveCtx, serveCancel := context.WithCancel(context.Background())
+	cmd := client.MountServeCommand(serveCtx, target, hostPath, key, m.ReadOnly)
+	if runtime.GOOS != "windows" {
+		cmd.Cancel = func() error {
+			if err := cmd.Process.Signal(os.Interrupt); err != nil {
+				return cmd.Process.Kill()
+			}
+			return nil
+		}
+	}
+	cmd.WaitDelay = 2 * time.Second
+
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		serveCancel()
+		return err
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		serveCancel()
+		_ = outR.Close()
+		_ = outW.Close()
+		return err
+	}
+	cmd.Stdout = outW
+	cmd.Stderr = errW
+
+	if err := cmd.Start(); err != nil {
+		serveCancel()
+		_ = outR.Close()
+		_ = outW.Close()
+		_ = errR.Close()
+		_ = errW.Close()
+		return err
+	}
+	_ = outW.Close()
+	_ = errW.Close()
+
+	sp := &serveProc{
+		cmd:    cmd,
+		cancel: serveCancel,
+		done:   make(chan struct{}),
+	}
+
+	readyCh := make(chan struct{})
+	var readyOnce sync.Once
+	var ioWG sync.WaitGroup
+	var errBuf bytes.Buffer
+
+	ioWG.Add(2)
+	go func() {
+		defer ioWG.Done()
+		sc := bufio.NewScanner(outR)
+		sc.Buffer(make([]byte, 4*1024), 64*1024)
+		for sc.Scan() {
+			if strings.TrimSpace(sc.Text()) != "" {
+				readyOnce.Do(func() { close(readyCh) })
+			}
+		}
+	}()
+	go func() {
+		defer ioWG.Done()
+		// Keep up to 4 KiB of stderr for error reporting, then drain the rest.
+		_, _ = io.Copy(&errBuf, io.LimitReader(errR, 4096))
+		_, _ = io.Copy(io.Discard, errR)
+	}()
+
+	go func() {
+		waitErr := cmd.Wait()
+		ioWG.Wait()
+		_ = outR.Close()
+		_ = errR.Close()
+		sp.exitErr = waitErr
+		sp.stderr = errBuf.String()
+		close(sp.done)
+		s.mu.Lock()
+		if p.serves[key] == sp {
+			delete(p.serves, key)
+		}
+		s.mu.Unlock()
+	}()
+
+	grace := time.NewTimer(mountServeSilentGrace)
+	defer grace.Stop()
+
+	exitToErr := func() error {
+		if sp.exitErr != nil {
+			re := &rungv.Error{Args: args, Stderr: sp.stderr, Err: sp.exitErr}
+			if exit, ok := errors.AsType[*exec.ExitError](sp.exitErr); ok {
+				re.Code = exit.ExitCode()
+			}
+			return re
+		}
+		if msg := strings.TrimSpace(sp.stderr); msg != "" {
+			return errors.New(msg)
+		}
+		return errors.New("rungv mount serve exited unexpectedly")
+	}
+
+	select {
+	case <-readyCh:
+	case <-sp.done:
+		return exitToErr()
+	case <-ctx.Done():
+		sp.stop()
+		return ctx.Err()
+	case <-grace.C:
+	}
+
+	var prev *serveProc
+	s.mu.Lock()
+	select {
+	case <-sp.done:
+		s.mu.Unlock()
+		return exitToErr()
+	default:
+	}
+	if s.procs[id] != p || !p.state.Status.Active() || p.servesClosed {
+		s.mu.Unlock()
+		sp.stop()
+		return errNotRunning
+	}
+	if p.serves == nil {
+		p.serves = map[string]*serveProc{}
+	}
+	prev = p.serves[key]
+	p.serves[key] = sp
+	p.spec.Mounts = upsertMountInSpec(p.spec.Mounts, m)
+	s.mu.Unlock()
+
+	if prev != nil && prev != sp {
+		prev.stop()
+	}
+	return nil
+}
+
+func (s *Supervisor) attachMount(ctx context.Context, id string, p *proc, client *rungv.Client, target rungv.Target, m Mount) error {
+	if err := m.validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	bindAttach := p.state.BindAttach
+	liveMounts := p.state.LiveMounts
+	s.mu.Unlock()
+
+	if m.Type == MountBind && !bindAttach && liveMounts {
+		return s.startServeMount(ctx, id, p, client, target, m)
+	}
+	if err := client.AddMount(ctx, target, mountAddOptions(m)); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.procs[id] == p && p.state.Status.Active() {
+		p.spec.Mounts = upsertMountInSpec(p.spec.Mounts, m)
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Supervisor) detachMount(ctx context.Context, id string, p *proc, client *rungv.Client, target rungv.Target, guestTarget string, lazy bool) error {
+	key := path.Clean(strings.TrimSpace(guestTarget))
+	s.mu.Lock()
+	sp := p.serves[key]
+	s.mu.Unlock()
+
+	err := client.RemoveMount(ctx, target, guestTarget, lazy)
+	if err != nil {
+		if sp == nil || rungv.ControlCode(err) != rungv.CodeNotFound {
+			return err
+		}
+	}
+	if sp != nil {
+		s.mu.Lock()
+		if p.serves[key] == sp {
+			delete(p.serves, key)
+		}
+		s.mu.Unlock()
+		sp.stop()
+	}
+	s.mu.Lock()
+	if s.procs[id] == p && p.state.Status.Active() {
+		p.spec.Mounts = removeMountFromSpec(p.spec.Mounts, guestTarget)
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // AddPorts dynamically publishes specs on the active run of id, updates
@@ -839,14 +1094,9 @@ func (s *Supervisor) AddMount(ctx context.Context, id string, m Mount) error {
 	if err != nil {
 		return err
 	}
-	if err := client.AddMount(ctx, target, mountAddOptions(m)); err != nil {
+	if err := s.attachMount(ctx, id, p, client, target, m); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	if s.procs[id] == p && p.state.Status.Active() {
-		p.spec.Mounts = upsertMountInSpec(p.spec.Mounts, m)
-	}
-	s.mu.Unlock()
 	s.Logs(id).Add(System, "── Updated: mounted "+m.Target)
 	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
 	return nil
@@ -859,14 +1109,9 @@ func (s *Supervisor) RemoveMount(ctx context.Context, id string, guestTarget str
 	if err != nil {
 		return err
 	}
-	if err := client.RemoveMount(ctx, target, guestTarget, lazy); err != nil {
+	if err := s.detachMount(ctx, id, p, client, target, guestTarget, lazy); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	if s.procs[id] == p && p.state.Status.Active() {
-		p.spec.Mounts = removeMountFromSpec(p.spec.Mounts, guestTarget)
-	}
-	s.mu.Unlock()
 	s.Logs(id).Add(System, "── Updated: unmounted "+guestTarget)
 	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
 	return nil
@@ -989,32 +1234,18 @@ func (s *Supervisor) ApplyLive(ctx context.Context, id string, diff LiveDiff) er
 	}
 
 	for _, rmTarget := range diff.RemoveMounts {
-		if err := client.RemoveMount(ctx, target, rmTarget, false); err != nil {
+		if err := s.detachMount(ctx, id, p, client, target, rmTarget, false); err != nil {
 			finish()
 			return err
 		}
-		s.mu.Lock()
-		if s.procs[id] == p && p.state.Status.Active() {
-			p.spec.Mounts = removeMountFromSpec(p.spec.Mounts, rmTarget)
-		}
-		s.mu.Unlock()
 		applied = append(applied, "unmounted "+rmTarget)
 	}
 
 	for _, m := range diff.AddMounts {
-		if err := m.validate(); err != nil {
+		if err := s.attachMount(ctx, id, p, client, target, m); err != nil {
 			finish()
 			return err
 		}
-		if err := client.AddMount(ctx, target, mountAddOptions(m)); err != nil {
-			finish()
-			return err
-		}
-		s.mu.Lock()
-		if s.procs[id] == p && p.state.Status.Active() {
-			p.spec.Mounts = upsertMountInSpec(p.spec.Mounts, m)
-		}
-		s.mu.Unlock()
 		applied = append(applied, "mounted "+m.Target)
 	}
 

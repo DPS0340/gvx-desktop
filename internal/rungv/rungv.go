@@ -186,24 +186,25 @@ func (c *Client) output(ctx context.Context, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-// runFlags holds, by the path of a rungv, the usage text of its run command.
-var runFlags sync.Map
+// runFlags and restoreFlags hold, by the path of a rungv, the usage text of its
+// run and restore commands.
+var (
+	runFlags     sync.Map
+	restoreFlags sync.Map
+)
 
-// HasRunFlag reports whether this rungv's run command takes the flag name,
-// written without its dash: an older rungv refuses a run with a flag it
-// does not know. The usage text is read once for each binary.
-func (c *Client) HasRunFlag(ctx context.Context, name string) bool {
-	if c == nil || c.Path == "" {
+func hasCommandFlag(ctx context.Context, cache *sync.Map, subcmd, binPath, name string) bool {
+	if binPath == "" {
 		return false
 	}
-	usage, ok := runFlags.Load(c.Path)
+	usage, ok := cache.Load(binPath)
 	if !ok {
 		runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(runCtx, c.Path, "run", "-help")
+		cmd := exec.CommandContext(runCtx, binPath, subcmd, "-help")
 		cmd.WaitDelay = time.Second // a rungv that does not print its usage and leave
 		hideWindow(cmd)
-		out, err := cmd.CombinedOutput() // the usage comes with a failing exit
+		out, err := cmd.CombinedOutput() // the usage may come with a failing exit
 		if ctx.Err() != nil {
 			return false
 		}
@@ -211,7 +212,7 @@ func (c *Client) HasRunFlag(ctx context.Context, name string) bool {
 			return false
 		}
 		usage = string(out)
-		runFlags.Store(c.Path, usage)
+		cache.Store(binPath, usage)
 	}
 	for line := range strings.SplitSeq(usage.(string), "\n") {
 		if f := strings.Fields(line); len(f) > 0 && f[0] == "-"+name && strings.HasPrefix(line, "  -") {
@@ -219,6 +220,25 @@ func (c *Client) HasRunFlag(ctx context.Context, name string) bool {
 		}
 	}
 	return false
+}
+
+// HasRunFlag reports whether this rungv's run command takes the flag name,
+// written without its dash: an older rungv refuses a run with a flag it
+// does not know. The usage text is read once for each binary.
+func (c *Client) HasRunFlag(ctx context.Context, name string) bool {
+	if c == nil {
+		return false
+	}
+	return hasCommandFlag(ctx, &runFlags, "run", c.Path, name)
+}
+
+// HasRestoreFlag reports whether this rungv's restore command takes the flag
+// name, written without its dash. The usage text is read once for each binary.
+func (c *Client) HasRestoreFlag(ctx context.Context, name string) bool {
+	if c == nil {
+		return false
+	}
+	return hasCommandFlag(ctx, &restoreFlags, "restore", c.Path, name)
 }
 
 // Stream runs a command and hands every line of stdout and stderr to line,

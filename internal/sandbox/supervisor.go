@@ -101,6 +101,10 @@ type State struct {
 	DynamicPorts bool
 	// BindAttach reports that the run started with --allow-bind-attach (live host bind mounts).
 	BindAttach bool
+	// LiveMounts reports that the run supports live host bind mounts via
+	// --allow-bind-attach (POSIX SCM_RIGHTS) or `rungv mount serve` (rpcfs,
+	// including on Windows).
+	LiveMounts bool
 	// NetQoS reports that the run supports live NAT bandwidth limits (--net-tx-bps/--net-rx-bps).
 	NetQoS bool
 	// NATPolicy reports that the run supports live NAT firewall policy inspection and replacement.
@@ -122,7 +126,7 @@ func (s State) Equal(o State) bool {
 		s.Restored == o.Restored && s.LogSeq == o.LogSeq && s.Signal == o.Signal &&
 		s.Control == o.Control && s.Paused == o.Paused &&
 		s.DynamicPorts == o.DynamicPorts && s.BindAttach == o.BindAttach &&
-		s.NetQoS == o.NetQoS && s.NATPolicy == o.NATPolicy
+		s.LiveMounts == o.LiveMounts && s.NetQoS == o.NetQoS && s.NATPolicy == o.NATPolicy
 }
 
 // Event is a change the supervisor reports.
@@ -192,6 +196,8 @@ type proc struct {
 	// release is Launch's, called as the run ends.
 	release      func()
 	eventsCancel context.CancelFunc
+	serves       map[string]*serveProc
+	servesClosed bool
 
 	stdinMu     sync.Mutex
 	stdinW      *os.File
@@ -486,6 +492,7 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 	isNAT := spec.Network == "" || spec.Network == "nat"
 	paths.DynamicPorts = feat.DynamicPorts && spec.ContainerID == "" && isNAT
 	paths.AllowBindAttach = feat.BindAttach && runtime.GOOS != "windows" && spec.ContainerID == ""
+	paths.RestoreLiveMounts = feat.RestoreLiveMounts
 	if HasAutoPublish(spec) && !client.HasRunFlag(context.Background(), "auto-publish") {
 		// An older rungv would refuse the run: it starts without, and
 		// reaches this computer through the ports it publishes.
@@ -590,6 +597,7 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 		eventsCtx, eventsCancel = context.WithCancel(context.Background())
 	}
 
+	bindAttach := paths.Control && paths.AllowBindAttach
 	p := &proc{
 		cmd:          cmd,
 		client:       client,
@@ -609,7 +617,8 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 			Restored:     restoreDir,
 			Control:      paths.Control,
 			DynamicPorts: paths.Control && paths.DynamicPorts,
-			BindAttach:   paths.Control && paths.AllowBindAttach,
+			BindAttach:   bindAttach,
+			LiveMounts:   bindAttach || (paths.Control && feat.KeepBlobs),
 			NetQoS:       paths.Control && feat.NetQoS && isNAT,
 			NATPolicy:    paths.Control && feat.NATPolicy && isNAT,
 		},
@@ -736,6 +745,7 @@ func (s *Supervisor) exited(id string, p *proc, err error) {
 	if p.eventsCancel != nil {
 		p.eventsCancel()
 	}
+	s.stopAllServes(p)
 	logs := s.Logs(id)
 	s.mu.Lock()
 	code := 0

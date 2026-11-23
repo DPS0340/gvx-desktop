@@ -211,3 +211,119 @@ func shareableDir(t *testing.T) string {
 	}
 	return abs
 }
+
+func TestSSHAgentForwardHelpers(t *testing.T) {
+	if SSHAuthSocketGuestPath != "/run/host-services/ssh-auth.sock" {
+		t.Fatalf("SSHAuthSocketGuestPath = %q", SSHAuthSocketGuestPath)
+	}
+	base := DockerEngine()
+	base.UnixForwards = []string{"/run/custom.sock=/tmp/custom.sock,mode=0600"}
+	if HasSSHAgentForward(base) {
+		t.Fatal("default DockerEngine should not have SSH agent forward")
+	}
+
+	// Enable SSH agent forward while preserving existing forwards and not mutating base.
+	enabled := WithSSHAgentForward(base, "/tmp/agent1.sock")
+	if HasSSHAgentForward(base) {
+		t.Fatal("WithSSHAgentForward mutated input spec")
+	}
+	if !HasSSHAgentForward(enabled) {
+		t.Fatal("HasSSHAgentForward = false after enabling")
+	}
+	wantEnabled := []string{
+		"/run/custom.sock=/tmp/custom.sock,mode=0600",
+		"/run/host-services/ssh-auth.sock=/tmp/agent1.sock",
+	}
+	if !slices.Equal(enabled.UnixForwards, wantEnabled) {
+		t.Fatalf("enabled.UnixForwards = %q, want %q", enabled.UnixForwards, wantEnabled)
+	}
+	if err := enabled.Validate(); err != nil {
+		t.Fatalf("enabled spec invalid: %v", err)
+	}
+
+	// Updating host socket replaces existing SSH forward without duplicating it.
+	updated := WithSSHAgentForward(enabled, "/tmp/agent2.sock")
+	wantUpdated := []string{
+		"/run/custom.sock=/tmp/custom.sock,mode=0600",
+		"/run/host-services/ssh-auth.sock=/tmp/agent2.sock",
+	}
+	if !slices.Equal(updated.UnixForwards, wantUpdated) {
+		t.Fatalf("updated.UnixForwards = %q, want %q", updated.UnixForwards, wantUpdated)
+	}
+
+	// Clearing host socket removes only the SSH agent forward.
+	cleared := WithSSHAgentForward(updated, "")
+	if HasSSHAgentForward(cleared) {
+		t.Fatal("HasSSHAgentForward = true after clearing")
+	}
+	if !slices.Equal(cleared.UnixForwards, []string{"/run/custom.sock=/tmp/custom.sock,mode=0600"}) {
+		t.Fatalf("cleared.UnixForwards = %q", cleared.UnixForwards)
+	}
+
+	// Clearing when no other forwards exist leaves UnixForwards empty.
+	onlySSH := WithSSHAgentForward(DockerEngine(), "/tmp/agent.sock")
+	none := WithSSHAgentForward(onlySSH, "   ")
+	if HasSSHAgentForward(none) || len(none.UnixForwards) != 0 {
+		t.Fatalf("none.UnixForwards = %q, want empty", none.UnixForwards)
+	}
+}
+
+func TestDockerAutoPublishAddrHelpers(t *testing.T) {
+	base := DockerEngine()
+	if got := DockerAutoPublishAddr(base); got != "" {
+		t.Fatalf("default DockerAutoPublishAddr = %q, want empty", got)
+	}
+
+	// Explicit 127.0.0.1 is treated as loopback-only ("").
+	loop := base.Clone()
+	loop.AutoPublishAddr = "127.0.0.1"
+	if got := DockerAutoPublishAddr(loop); got != "" {
+		t.Fatalf("127.0.0.1 DockerAutoPublishAddr = %q, want empty", got)
+	}
+
+	// Opt in to 0.0.0.0: sets AutoPublishAddr and adds 0.0.0.0 to DynamicPortAddrs.
+	lan := WithDockerAutoPublishAddr(base, "0.0.0.0")
+	if DockerAutoPublishAddr(base) != "" || len(base.DynamicPortAddrs) != 0 {
+		t.Fatal("WithDockerAutoPublishAddr mutated input spec")
+	}
+	if got := DockerAutoPublishAddr(lan); got != "0.0.0.0" {
+		t.Fatalf("lan DockerAutoPublishAddr = %q, want 0.0.0.0", got)
+	}
+	if lan.AutoPublishAddr != "0.0.0.0" || !slices.Equal(lan.DynamicPortAddrs, []string{"0.0.0.0"}) {
+		t.Fatalf("lan spec = (addr=%q, dyn=%q)", lan.AutoPublishAddr, lan.DynamicPortAddrs)
+	}
+	if err := lan.Validate(); err != nil {
+		t.Fatalf("lan spec invalid: %v", err)
+	}
+
+	// Calling again with same address does not duplicate DynamicPortAddrs.
+	lanAgain := WithDockerAutoPublishAddr(lan, "0.0.0.0")
+	if !slices.Equal(lanAgain.DynamicPortAddrs, []string{"0.0.0.0"}) {
+		t.Fatalf("duplicate DynamicPortAddrs: %q", lanAgain.DynamicPortAddrs)
+	}
+
+	// Changing to a specific LAN IP replaces the previous address while preserving unrelated entries.
+	lan.DynamicPortAddrs = append(lan.DynamicPortAddrs, "10.0.0.2")
+	specific := WithDockerAutoPublishAddr(lan, "192.168.1.5")
+	if got := DockerAutoPublishAddr(specific); got != "192.168.1.5" {
+		t.Fatalf("specific DockerAutoPublishAddr = %q, want 192.168.1.5", got)
+	}
+	if !slices.Equal(specific.DynamicPortAddrs, []string{"10.0.0.2", "192.168.1.5"}) {
+		t.Fatalf("specific.DynamicPortAddrs = %q, want [10.0.0.2 192.168.1.5]", specific.DynamicPortAddrs)
+	}
+
+	// Clearing via "127.0.0.1" clears AutoPublishAddr and removes only the previous auto-publish addr.
+	backLoop := WithDockerAutoPublishAddr(specific, "127.0.0.1")
+	if backLoop.AutoPublishAddr != "" || DockerAutoPublishAddr(backLoop) != "" {
+		t.Fatalf("backLoop AutoPublishAddr = %q", backLoop.AutoPublishAddr)
+	}
+	if !slices.Equal(backLoop.DynamicPortAddrs, []string{"10.0.0.2"}) {
+		t.Fatalf("backLoop.DynamicPortAddrs = %q, want [10.0.0.2]", backLoop.DynamicPortAddrs)
+	}
+
+	// Clearing via "" when no extra addrs exist leaves DynamicPortAddrs empty.
+	cleared := WithDockerAutoPublishAddr(WithDockerAutoPublishAddr(base, "0.0.0.0"), "")
+	if cleared.AutoPublishAddr != "" || len(cleared.DynamicPortAddrs) != 0 {
+		t.Fatalf("cleared = (addr=%q, dyn=%q)", cleared.AutoPublishAddr, cleared.DynamicPortAddrs)
+	}
+}

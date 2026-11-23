@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"path"
@@ -448,16 +449,114 @@ type Paths struct {
 	// AllowBindAttach passes --allow-bind-attach on run and restore so POSIX
 	// SCM_RIGHTS `rungv mount add --type bind` works under host lockdown.
 	AllowBindAttach bool
+	// RestoreLiveMounts reports that rungv restore accepts --attach-bind and
+	// --serve, so RestoreArgs inspects <dir>/manifest.json to reattach
+	// checkpointed dynamic bind and rpcfs mounts.
+	RestoreLiveMounts bool
 }
 
 // RunArgs is the argument vector of rungv run for the spec, without the
 // rungv executable itself.
 func (s Spec) RunArgs(p Paths) []string {
 	args := []string{"run"}
-	args = append(args, s.flags(p, false)...)
+	args = append(args, s.flags(p, false, nil)...)
 	args = append(args, s.Image)
 	cmd, _ := rungv.SplitArgs(s.Command)
 	return append(args, cmd...)
+}
+
+const maxRestoreManifestBytes = 1 << 20
+
+type restoreManifest struct {
+	Mounts []restoreManifestMount `json:"mounts,omitempty"`
+}
+
+type restoreManifestMount struct {
+	Type       string `json:"type"`
+	GuestPath  string `json:"guest_path"`
+	ReadOnly   bool   `json:"read_only"`
+	Kind       string `json:"kind,omitempty"`
+	Dynamic    bool   `json:"dynamic,omitempty"`
+	Label      string `json:"label,omitempty"`
+	SingleFile bool   `json:"single_file,omitempty"`
+}
+
+// restoreLiveMountFlags reads <dir>/manifest.json and returns guest paths that
+// must be omitted from -v/-workspace along with the --attach-bind and --serve
+// values required to reattach checkpointed dynamic bind and rpcfs mounts.
+func (s Spec) restoreLiveMountFlags(dir string) (skipTargets map[string]bool, attachBinds, serveMounts []string) {
+	f, err := os.Open(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		return nil, nil, nil
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxRestoreManifestBytes+1))
+	if err != nil || len(data) == 0 || len(data) > maxRestoreManifestBytes {
+		return nil, nil, nil
+	}
+	var m restoreManifest
+	if err := json.Unmarshal(data, &m); err != nil || len(m.Mounts) == 0 {
+		return nil, nil, nil
+	}
+
+	specBinds := make(map[string]string, len(s.Mounts)+1)
+	if ws := strings.TrimSpace(s.Workspace); ws != "" {
+		specBinds["/workspace"] = rungv.ExpandHome(ws)
+	}
+	for _, sm := range s.Mounts {
+		if sm.Type != MountBind {
+			continue
+		}
+		gp := path.Clean(strings.TrimSpace(sm.Target))
+		if src := strings.TrimSpace(sm.Source); gp != "" && src != "" {
+			specBinds[gp] = rungv.ExpandHome(src)
+		}
+	}
+
+	resolveHost := func(mm restoreManifestMount, guestPath string) string {
+		if label := strings.TrimSpace(mm.Label); label != "" {
+			return rungv.ExpandHome(label)
+		}
+		return specBinds[guestPath]
+	}
+
+	seen := make(map[string]bool, len(m.Mounts))
+	for _, mm := range m.Mounts {
+		rawGuest := strings.TrimSpace(mm.GuestPath)
+		if !strings.HasPrefix(rawGuest, "/") {
+			continue
+		}
+		guestPath := path.Clean(rawGuest)
+		if guestPath == "/" || seen[guestPath] {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(mm.Type)) {
+		case "bind":
+			if !mm.Dynamic {
+				continue
+			}
+			hostPath := resolveHost(mm, guestPath)
+			if hostPath == "" {
+				continue
+			}
+			seen[guestPath] = true
+			if skipTargets == nil {
+				skipTargets = map[string]bool{}
+			}
+			skipTargets[guestPath] = true
+			attachBinds = append(attachBinds, volumeSpec(hostPath, guestPath, mm.ReadOnly))
+		case "rpcfs":
+			seen[guestPath] = true
+			if skipTargets == nil {
+				skipTargets = map[string]bool{}
+			}
+			skipTargets[guestPath] = true
+			if hostPath := resolveHost(mm, guestPath); hostPath != "" {
+				serveMounts = append(serveMounts, volumeSpec(hostPath, guestPath, mm.ReadOnly))
+			}
+		}
+	}
+	return skipTargets, attachBinds, serveMounts
 }
 
 // RestoreArgs resumes the checkpoint bundle in dir with the same mounts,
@@ -471,13 +570,25 @@ func (s Spec) RestoreArgs(dir string, p Paths) []string {
 	if p.TokenFile != "" {
 		args = append(args, "--control-token-file", p.TokenFile)
 	}
-	return append(args, s.flags(Paths{
+	var skipMounts map[string]bool
+	var attachBinds, serveMounts []string
+	if p.RestoreLiveMounts && dir != "" {
+		skipMounts, attachBinds, serveMounts = s.restoreLiveMountFlags(dir)
+	}
+	args = append(args, s.flags(Paths{
 		DynamicPorts:    p.DynamicPorts,
 		AllowBindAttach: p.AllowBindAttach,
-	}, true)...)
+	}, true, skipMounts)...)
+	for _, ab := range attachBinds {
+		args = append(args, "--attach-bind", ab)
+	}
+	for _, sm := range serveMounts {
+		args = append(args, "--serve", sm)
+	}
+	return args
 }
 
-func (s Spec) flags(p Paths, restore bool) []string {
+func (s Spec) flags(p Paths, restore bool, skipMounts map[string]bool) []string {
 	var a []string
 	add := func(v ...string) { a = append(a, v...) }
 	// The name is the guest's container ID, which a restore needs to match
@@ -570,7 +681,7 @@ func (s Spec) flags(p Paths, restore bool) []string {
 			add("--unix-forward", u)
 		}
 	}
-	if s.Workspace != "" {
+	if s.Workspace != "" && !skipMounts["/workspace"] {
 		add("-workspace", rungv.ExpandHome(s.Workspace))
 		if s.WorkspaceRO {
 			add("-ro")
@@ -580,6 +691,9 @@ func (s Spec) flags(p Paths, restore bool) []string {
 		add("-rootfs-volume", rungv.ExpandHome(s.RootfsVolume))
 	}
 	for _, m := range s.Mounts {
+		if len(skipMounts) > 0 && skipMounts[path.Clean(strings.TrimSpace(m.Target))] {
+			continue
+		}
 		add(m.args()...)
 	}
 	if p.AllowBindAttach {

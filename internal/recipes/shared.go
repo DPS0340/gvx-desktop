@@ -251,3 +251,93 @@ func AddSharedFolder(folders []string, dir string) ([]string, error) {
 	}
 	return append(out, dir), nil
 }
+
+// SSHAuthSocketGuestPath is the guest path where Docker Desktop and gvx expose
+// the forwarded host SSH agent Unix socket.
+const SSHAuthSocketGuestPath = "/run/host-services/ssh-auth.sock"
+
+func isSSHAgentForward(uf string) (hostSock string, ok bool) {
+	guest, rhs, hasEq := strings.Cut(strings.TrimSpace(uf), "=")
+	if !hasEq {
+		return "", false
+	}
+	if path.Clean(strings.TrimSpace(guest)) != SSHAuthSocketGuestPath {
+		return "", false
+	}
+	host, _, _ := strings.Cut(rhs, ",")
+	return strings.TrimSpace(host), true
+}
+
+// HasSSHAgentForward reports whether spec forwards the host SSH agent socket
+// into the guest at SSHAuthSocketGuestPath.
+func HasSSHAgentForward(spec sandbox.Spec) bool {
+	for _, uf := range spec.UnixForwards {
+		if host, ok := isSSHAgentForward(uf); ok && host != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// WithSSHAgentForward returns spec with the guest SSHAuthSocketGuestPath Unix
+// forward set to hostSocket (when non-empty) or removed (when empty),
+// preserving all other spec.UnixForwards entries.
+func WithSSHAgentForward(spec sandbox.Spec, hostSocket string) sandbox.Spec {
+	spec = spec.Clone()
+	hostSocket = strings.TrimSpace(hostSocket)
+	var kept []string
+	for _, uf := range spec.UnixForwards {
+		if _, ok := isSSHAgentForward(uf); !ok {
+			kept = append(kept, uf)
+		}
+	}
+	if hostSocket != "" {
+		kept = append(kept, SSHAuthSocketGuestPath+"="+hostSocket)
+	}
+	spec.UnixForwards = kept
+	return spec
+}
+
+// DockerAutoPublishAddr returns the non-loopback auto-publish bind address
+// configured on a Docker Engine spec, or "" when it stays loopback-only
+// ("" or "127.0.0.1").
+func DockerAutoPublishAddr(spec sandbox.Spec) string {
+	a := strings.TrimSpace(spec.AutoPublishAddr)
+	if a == "" || a == "127.0.0.1" {
+		return ""
+	}
+	return a
+}
+
+// WithDockerAutoPublishAddr returns spec with spec.AutoPublishAddr and its
+// corresponding spec.DynamicPortAddrs entry set to addr (e.g. "0.0.0.0"), or
+// cleared when addr is "" or "127.0.0.1" (loopback-only). Any other entries
+// in spec.DynamicPortAddrs are preserved.
+func WithDockerAutoPublishAddr(spec sandbox.Spec, addr string) sandbox.Spec {
+	spec = spec.Clone()
+	prev := DockerAutoPublishAddr(spec)
+	next := strings.TrimSpace(addr)
+	if next == "127.0.0.1" {
+		next = ""
+	}
+
+	var addrs []string
+	for _, raw := range spec.DynamicPortAddrs {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if prev != "" && trimmed == prev && prev != next {
+			continue
+		}
+		if !slices.Contains(addrs, trimmed) {
+			addrs = append(addrs, trimmed)
+		}
+	}
+	if next != "" && !slices.Contains(addrs, next) {
+		addrs = append(addrs, next)
+	}
+	spec.AutoPublishAddr = next
+	spec.DynamicPortAddrs = addrs
+	return spec
+}

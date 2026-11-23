@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -160,13 +161,14 @@ func containsSubslice(haystack, needle []string) bool {
 }
 
 func TestStateEqualV021Capabilities(t *testing.T) {
-	base := State{Status: Running, Control: true, DynamicPorts: true, BindAttach: true, NetQoS: true, NATPolicy: true}
+	base := State{Status: Running, Control: true, DynamicPorts: true, BindAttach: true, LiveMounts: true, NetQoS: true, NATPolicy: true}
 	if !base.Equal(base) {
 		t.Fatal("State not equal to itself")
 	}
 	for name, mut := range map[string]func(*State){
 		"DynamicPorts": func(s *State) { s.DynamicPorts = false },
 		"BindAttach":   func(s *State) { s.BindAttach = false },
+		"LiveMounts":   func(s *State) { s.LiveMounts = false },
 		"NetQoS":       func(s *State) { s.NetQoS = false },
 		"NATPolicy":    func(s *State) { s.NATPolicy = false },
 	} {
@@ -274,13 +276,19 @@ func TestComputeLiveDiffTable(t *testing.T) {
 		}
 	})
 
-	t.Run("bind mount requires State.BindAttach", func(t *testing.T) {
+	t.Run("bind mount requires State.BindAttach or State.LiveMounts", func(t *testing.T) {
 		ed := base.Clone()
 		ed.Mounts = append(ed.Mounts, Mount{Type: MountBind, Source: "/host/c", Target: "/c"})
 		st := fullState
 		st.BindAttach = false
+		st.LiveMounts = false
 		if _, ok := ComputeLiveDiff(base, ed, st); ok {
-			t.Fatal("bind mount should not be live without State.BindAttach")
+			t.Fatal("bind mount should not be live without State.BindAttach or State.LiveMounts")
+		}
+		st.LiveMounts = true
+		diff, ok := ComputeLiveDiff(base, ed, st)
+		if !ok || len(diff.AddMounts) != 1 || diff.AddMounts[0].Target != "/c" {
+			t.Fatalf("bind mount with LiveMounts=true diff = (%+v, %v)", diff, ok)
 		}
 	})
 
@@ -523,5 +531,469 @@ exit 0
 	ctrSt := s.State(ctrSpec.ID)
 	if ctrSt.DynamicPorts || ctrSt.BindAttach {
 		t.Errorf("container spec should not enable DynamicPorts/BindAttach: %+v", ctrSt)
+	}
+}
+
+func TestRestoreArgsLiveMountsManifest(t *testing.T) {
+	ckptDir := t.TempDir()
+	manifest := map[string]any{
+		"version": 1,
+		"mounts": []map[string]any{
+			// Static bind mount stays on -v.
+			{"type": "bind", "guest_path": "/static", "read_only": false, "kind": "hostfs", "dynamic": false, "label": "/host/static"},
+			// Dynamic bind mount with label -> --attach-bind, skipped from -v.
+			{"type": "bind", "guest_path": "/dyn", "read_only": true, "kind": "hostfs", "dynamic": true, "label": "/host/dyn"},
+			// Dynamic bind mount with empty label -> resolved from spec.Mounts.
+			{"type": "bind", "guest_path": "/from-spec", "read_only": false, "kind": "hostfs", "dynamic": true},
+			// Dynamic bind mount not in spec.Mounts -> resolved from label.
+			{"type": "bind", "guest_path": "/external-dyn", "read_only": false, "kind": "hostfs", "dynamic": true, "label": "/host/ext"},
+			// rpcfs mount also present in spec.Mounts -> --serve, skipped from -v.
+			{"type": "rpcfs", "guest_path": "/rpc-dir", "read_only": false, "kind": "rpcfs", "dynamic": true, "label": "/host/rpc"},
+			// Single-file read-only rpcfs with Windows path -> --serve ...:ro.
+			{"type": "rpcfs", "guest_path": "/rpc-file", "read_only": true, "kind": "rpcfs", "dynamic": true, "label": `C:\work\one.txt`, "single_file": true},
+			// rpcfs with empty label and not in spec -> omitted from --serve (detached restore) and never emitted as -v.
+			{"type": "rpcfs", "guest_path": "/rpc-detached", "read_only": false, "kind": "rpcfs", "dynamic": true},
+			// Dynamic tmpfs -> untouched (restored automatically by gvx).
+			{"type": "tmpfs", "guest_path": "/tmp/dyn", "read_only": false, "kind": "tmpfs", "dynamic": true},
+		},
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ckptDir, "manifest.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := Spec{
+		Name:  "restored",
+		Image: "alpine:3.20",
+		Mounts: []Mount{
+			{Type: MountBind, Source: "/host/static", Target: "/static"},
+			{Type: MountBind, Source: "/host/dyn", Target: "/dyn", ReadOnly: true},
+			{Type: MountBind, Source: "/host/from-spec", Target: "/from-spec"},
+			{Type: MountBind, Source: "/host/rpc", Target: "/rpc-dir"},
+			{Type: MountVolume, Source: "vol1", Target: "/vol"},
+		},
+	}
+
+	// With RestoreLiveMounts=true, --attach-bind and --serve are emitted and duplicate -v are skipped.
+	args := spec.RestoreArgs(ckptDir, Paths{ControlSocket: "/tmp/c.sock", RestoreLiveMounts: true})
+	for _, want := range [][]string{
+		{"-v", "/host/static:/static"},
+		{"-v", "vol1:/vol"},
+		{"--attach-bind", "/host/dyn:/dyn:ro"},
+		{"--attach-bind", "/host/from-spec:/from-spec"},
+		{"--attach-bind", "/host/ext:/external-dyn"},
+		{"--serve", "/host/rpc:/rpc-dir"},
+		{"--serve", `C:\work\one.txt:/rpc-file:ro`},
+	} {
+		if !containsSubslice(args, want) {
+			t.Errorf("RestoreArgs missing %q in %q", want, args)
+		}
+	}
+	for _, forbidden := range [][]string{
+		{"-v", "/host/dyn:/dyn:ro"},
+		{"-v", "/host/dyn:/dyn"},
+		{"-v", "/host/from-spec:/from-spec"},
+		{"-v", "/host/rpc:/rpc-dir"},
+		{"--serve", ":/rpc-detached"},
+	} {
+		if containsSubslice(args, forbidden) {
+			t.Errorf("RestoreArgs unexpectedly contained %q in %q", forbidden, args)
+		}
+	}
+
+	// Without RestoreLiveMounts (v0.19/v0.20), restore args stay unchanged.
+	legacyArgs := spec.RestoreArgs(ckptDir, Paths{ControlSocket: "/tmp/c.sock", RestoreLiveMounts: false})
+	if slices.Contains(legacyArgs, "--attach-bind") || slices.Contains(legacyArgs, "--serve") {
+		t.Errorf("legacy RestoreArgs unexpectedly emitted live mount flags: %q", legacyArgs)
+	}
+	if !containsSubslice(legacyArgs, []string{"-v", "/host/dyn:/dyn:ro"}) || !containsSubslice(legacyArgs, []string{"-v", "/host/rpc:/rpc-dir"}) {
+		t.Errorf("legacy RestoreArgs dropped -v mounts: %q", legacyArgs)
+	}
+
+	// Missing manifest.json leaves restore args unchanged even when RestoreLiveMounts=true.
+	noManifestDir := t.TempDir()
+	noManifestArgs := spec.RestoreArgs(noManifestDir, Paths{ControlSocket: "/tmp/c.sock", RestoreLiveMounts: true})
+	if slices.Contains(noManifestArgs, "--attach-bind") || slices.Contains(noManifestArgs, "--serve") {
+		t.Errorf("missing manifest RestoreArgs emitted live mount flags: %q", noManifestArgs)
+	}
+	if !containsSubslice(noManifestArgs, []string{"-v", "/host/dyn:/dyn:ro"}) {
+		t.Errorf("missing manifest RestoreArgs dropped -v mounts: %q", noManifestArgs)
+	}
+}
+
+func TestSupervisorRestoreLiveMountsEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake rungv")
+	}
+	dir := t.TempDir()
+	ckptDir := filepath.Join(dir, "ckpt")
+	if err := os.MkdirAll(ckptDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifestJSON := `{"version":1,"mounts":[` +
+		`{"type":"bind","guest_path":"/static","read_only":false,"dynamic":false,"label":"/host/static"},` +
+		`{"type":"bind","guest_path":"/dyn","read_only":false,"dynamic":true,"label":"/host/dyn"},` +
+		`{"type":"rpcfs","guest_path":"/rpc","read_only":true,"dynamic":true,"label":"/host/rpc"}` +
+		`]}`
+	if err := os.WriteFile(filepath.Join(ckptDir, "manifest.json"), []byte(manifestJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restoreArgsFile := filepath.Join(dir, "restore.args")
+	bin := filepath.Join(dir, "rungv")
+	t.Cleanup(func() { rungv.ForgetFeatures(bin) })
+	script := `#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "-help" ]; then
+  echo "  -control-token-file string"
+  echo "  -keep-blobs"
+  exit 2
+fi
+if [ "$1" = "restore" ] && [ "$2" = "-help" ]; then
+  echo "  -attach-bind value"
+  echo "  -serve value"
+  exit 0
+fi
+if [ "$1" = "restore" ]; then
+  : > "` + restoreArgsFile + `"
+  for a in "$@"; do printf '%s\n' "$a" >> "` + restoreArgsFile + `"; done
+  exec sleep 30
+fi
+exit 0
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := newTestSupervisor(t, &rungv.Client{Path: bin})
+	spec := Spec{
+		ID:    "rst1",
+		Name:  "rst1",
+		Image: "alpine:3.20",
+		Mounts: []Mount{
+			{Type: MountBind, Source: "/host/static", Target: "/static"},
+			{Type: MountBind, Source: "/host/dyn", Target: "/dyn"},
+			{Type: MountBind, Source: "/host/rpc", Target: "/rpc", ReadOnly: true},
+		},
+	}
+	if err := s.Restore(spec, ckptDir); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	waitFor(t, "restore args written", 5*time.Second, func() bool {
+		st, err := os.Stat(restoreArgsFile)
+		return err == nil && st.Size() > 0
+	})
+	raw, err := os.ReadFile(restoreArgsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	for _, want := range [][]string{
+		{"-v", "/host/static:/static"},
+		{"--attach-bind", "/host/dyn:/dyn"},
+		{"--serve", "/host/rpc:/rpc:ro"},
+	} {
+		if !containsSubslice(gotArgs, want) {
+			t.Errorf("rungv restore missing %q in %q", want, gotArgs)
+		}
+	}
+	if containsSubslice(gotArgs, []string{"-v", "/host/dyn:/dyn"}) || containsSubslice(gotArgs, []string{"-v", "/host/rpc:/rpc:ro"}) {
+		t.Errorf("rungv restore received duplicate -v for live mount: %q", gotArgs)
+	}
+}
+
+func TestPortBindFailedEventDedupAndClearOnAdd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake rungv")
+	}
+	dir := t.TempDir()
+	eventsFile := filepath.Join(dir, "events.ndjson")
+	portsFile := filepath.Join(dir, "ports.ndjson")
+	if err := os.WriteFile(portsFile, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Emit two bind_failed events:
+	// - 127.0.0.1:18082/tcp (also printed on stderr -> must dedup to 1 EventPortBusy!)
+	// - ::1:18083/tcp (control event only -> must emit EventPortBusy once!)
+	if err := os.WriteFile(eventsFile, []byte(
+		`{"timestamp":"2026-11-23T10:00:00Z","type":"port","action":"bind_failed","attributes":{"source":"auto","proto":"tcp","host_ip":"127.0.0.1","host_port":"18082","guest_port":"18082","error":"address already in use"}}`+"\n"+
+			`{"timestamp":"2026-11-23T10:00:01Z","type":"port","action":"bind_failed","attributes":{"source":"auto","proto":"tcp","host_ip":"::1","host_port":"18083","guest_port":"18083","error":"address already in use"}}`+"\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := filepath.Join(dir, "rungv")
+	t.Cleanup(func() { rungv.ForgetFeatures(bin) })
+	script := `#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "-help" ]; then
+  echo "  -control-token-file string"
+  echo "  -keep-blobs"
+  exit 2
+fi
+case "$1" in
+  run)
+    echo 'gvx: warning: could not auto-publish 127.0.0.1:18082/tcp: listen tcp4 127.0.0.1:18082: bind: address already in use' >&2
+    exec sleep 30
+    ;;
+  events)
+    cat "` + eventsFile + `"
+    exec sleep 30
+    ;;
+  port)
+    cat "` + portsFile + `"
+    exit 0
+    ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origDelay := setSyncPortsDelay(20 * time.Millisecond)
+	t.Cleanup(func() { setSyncPortsDelay(origDelay) })
+
+	s, events := newTestSupervisor(t, &rungv.Client{Path: bin})
+	spec := Spec{ID: "bf1", Name: "bf1", Image: "alpine:3.20"}
+	if err := s.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait until both busy ports appear in State.Busy.
+	waitFor(t, "both busy ports recorded", 5*time.Second, func() bool {
+		return len(s.State(spec.ID).Busy) == 2
+	})
+	// Give stderr and events a brief moment to settle, then verify zero duplicate EventPortBusy.
+	time.Sleep(100 * time.Millisecond)
+	busyCounts := map[string]int{}
+	for len(events) > 0 {
+		ev := <-events
+		if ev.Kind == EventPortBusy {
+			busyCounts[ev.Port]++
+		}
+	}
+	if busyCounts["127.0.0.1:18082"] != 1 || busyCounts["[::1]:18083"] != 1 {
+		t.Fatalf("EventPortBusy counts = %v, want 1 each for 127.0.0.1:18082 and [::1]:18083", busyCounts)
+	}
+
+	// Test both dedup orders and clearing via handleRuntimeEvent directly.
+	s.mu.Lock()
+	p := s.procs[spec.ID]
+	s.mu.Unlock()
+
+	// Duplicate bind_failed event for already-busy port emits nothing.
+	s.handleRuntimeEvent(spec.ID, p, rungv.Event{
+		Type:   "port",
+		Action: "bind_failed",
+		Attributes: map[string]string{
+			"host_ip": "127.0.0.1", "host_port": "18082", "guest_port": "18082", "proto": "tcp",
+		},
+	})
+	// Reverse order: event first for a fresh port, then stderr portLine -> still 1 EventPortBusy.
+	s.handleRuntimeEvent(spec.ID, p, rungv.Event{
+		Type:   "port",
+		Action: "bind_failed",
+		Attributes: map[string]string{
+			"host_ip": "0.0.0.0", "host_port": "18084", "guest_port": "18084", "proto": "tcp",
+		},
+	})
+	s.mu.Lock()
+	dupBusy, ok := p.state.portLine("gvx: warning: could not auto-publish 0.0.0.0:18084/tcp: bind: address already in use")
+	s.mu.Unlock()
+	if !ok || dupBusy != "" {
+		t.Fatalf("stderr after bind_failed returned busy=%q ok=%v, want empty busy (deduped)", dupBusy, ok)
+	}
+
+	// Action "add" clears the matching busy entry from State.Busy.
+	s.handleRuntimeEvent(spec.ID, p, rungv.Event{
+		Type:   "port",
+		Action: "add",
+		Attributes: map[string]string{
+			"host_ip": "127.0.0.1", "host_port": "18082", "guest_port": "18082", "proto": "tcp",
+		},
+	})
+	st := s.State(spec.ID)
+	for _, b := range st.Busy {
+		if b.Host == "127.0.0.1:18082" {
+			t.Fatalf("127.0.0.1:18082 still in State.Busy after port add event: %+v", st.Busy)
+		}
+	}
+	if len(st.Busy) != 2 {
+		t.Fatalf("expected 2 remaining busy ports ([::1]:18083 and 0.0.0.0:18084), got %+v", st.Busy)
+	}
+}
+
+func TestMountServeLifecycleApplyLiveAndExitCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake rungv")
+	}
+	dir := t.TempDir()
+	serveLog := filepath.Join(dir, "serve.log")
+	rmLog := filepath.Join(dir, "rm.log")
+	pidDir := filepath.Join(dir, "pids")
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	busyFlag := filepath.Join(dir, "busy.flag")
+
+	// Fake v0.21 rungv WITHOUT -allow-bind-attach (simulates Windows where BindAttach=false, LiveMounts=true).
+	bin := filepath.Join(dir, "rungv")
+	t.Cleanup(func() { rungv.ForgetFeatures(bin) })
+	script := `#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "-help" ]; then
+  echo "  -control-token-file string"
+  echo "  -keep-blobs"
+  exit 2
+fi
+cmd="$1"
+shift
+case "$cmd" in
+  run)
+    exec sleep 30
+    ;;
+  mount)
+    sub="$1"
+    shift
+    case "$sub" in
+      serve)
+        printf '%s\n' "$*" >> "` + serveLog + `"
+        spec=""
+        for a in "$@"; do spec="$a"; done
+        case "$spec" in
+          *fail-serve*)
+            echo "rungv mount serve: ALREADY_EXISTS: mount target already exists" >&2
+            exit 1
+            ;;
+        esac
+        name=$(printf '%s' "$spec" | tr '/:' '__')
+        echo "$$" > "` + pidDir + `/${name}.running"
+        trap 'rm -f "` + pidDir + `/${name}.running"; touch "` + pidDir + `/${name}.exited"; exit 0' INT TERM
+        echo "Serving ${spec}"
+        while true; do sleep 0.05; done
+        ;;
+      rm)
+        if [ -f "` + busyFlag + `" ]; then
+          echo "rungv mount rm: BUSY: mount is busy" >&2
+          exit 1
+        fi
+        printf '%s\n' "$*" >> "` + rmLog + `"
+        exit 0
+        ;;
+      add)
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := newTestSupervisor(t, &rungv.Client{Path: bin})
+	spec := Spec{ID: "ms1", Name: "ms1", Image: "alpine:3.20"}
+	if err := s.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitFor(t, "running", 5*time.Second, func() bool { return s.State(spec.ID).Status == Running })
+
+	st := s.State(spec.ID)
+	if st.BindAttach {
+		t.Fatalf("expected BindAttach=false when -allow-bind-attach absent, got %+v", st)
+	}
+	if !st.LiveMounts {
+		t.Fatalf("expected LiveMounts=true when Control && KeepBlobs, got %+v", st)
+	}
+
+	ctx := context.Background()
+	serveMarker := func(host, guest, suffix string) string {
+		name := strings.NewReplacer("/", "_", ":", "_").Replace(host + ":" + guest)
+		return filepath.Join(pidDir, name+"."+suffix)
+	}
+	serveAlive := func(host, guest string) bool {
+		_, err := os.Stat(serveMarker(host, guest, "running"))
+		return err == nil
+	}
+	serveExited := func(host, guest string) bool {
+		_, err := os.Stat(serveMarker(host, guest, "exited"))
+		return err == nil
+	}
+
+	// 1. Failing mount serve returns *rungv.Error with ControlCode ALREADY_EXISTS and does not update ActiveSpec.
+	err := s.AddMount(ctx, spec.ID, Mount{Type: MountBind, Source: "/host/fail-serve", Target: "/fail"})
+	if err == nil || rungv.ControlCode(err) != rungv.CodeAlreadyExists {
+		t.Fatalf("AddMount fail-serve = %v (code=%q), want ALREADY_EXISTS", err, rungv.ControlCode(err))
+	}
+	if active, _ := s.ActiveSpec(spec.ID); len(active.Mounts) != 0 {
+		t.Fatalf("ActiveSpec polluted after failed serve: %+v", active.Mounts)
+	}
+
+	// 2. AddMount (MountBind, ro) starts managed `rungv mount serve --ro`.
+	m1 := Mount{Type: MountBind, Source: "/host/a", Target: "/mnt/a", ReadOnly: true}
+	if err := s.AddMount(ctx, spec.ID, m1); err != nil {
+		t.Fatalf("AddMount m1: %v", err)
+	}
+	if !serveAlive("/host/a", "/mnt/a") {
+		t.Fatal("mount serve not running after AddMount")
+	}
+	if active, _ := s.ActiveSpec(spec.ID); len(active.Mounts) != 1 || active.Mounts[0] != m1 {
+		t.Fatalf("ActiveSpec after AddMount = %+v", active.Mounts)
+	}
+	rawServeLog, _ := os.ReadFile(serveLog)
+	if !strings.Contains(string(rawServeLog), "--ro -- /host/a:/mnt/a") {
+		t.Errorf("serve args missing --ro -- /host/a:/mnt/a: %q", rawServeLog)
+	}
+
+	// 3. RemoveMount failing with BUSY keeps mount serve alive and ActiveSpec intact.
+	if err := os.WriteFile(busyFlag, []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveMount(ctx, spec.ID, "/mnt/a", false); err == nil || rungv.ControlCode(err) != rungv.CodeBusy {
+		t.Fatalf("RemoveMount busy = %v (code=%q), want BUSY", err, rungv.ControlCode(err))
+	}
+	if !serveAlive("/host/a", "/mnt/a") {
+		t.Fatal("mount serve was stopped despite BUSY unmount")
+	}
+	_ = os.Remove(busyFlag)
+
+	// 4. RemoveMount succeeds, calls `mount rm`, stops & reaps mount serve subprocess, and updates ActiveSpec.
+	if err := s.RemoveMount(ctx, spec.ID, "/mnt/a", false); err != nil {
+		t.Fatalf("RemoveMount m1: %v", err)
+	}
+	if !serveExited("/host/a", "/mnt/a") || serveAlive("/host/a", "/mnt/a") {
+		t.Fatal("mount serve was not stopped and reaped by RemoveMount")
+	}
+	if active, _ := s.ActiveSpec(spec.ID); len(active.Mounts) != 0 {
+		t.Fatalf("ActiveSpec after RemoveMount = %+v", active.Mounts)
+	}
+	rawRmLog, _ := os.ReadFile(rmLog)
+	if !strings.Contains(string(rawRmLog), "/mnt/a") {
+		t.Errorf("mount rm not called for /mnt/a: %q", rawRmLog)
+	}
+
+	// 5. ApplyLive attaches a bind mount via mount serve when BindAttach=false && LiveMounts=true.
+	activeBefore, _ := s.ActiveSpec(spec.ID)
+	edited := activeBefore.Clone()
+	edited.Mounts = []Mount{{Type: MountBind, Source: "/host/live", Target: "/mnt/live"}}
+	diff, ok := ComputeLiveDiff(activeBefore, edited, s.State(spec.ID))
+	if !ok || len(diff.AddMounts) != 1 {
+		t.Fatalf("ComputeLiveDiff = (%+v, %v)", diff, ok)
+	}
+	if err := s.ApplyLive(ctx, spec.ID, diff); err != nil {
+		t.Fatalf("ApplyLive: %v", err)
+	}
+	if !serveAlive("/host/live", "/mnt/live") {
+		t.Fatal("ApplyLive mount serve not running")
+	}
+
+	// 6. Stopping the sandbox cleans up all active mount serve subprocesses before Stop returns.
+	if err := s.Stop(spec.ID, 5*time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !serveExited("/host/live", "/mnt/live") || serveAlive("/host/live", "/mnt/live") {
+		t.Fatal("ApplyLive mount serve was not cleaned up on sandbox exit")
 	}
 }

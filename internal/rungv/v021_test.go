@@ -405,3 +405,133 @@ exit 2
 		t.Error("ReplaceNATPolicy accepted leading dash")
 	}
 }
+
+func TestFeaturesRestoreLiveMountsAndForget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script stub")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "rungv")
+	t.Cleanup(func() { ForgetFeatures(bin) })
+
+	// Initially: v0.21 run flags, but restore lacks -attach-bind / -serve.
+	before := `#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "-help" ]; then
+  echo "  -control-token-file string"
+  echo "  -keep-blobs"
+  exit 2
+fi
+if [ "$1" = "restore" ] && [ "$2" = "-help" ]; then
+  echo "  -checkpoint-dir string"
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(bin, []byte(before), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{Path: bin}
+	ctx := context.Background()
+	f := c.Features(ctx)
+	if !f.Control || !f.KeepBlobs || f.RestoreLiveMounts {
+		t.Fatalf("before upgrade Features = %+v, want Control+KeepBlobs without RestoreLiveMounts", f)
+	}
+
+	// Upgrade binary to support -attach-bind and -serve on restore; cache still returns false until ForgetFeatures.
+	after := `#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "-help" ]; then
+  echo "  -control-token-file string"
+  echo "  -keep-blobs"
+  exit 2
+fi
+if [ "$1" = "restore" ] && [ "$2" = "-help" ]; then
+  echo "  -attach-bind value"
+  echo "  -checkpoint-dir string"
+  echo "  -serve value"
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(bin, []byte(after), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if cached := c.Features(ctx); cached.RestoreLiveMounts {
+		t.Fatalf("expected cached RestoreLiveMounts=false before ForgetFeatures, got %+v", cached)
+	}
+
+	ForgetFeatures(bin)
+	f2 := c.Features(ctx)
+	if !f2.RestoreLiveMounts {
+		t.Fatalf("after ForgetFeatures Features = %+v, want RestoreLiveMounts=true", f2)
+	}
+	if !c.HasRestoreFlag(ctx, "attach-bind") || !c.HasRestoreFlag(ctx, "serve") || c.HasRestoreFlag(ctx, "nonexistent") {
+		t.Fatal("HasRestoreFlag returned unexpected result")
+	}
+
+	// Partial restore support (only -attach-bind, missing -serve) keeps RestoreLiveMounts false.
+	partial := `#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "-help" ]; then
+  echo "  -control-token-file string"
+  echo "  -keep-blobs"
+  exit 2
+fi
+if [ "$1" = "restore" ] && [ "$2" = "-help" ]; then
+  echo "  -attach-bind value"
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(bin, []byte(partial), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ForgetFeatures(bin)
+	if f3 := c.Features(ctx); f3.RestoreLiveMounts {
+		t.Fatalf("partial restore flags reported RestoreLiveMounts=true: %+v", f3)
+	}
+}
+
+func TestMountServeAndUnixForwardArgsAndCommands(t *testing.T) {
+	c := &Client{Path: "/usr/bin/rungv", CacheDir: "/ignored-for-control"}
+	ctx := context.Background()
+
+	// MountServeArgs: rw, ro with token, Windows host path, and no -cache-dir injection.
+	rwArgs := c.MountServeArgs(Target{Socket: "/tmp/s.sock"}, "/host/proj", "/mnt/proj", false)
+	wantRW := []string{"mount", "serve", "-S", "/tmp/s.sock", "--", "/host/proj:/mnt/proj"}
+	if !slices.Equal(rwArgs, wantRW) {
+		t.Errorf("MountServeArgs rw = %q, want %q", rwArgs, wantRW)
+	}
+	roArgs := c.MountServeArgs(Target{Socket: `C:\tmp\s.sock`, TokenFile: `C:\tmp\s.tok`}, `C:\work\proj`, "/mnt/proj", true)
+	wantRO := []string{"mount", "serve", "-S", `C:\tmp\s.sock`, "--token-file", `C:\tmp\s.tok`, "--ro", "--", `C:\work\proj:/mnt/proj`}
+	if !slices.Equal(roArgs, wantRO) {
+		t.Errorf("MountServeArgs ro = %q, want %q", roArgs, wantRO)
+	}
+	serveCmd := c.MountServeCommand(ctx, Target{Socket: "/tmp/s.sock"}, "/host/proj", "/mnt/proj", true)
+	wantServeCmd := []string{"/usr/bin/rungv", "mount", "serve", "-S", "/tmp/s.sock", "--ro", "--", "/host/proj:/mnt/proj"}
+	if !slices.Equal(serveCmd.Args, wantServeCmd) {
+		t.Errorf("MountServeCommand.Args = %q, want %q", serveCmd.Args, wantServeCmd)
+	}
+
+	// UnixForwardArgs: single, multiple with --replace and token, ignores empty specs, no -cache-dir injection.
+	ufArgs := c.UnixForwardArgs(Target{Socket: "/tmp/s.sock"}, []string{"/run/host-services/ssh-auth.sock=/tmp/ssh.sock"}, false)
+	wantUF := []string{"unix-forward", "-S", "/tmp/s.sock", "--", "/run/host-services/ssh-auth.sock=/tmp/ssh.sock"}
+	if !slices.Equal(ufArgs, wantUF) {
+		t.Errorf("UnixForwardArgs = %q, want %q", ufArgs, wantUF)
+	}
+	ufRep := c.UnixForwardArgs(
+		Target{Socket: "/tmp/s.sock", TokenFile: "/tmp/s.tok"},
+		[]string{"  ", "/run/a.sock=/tmp/a.sock,mode=0600", "/run/b.sock=/tmp/b.sock"},
+		true,
+	)
+	wantUFRep := []string{
+		"unix-forward", "-S", "/tmp/s.sock", "--token-file", "/tmp/s.tok", "--replace",
+		"--", "/run/a.sock=/tmp/a.sock,mode=0600", "/run/b.sock=/tmp/b.sock",
+	}
+	if !slices.Equal(ufRep, wantUFRep) {
+		t.Errorf("UnixForwardArgs replace = %q, want %q", ufRep, wantUFRep)
+	}
+	ufCmd := c.UnixForwardCommand(ctx, Target{Socket: "/tmp/s.sock"}, []string{"/run/a.sock=/tmp/a.sock"}, true)
+	wantUFCmd := []string{"/usr/bin/rungv", "unix-forward", "-S", "/tmp/s.sock", "--replace", "--", "/run/a.sock=/tmp/a.sock"}
+	if !slices.Equal(ufCmd.Args, wantUFCmd) {
+		t.Errorf("UnixForwardCommand.Args = %q, want %q", ufCmd.Args, wantUFCmd)
+	}
+}

@@ -38,9 +38,47 @@ func (p PublishedPort) HostPort() int {
 
 func (p PublishedPort) sameHost(q PublishedPort) bool { return p.Host == q.Host && p.Proto == q.Proto }
 
+// recordBusy adds b to st.Busy when no matching host/proto entry is already
+// recorded, returning true only when newly added so stderr warnings and control
+// events never double-notify EventPortBusy.
+func (st *State) recordBusy(b PublishedPort) bool {
+	if b.Host == "" {
+		return false
+	}
+	if b.Proto == "" {
+		b.Proto = "tcp"
+	}
+	if b.Source == "" {
+		b.Source = "auto"
+	}
+	if b.Guest == 0 {
+		b.Guest = b.HostPort()
+	}
+	if slices.ContainsFunc(st.Busy, b.sameHost) {
+		return false
+	}
+	st.Busy = append(st.Busy, b)
+	return true
+}
+
+// clearBusy removes any entry in st.Busy matching host and proto, returning
+// true if st.Busy changed.
+func (st *State) clearBusy(host, proto string) bool {
+	if host == "" {
+		return false
+	}
+	if proto == "" {
+		proto = "tcp"
+	}
+	target := PublishedPort{Host: host, Proto: proto}
+	before := len(st.Busy)
+	st.Busy = slices.DeleteFunc(st.Busy, target.sameHost)
+	return len(st.Busy) != before
+}
+
 // portLine applies a line of rungv's about its ports to the state. ok
 // reports a line about ports; busy is the host address -auto-publish could
-// not take, for EventPortBusy.
+// not take, for EventPortBusy (non-empty only when newly recorded).
 func (st *State) portLine(line string) (busy string, ok bool) {
 	if !strings.HasPrefix(line, "gvx: ") && !strings.HasPrefix(line, "rungv: publishing ") {
 		return "", false
@@ -48,10 +86,10 @@ func (st *State) portLine(line string) (busy string, ok bool) {
 	if m := busyRe.FindStringSubmatch(line); m != nil {
 		b := PublishedPort{Host: m[1], Proto: m[2], Source: "auto"}
 		b.Guest = b.HostPort()
-		if !slices.ContainsFunc(st.Busy, b.sameHost) {
-			st.Busy = append(st.Busy, b)
+		if st.recordBusy(b) {
+			return m[1], true
 		}
-		return m[1], true
+		return "", true
 	}
 	add := func(m []string, source string) {
 		guest, _ := strconv.Atoi(m[2])
@@ -159,8 +197,14 @@ func (s *Supervisor) syncPorts(id string, p *proc) {
 		s.mu.Lock()
 		active := s.procs[id] == p && p.state.Status.Active() && !p.stopping
 		if err == nil && active {
-			if ports := portsFromRules(rules); !slices.Equal(ports, p.state.Ports) {
+			ports := portsFromRules(rules)
+			if !slices.Equal(ports, p.state.Ports) {
 				p.state.Ports, changed = ports, true
+			}
+			for _, pp := range ports {
+				if p.state.clearBusy(pp.Host, pp.Proto) {
+					changed = true
+				}
 			}
 		}
 		again = p.portAgain && active

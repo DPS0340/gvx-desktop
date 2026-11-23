@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,6 +62,42 @@ func (s *Supervisor) watchEvents(ctx context.Context, id string, p *proc) {
 	}
 }
 
+func portFromEventAttrs(attrs map[string]string) (PublishedPort, bool) {
+	if len(attrs) == 0 {
+		return PublishedPort{}, false
+	}
+	host := strings.TrimSpace(attrs["host_socket"])
+	hostPortStr := strings.TrimSpace(attrs["host_port"])
+	if host == "" {
+		if hostPortStr == "" {
+			return PublishedPort{}, false
+		}
+		hostIP := strings.TrimSpace(attrs["host_ip"])
+		if hostIP == "" {
+			hostIP = "127.0.0.1"
+		}
+		host = net.JoinHostPort(hostIP, hostPortStr)
+	}
+	proto := strings.ToLower(strings.TrimSpace(attrs["proto"]))
+	if proto == "" {
+		proto = "tcp"
+	}
+	source := strings.ToLower(strings.TrimSpace(attrs["source"]))
+	if source == "" {
+		source = "auto"
+	}
+	guest, _ := strconv.Atoi(strings.TrimSpace(attrs["guest_port"]))
+	if guest == 0 && hostPortStr != "" {
+		guest, _ = strconv.Atoi(hostPortStr)
+	}
+	return PublishedPort{
+		Host:   host,
+		Guest:  guest,
+		Proto:  proto,
+		Source: source,
+	}, true
+}
+
 func (s *Supervisor) handleRuntimeEvent(id string, p *proc, ev rungv.Event) {
 	evType := strings.ToLower(strings.TrimSpace(ev.Type))
 	action := strings.ToLower(strings.TrimSpace(ev.Action))
@@ -67,7 +105,35 @@ func (s *Supervisor) handleRuntimeEvent(id string, p *proc, ev rungv.Event) {
 	switch evType {
 	case "port":
 		switch action {
-		case "add", "added", "remove", "removed":
+		case "bind_failed":
+			bp, ok := portFromEventAttrs(ev.Attributes)
+			if !ok {
+				return
+			}
+			s.mu.Lock()
+			var emit bool
+			if s.procs[id] == p && p.state.Status.Active() {
+				emit = p.state.recordBusy(bp)
+			}
+			s.mu.Unlock()
+			if emit {
+				s.notify(Event{ID: id, Kind: EventPortBusy, State: s.State(id), Port: bp.Host})
+			}
+		case "add", "added":
+			bp, hasPort := portFromEventAttrs(ev.Attributes)
+			s.mu.Lock()
+			var clearedBusy bool
+			if s.procs[id] == p && p.state.Status.Active() {
+				if hasPort {
+					clearedBusy = p.state.clearBusy(bp.Host, bp.Proto)
+				}
+				s.syncPortsLocked(id, p)
+			}
+			s.mu.Unlock()
+			if clearedBusy {
+				s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
+			}
+		case "remove", "removed":
 			s.mu.Lock()
 			if s.procs[id] == p && p.state.Status.Active() {
 				s.syncPortsLocked(id, p)

@@ -68,6 +68,9 @@ type Features struct {
 	NetQoS bool
 	// NATPolicy: run/restore take --nat-policy-file and `rungv net-policy` exists.
 	NATPolicy bool
+	// RestoreLiveMounts: restore takes --attach-bind and --serve to reattach
+	// checkpointed dynamic bind and rpcfs mounts.
+	RestoreLiveMounts bool
 }
 
 // Features reports what this rungv binary can do. A zero Features (v0.19,
@@ -76,7 +79,7 @@ func (c *Client) Features(ctx context.Context) Features {
 	if c == nil || c.Path == "" {
 		return Features{}
 	}
-	return Features{
+	f := Features{
 		Control:          c.HasRunFlag(ctx, "control-token-file"),
 		DynamicPorts:     c.HasRunFlag(ctx, "dynamic-ports"),
 		KeepBlobs:        c.HasRunFlag(ctx, "keep-blobs"),
@@ -87,13 +90,18 @@ func (c *Client) Features(ctx context.Context) Features {
 		NetQoS:           c.HasRunFlag(ctx, "net-tx-bps"),
 		NATPolicy:        c.HasRunFlag(ctx, "nat-policy-file"),
 	}
+	if f.Control && f.KeepBlobs {
+		f.RestoreLiveMounts = c.HasRestoreFlag(ctx, "attach-bind") && c.HasRestoreFlag(ctx, "serve")
+	}
+	return f
 }
 
-// ForgetFeatures drops what is cached of the binary at path (its run
-// usage), after an install or a source build replaced it.
+// ForgetFeatures drops what is cached of the binary at path (its run and
+// restore usage), after an install or a source build replaced it.
 func ForgetFeatures(path string) {
 	if path != "" {
 		runFlags.Delete(path)
+		restoreFlags.Delete(path)
 	}
 }
 
@@ -756,6 +764,51 @@ func (c *Client) RemoveMount(ctx context.Context, t Target, target string, lazy 
 	args = append(args, "--", dst)
 	_, err := c.output(ctx, args...)
 	return err
+}
+
+// MountServeArgs is the argument vector of rungv mount serve against t,
+// without the rungv executable:
+// "mount serve -S <sock> [--token-file F] [--ro] -- HOST_PATH:GUEST_PATH".
+func (c *Client) MountServeArgs(t Target, hostPath, guestTarget string, readOnly bool) []string {
+	args := targetArgs("mount serve", t)
+	if readOnly {
+		args = append(args, "--ro")
+	}
+	args = append(args, "--", strings.TrimSpace(hostPath)+":"+strings.TrimSpace(guestTarget))
+	return args
+}
+
+// MountServeCommand builds the long-lived exec.Cmd of rungv mount serve
+// (rpcfs proxy mount) against t. The caller manages its lifecycle.
+func (c *Client) MountServeCommand(ctx context.Context, t Target, hostPath, guestTarget string, readOnly bool) *exec.Cmd {
+	return c.Command(ctx, c.MountServeArgs(t, hostPath, guestTarget, readOnly)...)
+}
+
+// UnixForwardArgs is the argument vector of rungv unix-forward against t,
+// without the rungv executable:
+// "unix-forward -S <sock> [--token-file F] [--replace] -- SPEC...".
+func (c *Client) UnixForwardArgs(t Target, specs []string, replace bool) []string {
+	args := targetArgs("unix-forward", t)
+	if replace {
+		args = append(args, "--replace")
+	}
+	cleaned := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		if s := strings.TrimSpace(spec); s != "" {
+			cleaned = append(cleaned, s)
+		}
+	}
+	if len(cleaned) > 0 {
+		args = append(args, "--")
+		args = append(args, cleaned...)
+	}
+	return args
+}
+
+// UnixForwardCommand builds the long-lived exec.Cmd of rungv unix-forward
+// against t. The caller manages its lifecycle.
+func (c *Client) UnixForwardCommand(ctx context.Context, t Target, specs []string, replace bool) *exec.Cmd {
+	return c.Command(ctx, c.UnixForwardArgs(t, specs, replace)...)
 }
 
 // NATPolicy reads the active host NAT firewall policy JSON of a running sandbox

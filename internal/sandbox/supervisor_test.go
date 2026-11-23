@@ -235,6 +235,56 @@ func TestPrepareRunsBeforeRungv(t *testing.T) {
 	}
 }
 
+// rungv runs what Launch returns, the sandbox keeps the spec it was given,
+// and the release comes once, as the run ends; a run that fails to launch
+// does not run.
+func TestLaunchHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in rungv is a shell script")
+	}
+	args := filepath.Join(t.TempDir(), "args")
+	exe := filepath.Join(t.TempDir(), "rungv")
+	script := "#!/bin/sh\ncase \"$*\" in *-help*) exit 2 ;; esac\necho \"$@\" > " + args + "\n"
+	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newTestSupervisor(t, &rungv.Client{Path: exe})
+	spec := Spec{ID: "l1", Name: "l", Image: "alpine", Command: "original"}
+	s.Launch = func(Spec) (Spec, func(), error) { return Spec{}, nil, os.ErrPermission }
+	if err := s.Start(spec); err == nil {
+		t.Fatal("started although Launch failed")
+	}
+	if _, err := os.Stat(args); err == nil {
+		t.Fatal("rungv ran although Launch failed")
+	}
+	released := make(chan struct{}, 2)
+	s.Launch = func(got Spec) (Spec, func(), error) {
+		run := got.Clone()
+		run.Command = "launched"
+		return run, func() { released <- struct{}{} }, nil
+	}
+	if err := s.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the stand-in to end", 10*time.Second, func() bool { return !s.State(spec.ID).Status.Active() })
+	if got, _ := os.ReadFile(args); !strings.Contains(string(got), "launched") || strings.Contains(string(got), "original") {
+		t.Errorf("rungv ran %q", got)
+	}
+	if got, ok := s.ActiveSpec(spec.ID); ok && got.Command != "original" {
+		t.Errorf("the sandbox keeps %q", got.Command)
+	}
+	select {
+	case <-released:
+	default:
+		t.Fatal("not released as the run ended")
+	}
+	select {
+	case <-released:
+		t.Fatal("released twice")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // rungv's report of a port it could not publish, on stderr, becomes an event
 // naming the port.
 func TestSupervisorReportsABusyPort(t *testing.T) {

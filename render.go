@@ -263,6 +263,9 @@ func renderAll(tmp, out, lang string) error {
 		}},
 		{"docker", func(m *ui.Model) { m.Page.Set(ui.PageDocker) }},
 		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes); m.Forwards.Set(demoForwards()) }},
+		// A cluster of three nodes: the server and two agents, one of them
+		// still joining.
+		{"kubernetes-nodes", func(m *ui.Model) { demoNodes(m, now); m.Page.Set(ui.PageKubernetes) }},
 		{"settings", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
 		// What is still experimental, under its own item above Settings.
 		{"labs-whole", func(m *ui.Model) { m.Page.Set(ui.PageLabs) }},
@@ -464,6 +467,41 @@ func demoSpecs() []sandbox.Spec {
 	reg := recipes.ImageRegistry()
 	reg.ID, reg.CreatedAt = demoIDs[4], t.Add(4*time.Hour)
 	return []sandbox.Spec{web, docker, k3s, pg, reg}
+}
+
+// demoNodes grows the demo cluster by two agents.
+func demoNodes(m *ui.Model, now time.Time) {
+	specs := slices.Clone(ggui.Peek(m.Specs))
+	var server sandbox.Spec
+	for i, s := range specs {
+		if s.Recipe == recipes.Kubernetes {
+			specs[i] = recipes.WithNodeNetwork(s)
+			server = specs[i]
+		}
+	}
+	a1 := recipes.KubernetesAgentNode(server, 1, "K10demo::server:demo")
+	a2 := recipes.KubernetesAgentNode(server, 2, "K10demo::server:demo")
+	a1.ID, a2.ID = "a9e47001", "a9e47002"
+	m.Specs.Set(append(specs, a1, a2))
+	states := maps.Clone(ggui.Peek(m.States))
+	states[a1.ID] = sandbox.State{Status: sandbox.Running, PID: 41510, StartedAt: now.Add(-2 * time.Hour), Platform: "hvf", Control: true}
+	states[a2.ID] = sandbox.State{Status: sandbox.Running, PID: 41633, StartedAt: now.Add(-20 * time.Second), Platform: "hvf", Control: true}
+	m.States.Set(states)
+	node := func(name string, ready, server bool) kubeapi.Node {
+		var n kubeapi.Node
+		n.Metadata.Name = name
+		if server {
+			n.Metadata.Labels = map[string]string{"node-role.kubernetes.io/control-plane": "true"}
+		}
+		st := "False"
+		if ready {
+			st = "True"
+		}
+		n.Status.Conditions = []kubeapi.Condition{{Type: "Ready", Status: st}}
+		n.Status.NodeInfo.KubeletVersion = "v1.31.4+k3s1"
+		return n
+	}
+	m.KubeNodes.Set([]kubeapi.Node{node("k3s", true, true), node(a1.Name, true, false)})
 }
 
 func demoState(m *ui.Model, now time.Time) {

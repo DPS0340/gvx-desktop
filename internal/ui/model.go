@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/imagefs"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
+	"github.com/ironpark/gvx-desktop/internal/nodenet"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/registry"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -95,6 +97,7 @@ type Listing[T any] struct {
 type Model struct {
 	store   store.Store
 	sup     *sandbox.Supervisor
+	nodes   *nodenet.Network // the cluster's nodes' network
 	host    ggui.Host
 	appMenu func() []ggui.MenuItem
 
@@ -183,6 +186,9 @@ type Model struct {
 	// and its API server has yet to answer: k3s is still coming up.
 	Pods        *ggui.StateValue[Listing[kubeapi.Pod]]
 	PodsWaiting *ggui.StateValue[bool]
+	// KubeNodes are the cluster's nodes as its API server lists them,
+	// read while the Kubernetes page shows them.
+	KubeNodes *ggui.StateValue[[]kubeapi.Node]
 	// PodsAccess says whether the Pods page can be used, which is while
 	// the cluster's sandbox runs, and PodsOpen is its yes.
 	PodsAccess *ggui.DerivedValue[PodsAccess]
@@ -426,6 +432,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		PodUsage:          ggui.State(map[string]PodUse(nil)).WithEqual(podUsageEqual),
 		KubeconfigReady:   ggui.State(false),
 		Pods:              ggui.State(Listing[kubeapi.Pod]{}).WithEqual(podsEqual),
+		KubeNodes:         ggui.State([]kubeapi.Node(nil)).WithEqual(nodesEqual),
 		PodsWaiting:       ggui.State(false),
 		PodQuery:          ggui.State(""),
 		SystemPods:        ggui.State(false),
@@ -507,12 +514,14 @@ func NewModel(st store.Store, dataDir string) *Model {
 		forwarder:        forwardThroughCluster,
 	}
 	ggui.OnCleanup(m.Toasts.Close)
+	m.nodes = &nodenet.Network{Dir: filepath.Join(dataDir, "nodes"), Client: m.Client}
 	m.sup = &sandbox.Supervisor{
 		Client:    m.Client,
 		DataDir:   dataDir,
 		Notify:    m.onEvent,
 		Prepare:   recipes.Prepare,
 		StopGrace: recipes.StopGrace,
+		Launch:    m.nodes.Launch,
 	}
 	m.Lang = ggui.Map(m.Settings, func(s store.Settings) string { return ResolveLanguage(s.Language) })
 	m.Rows = ggui.Combine(m.Specs, m.States, func(specs []sandbox.Spec, states map[string]sandbox.State) []Row {
@@ -1051,8 +1060,8 @@ func (m *Model) saveSpecs(specs []sandbox.Spec) {
 // StartSandbox starts a saved sandbox.
 func (m *Model) StartSandbox(id string) {
 	spec, ok := m.spec(id)
-	if !ok {
-		return
+	if !ok || m.sup.State(id).Status.Active() {
+		return // a cluster's agent its server started already
 	}
 	if !ggui.Peek(m.Engine).Ready() {
 		m.toastError(tr("The engine is not ready"), errors.New(engineProblem(ggui.Peek(m.Engine))))
@@ -1063,6 +1072,14 @@ func (m *Model) StartSandbox(id string) {
 		return
 	}
 	m.setResume(id, true)
+	if spec.Recipe == recipes.Kubernetes {
+		// The cluster starts whole: its agents with its server.
+		m.forAgents(func(a string, st sandbox.State) {
+			if !st.Status.Active() {
+				m.StartSandbox(a)
+			}
+		})
+	}
 	m.refreshStates()
 	m.LoadVolumes()
 }
@@ -1123,6 +1140,14 @@ func (m *Model) StopSandbox(id string) {
 	m.setResume(id, false)
 	timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
 	go func() { _ = m.sup.Stop(id, timeout) }()
+	if spec, ok := m.spec(id); ok && spec.Recipe == recipes.Kubernetes {
+		// and the cluster stops whole.
+		m.forAgents(func(a string, st sandbox.State) {
+			if st.Status.Active() {
+				m.StopSandbox(a)
+			}
+		})
+	}
 }
 
 // RestartSandbox stops and starts a sandbox.
@@ -1140,6 +1165,13 @@ func (m *Model) PauseSandbox(id string) {
 	spec, ok := m.spec(id)
 	if !ok {
 		return
+	}
+	if spec.Recipe == recipes.Kubernetes {
+		m.forAgents(func(a string, st sandbox.State) {
+			if st.Status == sandbox.Running && !st.Paused && st.Control {
+				m.PauseSandbox(a)
+			}
+		})
 	}
 	m.async(func(ctx context.Context) error {
 		m.closeTerminalsFor(sandboxTermTarget(id))
@@ -1163,6 +1195,13 @@ func (m *Model) ResumeSandbox(id string) {
 	spec, ok := m.spec(id)
 	if !ok {
 		return
+	}
+	if spec.Recipe == recipes.Kubernetes {
+		m.forAgents(func(a string, st sandbox.State) {
+			if st.Status.Active() && st.Paused {
+				m.ResumeSandbox(a)
+			}
+		})
 	}
 	m.async(func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1227,12 +1266,28 @@ func (m *Model) AskDelete(id string) {
 	if m.sup.State(id).Status.Active() {
 		text = tr("The sandbox is running and will be stopped. ") + text
 	}
+	// The cluster's server goes with its agents.
+	gone := []string{id}
+	if spec.Recipe == recipes.Kubernetes {
+		if agents := agentsOf(ggui.Peek(m.Specs)); len(agents) > 0 {
+			gone = append(gone, agents...)
+			text = trn(len(agents), "Its %d other node is deleted with it. ", "Its %d other nodes are deleted with it. ") + text
+		}
+	}
 	m.Confirm(tr("Delete %s?", spec.Name), text, tr("Delete sandbox"), func() {
 		timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
-		m.async(func(context.Context) error { return m.sup.Stop(id, timeout) }, func(error) {
-			m.sup.Forget(id)
-			m.setResume(id, false)
-			specs := slices.DeleteFunc(slices.Clone(ggui.Peek(m.Specs)), func(s sandbox.Spec) bool { return s.ID == id })
+		m.async(func(context.Context) error {
+			var errs []error
+			for _, g := range gone {
+				errs = append(errs, m.sup.Stop(g, timeout))
+			}
+			return errors.Join(errs...)
+		}, func(error) {
+			for _, g := range gone {
+				m.sup.Forget(g)
+				m.setResume(g, false)
+			}
+			specs := slices.DeleteFunc(slices.Clone(ggui.Peek(m.Specs)), func(s sandbox.Spec) bool { return slices.Contains(gone, s.ID) })
 			if ggui.Peek(m.Selected) == id {
 				next := ""
 				if len(specs) > 0 {

@@ -387,12 +387,13 @@ func kubernetesPage(m *Model) ggui.Widget {
 			widget.Spacer(), ui.Button(tr("Reveal"), func() { m.Open(cfg) }).Outline().Size(ui.ButtonExtraSmall)).Gap(8).Align(widget.AlignCenter)
 	})
 	return page(
-		pageHeader("Kubernetes", ui.Caption(tr("An unmodified k3s node with its kubelet, containerd and flannel, running in one unprivileged sandbox."))),
-		recipeHero(m, recipes.Kubernetes, row, tr("k3s single-node cluster"),
+		pageHeader("Kubernetes", ui.Caption(tr("Unmodified k3s nodes with their kubelet, containerd and flannel, each in an unprivileged sandbox of its own."))),
+		recipeHero(m, recipes.Kubernetes, row, tr("k3s cluster"),
 			tr("API server on 127.0.0.1:6443, NodePorts 30000–30019 on the host, cluster state in the k3s volume. Starting takes up to two minutes."),
 			lucide.ShipWheel),
+		nodesCard(m),
 		widget.Column(
-			sectionTitle(tr("Pods"), tr("Pods run on the k3s node in the Kubernetes sandbox.")),
+			sectionTitle(tr("Pods"), tr("Pods run on the cluster's nodes, each in a sandbox of its own.")),
 			podsSummary(m),
 		).Gap(10).Stretch(),
 		widget.Responsive(900,

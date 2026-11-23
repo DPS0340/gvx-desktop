@@ -694,7 +694,8 @@ func TestSupervisorV019FallbackNoControl(t *testing.T) {
 func TestRedactArgsAndSupervisorLogRedaction(t *testing.T) {
 	in := []string{
 		"run", "-e", "GVX_NET=wg-private-key-secret", "-e", "GVX_NET=", "-e", "NORMAL=ok",
-		"--env=GVX_NET=secret2", "--token", "tok1", "--token=tok2", "-token", "tok3", "-token=tok4", "alpine",
+		"--env=GVX_NET=secret2", "-e", "K3S_TOKEN=K10join::server:abc", "-e=K3S_TOKEN=x",
+		"--token", "tok1", "--token=tok2", "-token", "tok3", "-token=tok4", "alpine",
 	}
 	orig := append([]string(nil), in...)
 	got := redactArgs(in)
@@ -703,7 +704,8 @@ func TestRedactArgsAndSupervisorLogRedaction(t *testing.T) {
 	}
 	want := []string{
 		"run", "-e", "GVX_NET=<redacted>", "-e", "GVX_NET=", "-e", "NORMAL=ok",
-		"--env=GVX_NET=<redacted>", "--token", "<redacted>", "--token=<redacted>", "-token", "<redacted>", "-token=<redacted>", "alpine",
+		"--env=GVX_NET=<redacted>", "-e", "K3S_TOKEN=<redacted>", "-e=K3S_TOKEN=<redacted>",
+		"--token", "<redacted>", "--token=<redacted>", "-token", "<redacted>", "-token=<redacted>", "alpine",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("redactArgs:\n got  %q\n want %q", got, want)

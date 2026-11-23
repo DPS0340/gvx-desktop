@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ironpark/gvx-desktop/internal/overlay"
 	"github.com/ironpark/gvx-desktop/internal/overlay/guestcfg"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
@@ -31,12 +32,12 @@ func TestWithOverlayRunsNetinitInFront(t *testing.T) {
 	}
 	cfg := guestcfg.Config{PrivateKey: make([]byte, 32), HubPublicKey: make([]byte, 32), Endpoint: "10.0.2.2:5000", Addresses: []string{"10.89.1.2/24"}}
 	// Extra hosts alone: netinit runs, with no DNS server.
-	hostsOnly, err := withOverlay(spec, guestcfg.Config{Hosts: []string{"10.0.0.5\tdb"}}, "/data/netinit", netip.AddrPort{})
+	hostsOnly, err := overlay.WithNetinit(spec, guestcfg.Config{Hosts: []string{"10.0.0.5\tdb"}}, "/data/netinit", netip.AddrPort{})
 	if err != nil || hostsOnly.ExtraArgs != "-read-only" || hostsOnly.Entrypoint != guestcfg.Path {
 		t.Fatalf("hosts only = %+v, %v", hostsOnly, err)
 	}
 
-	out, err := withOverlay(spec, cfg, "/data/netinit", netip.MustParseAddrPort("127.0.0.1:5353"))
+	out, err := overlay.WithNetinit(spec, cfg, "/data/netinit", netip.MustParseAddrPort("127.0.0.1:5353"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,6 +14,8 @@ import (
 	"compress/gzip"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -43,4 +45,27 @@ func Netinit() ([]byte, error) {
 		binary, extractE = io.ReadAll(r)
 	})
 	return binary, extractE
+}
+
+// Install writes bin, netinit, to dir/netinit for sandboxes to mount, unless
+// it is there already, and returns its path.
+func Install(dir string, bin []byte) (string, error) {
+	p := filepath.Join(dir, "netinit")
+	if cur, err := os.ReadFile(p); err == nil && bytes.Equal(cur, bin) {
+		return p, nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, ".netinit-*")
+	if err != nil {
+		return "", err
+	}
+	_, werr := tmp.Write(bin)
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(tmp.Name(), 0o755), os.Rename(tmp.Name(), p)); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return p, nil
 }

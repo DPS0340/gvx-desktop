@@ -146,6 +146,11 @@ type Supervisor struct {
 	// Prepare, when set, writes what a spec reads from this computer as it
 	// starts, before rungv runs: the files a recipe gives its guest.
 	Prepare func(Spec) error
+	// Launch, when set, returns what rungv runs for a spec that starts: the
+	// spec as it is, or with what the run needs besides (a network of the
+	// app's), and a function, which may be nil, called once when the run
+	// ends or fails to start. The sandbox keeps the spec it was given.
+	Launch func(Spec) (run Spec, release func(), err error)
 	// StopGrace, when set, says which sandboxes Stop ends as docker stop
 	// ends a container (Shutdown with SIGTERM) and how long they get,
 	// given the stop timeout: those whose daemon keeps state. The others,
@@ -174,6 +179,8 @@ type proc struct {
 	// portSync is set while syncPorts runs for the proc, portAgain when
 	// it is to read the ports once more as it ends.
 	portSync, portAgain bool
+	// release is Launch's, called as the run ends.
+	release func()
 
 	stdinMu     sync.Mutex
 	stdinW      *os.File
@@ -448,6 +455,19 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 		// reaches this computer through the ports it publishes.
 		spec = WithAutoPublish(spec, false)
 	}
+	run := spec
+	var release func()
+	if s.Launch != nil {
+		if run, release, err = s.Launch(spec); err != nil {
+			return err
+		}
+	}
+	started := false
+	defer func() {
+		if !started && release != nil {
+			release()
+		}
+	}()
 	var args []string
 	if restoreDir != "" {
 		// The resumed sandbox keeps the bundle directory it was restored
@@ -456,9 +476,9 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 			_ = os.Remove(paths.CheckpointDir)
 			paths.CheckpointDir = restoreDir
 		}
-		args = spec.RestoreArgs(restoreDir, paths)
+		args = run.RestoreArgs(restoreDir, paths)
 	} else {
-		args = spec.RunArgs(paths)
+		args = run.RunArgs(paths)
 	}
 
 	cmd := client.Command(context.Background(), args...)
@@ -526,6 +546,7 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 	}
 	closeAfterStart()
 	_ = stderrW.Close()
+	started = true
 
 	p := &proc{
 		cmd:         cmd,
@@ -535,6 +556,7 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 		socketIsTCP: paths.ControlSocket == "127.0.0.1:0",
 		done:        make(chan struct{}),
 		interactive: spec.Interactive,
+		release:     release,
 		stdinW:      stdinW,
 		term:        ptyTerm,
 		state: State{
@@ -705,6 +727,12 @@ func (s *Supervisor) exited(id string, p *proc, err error) {
 		_ = os.RemoveAll(p.paths.CheckpointDir)
 	}
 	st := p.state
+	// Before done: a Start waiting on Stop must find the run released, or
+	// the release would undo what that Start's Launch did.
+	if p.release != nil {
+		p.release()
+		p.release = nil
+	}
 	close(p.done)
 	s.mu.Unlock()
 
@@ -823,7 +851,7 @@ func (s *Supervisor) Checkpoint(ctx context.Context, id string, leaveRunning boo
 	return paths.CheckpointDir, nil
 }
 
-// redactArgs returns a copy of args with sensitive values (GVX_NET=... and
+// redactArgs returns a copy of args with sensitive values (secretEnv's and
 // --token/-token values) replaced before logging a command line.
 func redactArgs(args []string) []string {
 	out := make([]string, len(args))
@@ -841,21 +869,38 @@ func redactArgs(args []string) []string {
 		case strings.HasPrefix(a, "-token="):
 			out[i] = "-token=<redacted>"
 		case a == "-e" || a == "--env" || a == "-env":
-			if i+1 < len(out) && strings.HasPrefix(out[i+1], "GVX_NET=") && len(out[i+1]) > len("GVX_NET=") {
-				out[i+1] = "GVX_NET=<redacted>"
-				i++
+			if i+1 < len(out) {
+				if r, ok := redactEnv(out[i+1]); ok {
+					out[i+1] = r
+					i++
+				}
 			}
-		case strings.HasPrefix(a, "-e=GVX_NET=") && len(a) > len("-e=GVX_NET="):
-			out[i] = "-e=GVX_NET=<redacted>"
-		case strings.HasPrefix(a, "--env=GVX_NET=") && len(a) > len("--env=GVX_NET="):
-			out[i] = "--env=GVX_NET=<redacted>"
-		case strings.HasPrefix(a, "-env=GVX_NET=") && len(a) > len("-env=GVX_NET="):
-			out[i] = "-env=GVX_NET=<redacted>"
-		case strings.HasPrefix(a, "GVX_NET=") && len(a) > len("GVX_NET="):
-			out[i] = "GVX_NET=<redacted>"
+		default:
+			for _, p := range []string{"-e=", "--env=", "-env=", ""} {
+				if rest, ok := strings.CutPrefix(a, p); ok {
+					if r, ok := redactEnv(rest); ok {
+						out[i] = p + r
+						break
+					}
+				}
+			}
 		}
 	}
 	return out
+}
+
+// secretEnv are the variables whose values the log leaves out: netinit's
+// keys, and a k3s node's join token.
+var secretEnv = map[string]bool{"GVX_NET": true, "K3S_TOKEN": true}
+
+// redactEnv is kv with its value left out, when kv sets a secretEnv to
+// something.
+func redactEnv(kv string) (string, bool) {
+	k, v, ok := strings.Cut(kv, "=")
+	if !ok || v == "" || !secretEnv[k] {
+		return "", false
+	}
+	return k + "=<redacted>", true
 }
 
 // Snapshot is a checkpoint bundle on disk.

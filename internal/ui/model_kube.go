@@ -445,4 +445,5 @@ func (m *Model) clearCluster() {
 	m.Workloads.Set(Listing[kubeapi.Workload]{})
 	m.Services.Set(Listing[kubeapi.Service]{})
 	m.PodUsage.Set(nil)
+	m.KubeNodes.Set(nil)
 }

@@ -132,9 +132,9 @@ func kubeViewSummary(m *Model, v int) string {
 	}
 	if l := m.Pods.Get(); answered {
 		running, total, namespaces := podCounts(l.Items)
-		return tr("%d running · %d total in %d namespaces. Pods run on the k3s node in the Kubernetes sandbox.", running, total, namespaces)
+		return tr("%d running · %d total in %d namespaces. Pods run on the cluster's nodes, each in a sandbox of its own.", running, total, namespaces)
 	}
-	return tr("Pods run on the k3s node in the Kubernetes sandbox.")
+	return tr("Pods run on the cluster's nodes, each in a sandbox of its own.")
 }
 
 // clusterSpec is the spec of the cluster's sandbox, whose ports say which

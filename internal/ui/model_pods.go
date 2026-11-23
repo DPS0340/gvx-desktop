@@ -212,7 +212,10 @@ func (m *Model) LoadPods() {
 	file := recipes.Kubeconfig()
 	workloads, services := m.wantsDetails()
 	metrics := ggui.Untrack(m.wantsPodUsage)
+	nodes := ggui.Peek(m.Page) == PageKubernetes
 	var got clusterList
+	var gotNodes []kubeapi.Node
+	var nodesErr error
 	noConfig := false
 	m.async(func(ctx context.Context) error {
 		if _, err := os.Stat(file); err != nil {
@@ -227,6 +230,9 @@ func (m *Model) LoadPods() {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		got = listCluster(ctx, c, workloads, services, metrics)
+		if nodes {
+			gotNodes, nodesErr = c.Nodes(ctx)
+		}
 		return got.podsErr
 	}, func(err error) {
 		m.podsLoading = false
@@ -252,6 +258,9 @@ func (m *Model) LoadPods() {
 		} else {
 			m.podsAnswered = true
 			m.setDetails(got, workloads, services, metrics)
+			if nodes && nodesErr == nil {
+				m.KubeNodes.Set(gotNodes)
+			}
 		}
 		m.Pods.Set(l)
 		if err == nil {

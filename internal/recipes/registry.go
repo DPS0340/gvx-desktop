@@ -207,7 +207,7 @@ func Prepare(spec sandbox.Spec) error {
 	if spec.Recipe == Docker {
 		return prepareDockerConfig(spec)
 	}
-	if spec.Recipe != Kubernetes {
+	if !IsKubernetesNode(spec) {
 		return nil
 	}
 	args, err := rungv.SplitArgs(spec.Command)

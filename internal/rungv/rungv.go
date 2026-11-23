@@ -198,13 +198,16 @@ func (c *Client) HasRunFlag(ctx context.Context, name string) bool {
 	}
 	usage, ok := runFlags.Load(c.Path)
 	if !ok {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, c.Path, "run", "-help")
+		cmd := exec.CommandContext(runCtx, c.Path, "run", "-help")
 		cmd.WaitDelay = time.Second // a rungv that does not print its usage and leave
 		hideWindow(cmd)
-		out, _ := cmd.CombinedOutput() // the usage comes with a failing exit
-		if len(out) == 0 {
+		out, err := cmd.CombinedOutput() // the usage comes with a failing exit
+		if ctx.Err() != nil {
+			return false
+		}
+		if len(out) == 0 && errors.Is(err, os.ErrNotExist) {
 			return false
 		}
 		usage = string(out)

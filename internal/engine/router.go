@@ -91,7 +91,7 @@ var routes = []route{
 	{"GET", "/images/{name...}/get", (*Engine).imageGet},
 	{"POST", "/images/{name...}/tag", (*Engine).imageTag},
 	{"GET", "/images/{name...}/history", unsupported("Image history")},
-	{"POST", "/images/{name...}/push", unsupported("Pushing an image")},
+	{"POST", "/images/{name...}/push", (*Engine).imagePush},
 	{"DELETE", "/images/{name...}", (*Engine).imageDelete},
 	{"GET", "/distribution/{name...}/json", unsupported("Reading a registry's manifest")},
 	{"POST", "/build", (*Engine).imageBuild},

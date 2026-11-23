@@ -999,7 +999,10 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 	warnings = append(warnings, portWarnings...)
 
 	// Plan and validate mounts before creating any volumes.
-	planned, err := planMounts(hc, cfg)
+	planned, err := planMountsWithOptions(hc, cfg, mountPlanOptions{
+		unixForward:  e.runner.Features().UnixForward,
+		dockerSocket: e.cfg.DockerSocket,
+	})
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -1014,17 +1017,22 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 	if tmpName == "" {
 		tmpName = "container"
 	}
-	tmpMounts := make([]sandbox.Mount, len(planned))
-	for i, pm := range planned {
-		tmpMounts[i] = pm.spec
+	tmpMounts := make([]sandbox.Mount, 0, len(planned))
+	var tmpForwards []string
+	for _, pm := range planned {
+		if pm.unixForward != "" {
+			tmpForwards = append(tmpForwards, pm.unixForward)
+		} else {
+			tmpMounts = append(tmpMounts, pm.spec)
+		}
 	}
-	if _, err := buildSandboxSpec(id, tmpName, specImage, cfg, hc, argv, tmpMounts); err != nil {
+	if _, err := buildSandboxSpecWithForwards(id, tmpName, specImage, cfg, hc, argv, tmpMounts, tmpForwards); err != nil {
 		writeError(w, r, err)
 		return
 	}
 
 	// Materialize volumes (calls workstream C seam, holding no lock).
-	specMounts, mountPoints, anonVols, err := e.materializeMounts(r.Context(), planned)
+	specMounts, unixForwards, mountPoints, anonVols, err := e.materializeMounts(r.Context(), planned)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -1060,7 +1068,7 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 			return false
 		})
 	}
-	spec, err := buildSandboxSpec(id, name, specImage, cfg, hc, argv, specMounts)
+	spec, err := buildSandboxSpecWithForwards(id, name, specImage, cfg, hc, argv, specMounts, unixForwards)
 	if err != nil {
 		e.ctr.mu.Unlock()
 		cleanupAnon()

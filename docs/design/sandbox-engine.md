@@ -551,9 +551,13 @@ States, events and port parsing. The `supervisor_test.go` tests keep passing unc
 - **Legacy `POST /build`** (`DOCKER_BUILDKIT=0`, Docker SDKs, testcontainers):
   the engine extracts the tar/gzip/bzip2 context body (with path-traversal,
   symlink-escape, and size-cap checks) into a temp dir under `Config.Dir/builds`,
+  and runs `buildctl` from `BuilderImage` as a one-shot internal sandbox against
+  the builder: with `rungv` v0.21+ (`--unix-forward`), `buildkitd.sock` is
+  forwarded directly into the guest at `/run/buildkit/buildkitd.sock`
+  (`--addr unix:///run/buildkit/buildkitd.sock`); on older `rungv`, the engine
   opens an ephemeral loopback TCP bridge (`127.0.0.1:0` → `buildkitd.sock`) for
-  the build's duration, and runs `buildctl` from `BuilderImage` as a one-shot
-  internal sandbox reaching the bridge at `tcp://10.0.2.2:<port>` with
+  the build's duration so `buildctl` reaches it at `tcp://10.0.2.2:<port>`.
+  `buildctl` runs with
   `--frontend dockerfile.v0 --local context=/ctx --local dockerfile=/ctx` plus
   `dockerfile`, `buildargs`, `target`, `labels`, `nocache`, `pull`, `platform`,
   and `--output type=docker,name=<t>,dest=/out/image.tar`. Progress streams as
@@ -772,7 +776,8 @@ Desktop's experimental sandbox engine yet"}`. Unknown paths answer 404 `page not
 | POST | /images/load | C | tar body → rungv load |
 | GET | /images/get, /images/{name}/get | C | rungv save |
 | POST | /images/prune | C | dangling only unless `dangling=false` (then the keep rules of §9) |
-| GET | /images/search, /images/{name}/history; POST /images/{name}/push; GET /distribution/{name}/json | – | 501 |
+| POST | /images/{name}/push | C | `tag`, `platform`, `X-Registry-Auth`; `rungv push` (v0.21+; 501 on older rungv) |
+| GET | /images/search, /images/{name}/history; GET /distribution/{name}/json | – | 501 |
 | POST | /build | – | Legacy build over the engine's BuildKit builder (§9.1) |
 | POST | /build/prune, /build/cancel, /session, /grpc | – | 501 pointing to `docker buildx use gvx-desktop` |
 | GET | /volumes | C | `{Volumes, Warnings}` |

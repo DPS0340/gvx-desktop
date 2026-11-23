@@ -90,6 +90,13 @@ type Runner interface {
 	Info(ctx context.Context) (rungv.Info, error)
 }
 
+// ImagePushRunner is a Runner that can push cached OCI images to a registry
+// (rungv v0.21+ with KeepBlobs). The engine uses it when the Runner implements
+// it and Features().KeepBlobs is true.
+type ImagePushRunner interface {
+	PushImage(ctx context.Context, opts rungv.PushOptions, line func(string)) error
+}
+
 // rungvRunner is the real Runner: a supervisor of its own over rungv.
 type rungvRunner struct {
 	sup    *sandbox.Supervisor

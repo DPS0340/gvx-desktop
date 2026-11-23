@@ -61,6 +61,7 @@ type streamNetStats struct {
 
 type streamBlkioStats struct {
 	IOServiceBytesRecursive []streamBlkioEntry `json:"io_service_bytes_recursive"`
+	IOServicedRecursive     []streamBlkioEntry `json:"io_serviced_recursive"`
 }
 
 type streamBlkioEntry struct {
@@ -110,11 +111,16 @@ func statsPayloadFromGuest(c Container, gs rungv.Stats, prev streamCPUStats, pre
 		}
 	}
 
-	blkio := make([]streamBlkioEntry, 0, len(gs.BlockIO)*2)
+	blkioBytes := make([]streamBlkioEntry, 0, len(gs.BlockIO)*2)
+	blkioOps := make([]streamBlkioEntry, 0, len(gs.BlockIO)*2)
 	for i, b := range gs.BlockIO {
-		blkio = append(blkio,
+		blkioBytes = append(blkioBytes,
 			streamBlkioEntry{Major: 254, Minor: uint64(i), Op: "read", Value: b.ReadSectors * 512},
 			streamBlkioEntry{Major: 254, Minor: uint64(i), Op: "write", Value: b.WriteSectors * 512},
+		)
+		blkioOps = append(blkioOps,
+			streamBlkioEntry{Major: 254, Minor: uint64(i), Op: "read", Value: b.ReadOps},
+			streamBlkioEntry{Major: 254, Minor: uint64(i), Op: "write", Value: b.WriteOps},
 		)
 	}
 
@@ -148,8 +154,11 @@ func statsPayloadFromGuest(c Container, gs rungv.Stats, prev streamCPUStats, pre
 				"inactive_file": 0,
 			},
 		},
-		Networks:   nets,
-		BlkioStats: streamBlkioStats{IOServiceBytesRecursive: blkio},
+		Networks: nets,
+		BlkioStats: streamBlkioStats{
+			IOServiceBytesRecursive: blkioBytes,
+			IOServicedRecursive:     blkioOps,
+		},
 	}
 }
 
@@ -224,8 +233,11 @@ func (e *Engine) streamSampleStatsProcstat(c Container, prev streamCPUStats, pre
 			Limit: memLimit,
 			Stats: map[string]uint64{},
 		},
-		Networks:   map[string]streamNetStats{},
-		BlkioStats: streamBlkioStats{IOServiceBytesRecursive: []streamBlkioEntry{}},
+		Networks: map[string]streamNetStats{},
+		BlkioStats: streamBlkioStats{
+			IOServiceBytesRecursive: []streamBlkioEntry{},
+			IOServicedRecursive:     []streamBlkioEntry{},
+		},
 	}
 }
 

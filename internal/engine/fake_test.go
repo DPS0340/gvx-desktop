@@ -57,9 +57,11 @@ type fakeRunner struct {
 	shutdownCalls  []fakeShutdownCall
 	updateCalls    []fakeUpdateCall
 
-	images  map[string]ImageInspect // by every RepoTag and by ID
-	volumes map[string]rungv.Volume
-	pulls   []string
+	images    map[string]ImageInspect // by every RepoTag and by ID
+	volumes   map[string]rungv.Volume
+	pulls     []string
+	pushCalls []rungv.PushOptions
+	pushFunc  func(ctx context.Context, opts rungv.PushOptions, line func(string)) error
 
 	// layerCacheDir, when set, is Info's LayerCacheDir: a real rungv cache
 	// for what reads images from it (diff, export, commit).
@@ -489,6 +491,32 @@ func (f *fakeRunner) InspectImages(ctx context.Context, refs ...string) ([]Image
 		out = append(out, img)
 	}
 	return out, nil
+}
+
+var _ ImagePushRunner = (*fakeRunner)(nil)
+
+func (f *fakeRunner) PushImage(ctx context.Context, opts rungv.PushOptions, line func(string)) error {
+	f.mu.Lock()
+	f.pushCalls = append(f.pushCalls, opts)
+	fn := f.pushFunc
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, opts, line)
+	}
+	if line != nil {
+		ref := opts.Target
+		if ref == "" {
+			ref = opts.Ref
+		}
+		repo, tag := ref, "latest"
+		if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+			repo, tag = ref[:i], ref[i+1:]
+		}
+		line("The push refers to repository [" + repo + "]")
+		line("a1b2c3d4e5f6: Pushed")
+		line(tag + ": digest: sha256:" + fakeHex(ref) + " size: 528")
+	}
+	return nil
 }
 
 func (f *fakeRunner) Pull(ctx context.Context, ref, platform string, line func(string)) error {

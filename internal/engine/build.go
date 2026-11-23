@@ -615,17 +615,26 @@ func (e *Engine) imageBuild(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	// Expose the builder over an ephemeral loopback TCP port for the duration
-	// of this build so the one-shot buildctl sandbox reaches it via 10.0.2.2.
-	bridgeLn, bridgePort, closeBridge, err := e.openBuilderTCPBridge(r.Context(), backendSock)
-	if err != nil {
-		writeError(w, r, fmt.Errorf("open builder bridge: %w", err))
-		return
+	var (
+		addr         string
+		unixForwards []string
+	)
+	if e.runner.Features().UnixForward && backendSock != "" {
+		const guestBuildkitSock = "/run/buildkit/buildkitd.sock"
+		unixForwards = []string{guestBuildkitSock + "=" + backendSock}
+		addr = "unix://" + guestBuildkitSock
+	} else {
+		// Expose the builder over an ephemeral loopback TCP port for the duration
+		// of this build so the one-shot buildctl sandbox reaches it via 10.0.2.2.
+		bridgeLn, bridgePort, closeBridge, err := e.openBuilderTCPBridge(r.Context(), backendSock)
+		if err != nil {
+			writeError(w, r, fmt.Errorf("open builder bridge: %w", err))
+			return
+		}
+		defer closeBridge()
+		_ = bridgeLn
+		addr = fmt.Sprintf("tcp://%s:%d", guestHostLoopback, bridgePort)
 	}
-	defer closeBridge()
-	_ = bridgeLn
-
-	addr := fmt.Sprintf("tcp://%s:%d", guestHostLoopback, bridgePort)
 	args := buildctlArgs(addr, opts)
 
 	suffix := randomHex64()[:12]
@@ -647,6 +656,7 @@ func (e *Engine) imageBuild(w http.ResponseWriter, r *http.Request) {
 		SetEntrypoint: true,
 		Entrypoint:    "buildctl",
 		Command:       rungv.FormatArgs(args),
+		UnixForwards:  unixForwards,
 		Mounts: []sandbox.Mount{
 			{Type: sandbox.MountBind, Source: ctxDir, Target: "/ctx", ReadOnly: true},
 			{Type: sandbox.MountBind, Source: outDir, Target: "/out"},

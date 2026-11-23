@@ -6,12 +6,14 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"path"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -744,6 +746,257 @@ func (e *Engine) imageTag(w http.ResponseWriter, r *http.Request) {
 	})
 	e.notify()
 	w.WriteHeader(http.StatusCreated)
+}
+
+func (e *Engine) imagePush(w http.ResponseWriter, r *http.Request) {
+	if !e.runner.Features().KeepBlobs {
+		writeError(w, r, errNotSupported("Pushing an image (it needs rungv 0.21)"))
+		return
+	}
+	pr, ok := e.runner.(ImagePushRunner)
+	if !ok {
+		writeError(w, r, errNotSupported("Pushing an image (it needs rungv 0.21)"))
+		return
+	}
+
+	name := strings.TrimSpace(r.PathValue("name"))
+	if err := validateImageRef(name); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	q := r.URL.Query()
+	tag := strings.TrimSpace(q.Get("tag"))
+	if tag != "" {
+		if err := validateImageRef(tag); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+	platform := strings.TrimSpace(q.Get("platform"))
+	if err := validateImagePlatform(platform); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	targetRef := name
+	if tag != "" {
+		if strings.HasPrefix(tag, "sha256:") {
+			targetRef = name + "@" + tag
+		} else if !strings.Contains(name, "@") && strings.LastIndex(name, ":") <= strings.LastIndex(name, "/") {
+			targetRef = name + ":" + tag
+		}
+	}
+	if err := validateImageRef(targetRef); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	authPayload, err := parseRegistryAuthHeader(r.Header.Get("X-Registry-Auth"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	img, arch, err := e.lookupImageForPlatform(r.Context(), targetRef, platform)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	opts := rungv.PushOptions{
+		Ref:         img.ResolvedRef,
+		Platform:    platform,
+		RegistryURL: localPushRegistryURL(targetRef),
+		AuthPayload: authPayload,
+	}
+	if opts.Ref == "" {
+		opts.Ref = targetRef
+	}
+	if !isImageIDRef(targetRef, img.ID) && normalizeImageRef(opts.Ref) != normalizeImageRef(targetRef) {
+		opts.Target = targetRef
+	}
+	if arch != "" && arch != hostImageArch {
+		opts.Arch = arch
+	}
+
+	rc := http.NewResponseController(w)
+	var (
+		mu         sync.Mutex
+		started    bool
+		writeFrame = func(v any) {
+			b, err := json.Marshal(v)
+			if err != nil {
+				return
+			}
+			b = append(b, '\n')
+			if !started {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				started = true
+			}
+			_, _ = w.Write(b)
+			_ = rc.Flush()
+		}
+	)
+
+	err = pr.PushImage(r.Context(), opts, func(line string) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, frame := range pushProgressFrames(line) {
+			writeFrame(frame)
+		}
+	})
+
+	mu.Lock()
+	if err != nil {
+		msg := err.Error()
+		if !started {
+			mu.Unlock()
+			writeError(w, r, err)
+			return
+		}
+		writeFrame(struct {
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+			Error string `json:"error"`
+		}{
+			ErrorDetail: struct {
+				Message string `json:"message"`
+			}{Message: msg},
+			Error: msg,
+		})
+		mu.Unlock()
+		return
+	}
+	if !started {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+	}
+	mu.Unlock()
+
+	e.emit(Event{
+		Type:       "image",
+		Action:     "push",
+		ID:         img.ID,
+		Attributes: map[string]string{"name": targetRef},
+	})
+	e.notify()
+}
+
+type pushAuxFrame struct {
+	Aux pushAux `json:"aux"`
+}
+
+type pushAux struct {
+	Tag    string `json:"Tag"`
+	Digest string `json:"Digest"`
+	Size   int64  `json:"Size"`
+}
+
+func pushProgressFrames(line string) []any {
+	if id, rest, ok := strings.Cut(line, ": "); ok && id != "" && !strings.ContainsAny(id, " \t") {
+		if strings.HasPrefix(strings.ToLower(rest), "digest: ") {
+			fields := strings.Fields(rest[len("digest: "):])
+			if len(fields) > 0 && strings.Contains(fields[0], ":") {
+				var size int64
+				for i := 1; i+1 < len(fields); i++ {
+					if strings.EqualFold(fields[i], "size:") {
+						if n, err := strconv.ParseInt(fields[i+1], 10, 64); err == nil && n >= 0 {
+							size = n
+						}
+						break
+					}
+				}
+				return []any{
+					map[string]string{"status": line},
+					pushAuxFrame{Aux: pushAux{Tag: id, Digest: fields[0], Size: size}},
+				}
+			}
+		}
+		switch strings.ToLower(id) {
+		case "status", "digest", "rungv", "gvx", "error", "warning":
+			return []any{map[string]string{"status": line}}
+		}
+		return []any{map[string]string{"status": rest, "id": id}}
+	}
+	return []any{map[string]string{"status": line}}
+}
+
+// parseRegistryAuthHeader decodes Docker's X-Registry-Auth header (raw JSON or
+// Std/URL base64, padded or raw) and returns the JSON payload only when at
+// least one credential field is non-empty. Empty objects such as "{}" return ""
+// because rungv's oci.ParseAuthConfig rejects them.
+func parseRegistryAuthHeader(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	var decoded []byte
+	if strings.HasPrefix(s, "{") || s == "null" {
+		decoded = []byte(s)
+	} else {
+		for _, enc := range []*base64.Encoding{
+			base64.URLEncoding,
+			base64.RawURLEncoding,
+			base64.StdEncoding,
+			base64.RawStdEncoding,
+		} {
+			if b, err := enc.DecodeString(s); err == nil {
+				trimmed := strings.TrimSpace(string(b))
+				if trimmed == "" || trimmed == "null" || strings.HasPrefix(trimmed, "{") {
+					decoded = []byte(trimmed)
+					break
+				}
+			}
+		}
+		if decoded == nil {
+			return "", errInvalid("invalid X-Registry-Auth header")
+		}
+	}
+	trimmed := strings.TrimSpace(string(decoded))
+	if trimmed == "" || trimmed == "null" {
+		return "", nil
+	}
+	var cfg struct {
+		Username      string `json:"username"`
+		Password      string `json:"password"`
+		Auth          string `json:"auth"`
+		IdentityToken string `json:"identitytoken"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &cfg); err != nil {
+		return "", errInvalid("invalid X-Registry-Auth header")
+	}
+	if strings.TrimSpace(cfg.Username) == "" &&
+		cfg.Password == "" &&
+		strings.TrimSpace(cfg.Auth) == "" &&
+		strings.TrimSpace(cfg.IdentityToken) == "" {
+		return "", nil
+	}
+	return trimmed, nil
+}
+
+// localPushRegistryURL maps host.docker.internal:<port> image references to
+// http://127.0.0.1:<port> so host-side rungv push reaches the local cluster
+// registry over plain HTTP without depending on host.docker.internal DNS.
+func localPushRegistryURL(ref string) string {
+	host, _, ok := strings.Cut(ref, "/")
+	if !ok {
+		return ""
+	}
+	h, portStr, ok := strings.Cut(host, ":")
+	if !ok || !strings.EqualFold(h, "host.docker.internal") || !digits(portStr) {
+		return ""
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return ""
+	}
+	return "http://127.0.0.1:" + portStr
 }
 
 func (e *Engine) imageDelete(w http.ResponseWriter, r *http.Request) {

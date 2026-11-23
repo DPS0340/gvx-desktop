@@ -61,6 +61,11 @@ type Config struct {
 	// Amd64, when set, turns on the amd64 builder from the start; the app
 	// changes it later with SetAmd64. See docs/design/amd64-builder.md.
 	Amd64 *Amd64Config
+	// DockerSocket is the host Docker API Unix socket path (for example
+	// ~/.gvx/docker.sock) when served on Unix. With rungv v0.21+
+	// (--unix-forward), container bind mounts of /var/run/docker.sock are
+	// forwarded to this host socket.
+	DockerSocket string
 	// Logf, when set, traces every request and what the engine does.
 	Logf func(format string, args ...any)
 }

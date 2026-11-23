@@ -10,7 +10,10 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
 
-var _ ImageArchRunner = (*rungvRunner)(nil)
+var (
+	_ ImageArchRunner = (*rungvRunner)(nil)
+	_ ImagePushRunner = (*rungvRunner)(nil)
+)
 
 func (r *rungvRunner) cli() (*rungv.Client, error) {
 	if r.client == nil {
@@ -74,6 +77,14 @@ func (r *rungvRunner) Pull(ctx context.Context, ref, platform string, line func(
 		return err
 	}
 	return c.PullPlatform(ctx, ref, platform, line)
+}
+
+func (r *rungvRunner) PushImage(ctx context.Context, opts rungv.PushOptions, line func(string)) error {
+	c, err := r.cli()
+	if err != nil {
+		return err
+	}
+	return c.PushImage(ctx, opts, line)
 }
 
 func (r *rungvRunner) RemoveImage(ctx context.Context, ref string, force bool) error {

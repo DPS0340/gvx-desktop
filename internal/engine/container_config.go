@@ -465,15 +465,44 @@ func validateMountTarget(target string) (string, error) {
 }
 
 type plannedMount struct {
-	spec      sandbox.Mount
-	point     MountPoint
-	createVol bool
-	anonymous bool
+	spec        sandbox.Mount
+	unixForward string
+	point       MountPoint
+	createVol   bool
+	anonymous   bool
+}
+
+type mountPlanOptions struct {
+	unixForward  bool
+	dockerSocket string
+}
+
+// resolveUnixForwardBind reports whether a host bind mount src -> dst should be
+// routed through rungv --unix-forward instead of a hostfs MountBind.
+func resolveUnixForwardBind(src, dst string, opts mountPlanOptions) (string, bool) {
+	if !opts.unixForward {
+		return "", false
+	}
+	if strings.HasPrefix(src, "/") && path.Clean(src) == "/var/run/docker.sock" {
+		if ds := rungv.ExpandHome(strings.TrimSpace(opts.dockerSocket)); ds != "" {
+			if fi, err := os.Lstat(ds); err != nil || !fi.IsDir() {
+				return dst + "=" + ds, true
+			}
+		}
+	}
+	if fi, err := os.Lstat(src); err == nil && fi.Mode()&os.ModeSocket != 0 {
+		return dst + "=" + src, true
+	}
+	return "", false
 }
 
 // planMounts parses and validates Binds, Mounts, Tmpfs and Config.Volumes
 // without side effects, returning the planned mounts to apply.
 func planMounts(hc HostConfig, cfg ContainerConfig) ([]plannedMount, error) {
+	return planMountsWithOptions(hc, cfg, mountPlanOptions{})
+}
+
+func planMountsWithOptions(hc HostConfig, cfg ContainerConfig, opts mountPlanOptions) ([]plannedMount, error) {
 	var planned []plannedMount
 	targets := map[string]bool{}
 
@@ -487,7 +516,7 @@ func planMounts(hc HostConfig, cfg ContainerConfig) ([]plannedMount, error) {
 
 	// 1. HostConfig.Binds.
 	for _, raw := range hc.Binds {
-		src, rawDst, opts, err := parseBindSpec(raw)
+		src, rawDst, bindOpts, err := parseBindSpec(raw)
 		if err != nil {
 			return nil, err
 		}
@@ -499,8 +528,8 @@ func planMounts(hc HostConfig, cfg ContainerConfig) ([]plannedMount, error) {
 			return nil, err
 		}
 		ro := false
-		if opts != "" {
-			for opt := range strings.SplitSeq(opts, ",") {
+		if bindOpts != "" {
+			for opt := range strings.SplitSeq(bindOpts, ",") {
 				switch opt {
 				case "ro":
 					ro = true
@@ -512,22 +541,27 @@ func planMounts(hc HostConfig, cfg ContainerConfig) ([]plannedMount, error) {
 			}
 		}
 		if isAbsoluteHostPath(src) {
-			planned = append(planned, plannedMount{
-				spec: sandbox.Mount{
-					Type:     sandbox.MountBind,
-					Source:   src,
-					Target:   dst,
-					ReadOnly: ro,
-				},
+			pm := plannedMount{
 				point: MountPoint{
 					Type:        "bind",
 					Source:      src,
 					Destination: dst,
-					Mode:        opts,
+					Mode:        bindOpts,
 					RW:          !ro,
 					Propagation: "rprivate",
 				},
-			})
+			}
+			if uf, ok := resolveUnixForwardBind(src, dst, opts); ok {
+				pm.unixForward = uf
+			} else {
+				pm.spec = sandbox.Mount{
+					Type:     sandbox.MountBind,
+					Source:   src,
+					Target:   dst,
+					ReadOnly: ro,
+				}
+			}
+			planned = append(planned, pm)
 		} else {
 			anon := false
 			volName := src
@@ -550,7 +584,7 @@ func planMounts(hc HostConfig, cfg ContainerConfig) ([]plannedMount, error) {
 					Source:      volName,
 					Destination: dst,
 					Driver:      "local",
-					Mode:        opts,
+					Mode:        bindOpts,
 					RW:          !ro,
 					Anonymous:   anon,
 				},
@@ -574,19 +608,19 @@ func planMounts(hc HostConfig, cfg ContainerConfig) ([]plannedMount, error) {
 			if m.Source == "" {
 				return nil, errInvalid("invalid mount config for type \"bind\": field Source must not be empty")
 			}
-			if _, err := os.Stat(m.Source); err != nil {
+			statPath := m.Source
+			if opts.unixForward && strings.HasPrefix(m.Source, "/") && path.Clean(m.Source) == "/var/run/docker.sock" {
+				if ds := rungv.ExpandHome(strings.TrimSpace(opts.dockerSocket)); ds != "" {
+					statPath = ds
+				}
+			}
+			if _, err := os.Stat(statPath); err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					return nil, errInvalid("invalid mount config for type \"bind\": bind source path does not exist: %s", m.Source)
 				}
 				return nil, errInvalid("invalid mount config for type \"bind\": %v", err)
 			}
-			planned = append(planned, plannedMount{
-				spec: sandbox.Mount{
-					Type:     sandbox.MountBind,
-					Source:   m.Source,
-					Target:   dst,
-					ReadOnly: m.ReadOnly,
-				},
+			pm := plannedMount{
 				point: MountPoint{
 					Type:        "bind",
 					Source:      m.Source,
@@ -594,7 +628,18 @@ func planMounts(hc HostConfig, cfg ContainerConfig) ([]plannedMount, error) {
 					RW:          !m.ReadOnly,
 					Propagation: "rprivate",
 				},
-			})
+			}
+			if uf, ok := resolveUnixForwardBind(m.Source, dst, opts); ok {
+				pm.unixForward = uf
+			} else {
+				pm.spec = sandbox.Mount{
+					Type:     sandbox.MountBind,
+					Source:   m.Source,
+					Target:   dst,
+					ReadOnly: m.ReadOnly,
+				}
+			}
+			planned = append(planned, pm)
 		case "volume":
 			anon := false
 			volName := m.Source
@@ -721,11 +766,12 @@ func planMounts(hc HostConfig, cfg ContainerConfig) ([]plannedMount, error) {
 }
 
 // materializeMounts ensures all volumes in planned exist via workstream C's
-// ensureVolume seam and returns the sandbox mounts, inspect mount points and
-// anonymous volume names. On error, any anonymous volumes already created by
-// this call are removed.
-func (e *Engine) materializeMounts(ctx context.Context, planned []plannedMount) ([]sandbox.Mount, []MountPoint, []string, error) {
+// ensureVolume seam and returns the sandbox mounts, reverse Unix socket
+// forwards, inspect mount points and anonymous volume names. On error, any
+// anonymous volumes already created by this call are removed.
+func (e *Engine) materializeMounts(ctx context.Context, planned []plannedMount) ([]sandbox.Mount, []string, []MountPoint, []string, error) {
 	specMounts := make([]sandbox.Mount, 0, len(planned))
+	var unixForwards []string
 	points := make([]MountPoint, 0, len(planned))
 	var anonVols []string
 
@@ -735,22 +781,30 @@ func (e *Engine) materializeMounts(ctx context.Context, planned []plannedMount) 
 				for _, v := range anonVols {
 					_ = e.removeVolume(ctx, v, true)
 				}
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			if pm.anonymous {
 				anonVols = append(anonVols, pm.spec.Source)
 			}
 		}
-		specMounts = append(specMounts, pm.spec)
+		if pm.unixForward != "" {
+			unixForwards = append(unixForwards, pm.unixForward)
+		} else {
+			specMounts = append(specMounts, pm.spec)
+		}
 		points = append(points, pm.point)
 	}
-	return specMounts, points, anonVols, nil
+	return specMounts, unixForwards, points, anonVols, nil
 }
 
 // buildSandboxSpec creates the sandbox.Spec for a container (without ports,
 // which are filled at each start). specImage is the resolved image reference
 // rungv knows in its cache, falling back to cfg.Image when empty.
 func buildSandboxSpec(id, name, specImage string, cfg ContainerConfig, hc HostConfig, argv []string, mounts []sandbox.Mount) (sandbox.Spec, error) {
+	return buildSandboxSpecWithForwards(id, name, specImage, cfg, hc, argv, mounts, nil)
+}
+
+func buildSandboxSpecWithForwards(id, name, specImage string, cfg ContainerConfig, hc HostConfig, argv []string, mounts []sandbox.Mount, unixForwards []string) (sandbox.Spec, error) {
 	if hc.Memory < 0 {
 		return sandbox.Spec{}, errInvalid("memory limit cannot be negative")
 	}
@@ -784,6 +838,7 @@ func buildSandboxSpec(id, name, specImage string, cfg ContainerConfig, hc HostCo
 		Entrypoint:    argv[0],
 		Command:       rungv.FormatArgs(argv[1:]),
 		Env:           slices.Clone(cfg.Env),
+		UnixForwards:  slices.Clone(unixForwards),
 		Mounts:        mounts,
 		Memory:        memory,
 		CPUs:          cpus,

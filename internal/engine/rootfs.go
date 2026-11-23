@@ -9,6 +9,7 @@ package engine
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -22,7 +23,7 @@ import (
 )
 
 // rootfsDir holds the containers' root file system volumes.
-func (e *Engine) rootfsDir() string { return filepath.Join(e.cfg.Dir, "rootfs") }
+func (e *Engine) rootfsDir() string { return e.path("rootfs") }
 
 func (e *Engine) rootfsPath(id string) string {
 	return filepath.Join(e.rootfsDir(), id+".ext4")
@@ -157,11 +158,14 @@ func errNoRootfs(c Container, what string) error {
 // withUpper hands fn the changes c's root file system holds, as a layer
 // tar without rungv's runtime files. A running container's come from
 // rungv's export, paused for the duration when pause is set (and it is not
-// paused already); a stopped one's from its volume. A container whose root
-// file system is read-only has no changes: fn gets an empty layer.
-func (e *Engine) withUpper(ctx context.Context, c Container, pause bool, what string, fn func(r io.Reader) error) error {
-	var src func(w io.Writer) error
+// paused already); a stopped one's from its volume, with regular files
+// empty when headersOnly is set. A container whose root file system is
+// read-only has no changes: fn gets an empty layer.
+func (e *Engine) withUpper(ctx context.Context, c Container, pause, headersOnly bool, what string, fn func(r io.Reader) error) error {
+	var raw io.ReadCloser
 	switch {
+	case c.HostConfig.ReadonlyRootfs:
+		return fn(emptyLayer())
 	case c.State.Running() || c.State.Status == StatusPaused:
 		ctl := e.runner.Control(c.ID)
 		if ctl == nil {
@@ -174,59 +178,34 @@ func (e *Engine) withUpper(ctx context.Context, c Container, pause bool, what st
 				return err
 			}
 		}
-		src = func(w io.Writer) error {
-			rc, err := ctl.Export(ctx, "/", true)
-			if controlCode(err) == rungv.CodeUnsupported && c.HostConfig.ReadonlyRootfs {
-				return tar.NewWriter(w).Close()
-			}
-			if err != nil {
-				return err
-			}
-			defer rc.Close()
-			_, err = io.Copy(w, rc)
+		rc, err := ctl.Export(ctx, "/", true)
+		if err != nil {
 			return err
 		}
-	case c.HostConfig.ReadonlyRootfs:
-		src = func(w io.Writer) error { return tar.NewWriter(w).Close() }
+		raw = rc
 	case e.ownsRootfs(c.ID, c.Spec.RootfsVolume):
 		v, err := ext4lite.Open(c.Spec.RootfsVolume)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			// Created and never started: nothing changed yet.
-			src = func(w io.Writer) error { return tar.NewWriter(w).Close() }
+			return fn(emptyLayer()) // created and never started: nothing changed yet
 		case errors.Is(err, ext4lite.ErrInUse):
 			return errConflict("Container %s is starting or stopping; try again", c.Name)
 		case err != nil:
 			return err
-		default:
-			defer v.Close()
-			src = func(w io.Writer) error {
-				tw := tar.NewWriter(w)
-				if err := v.WriteLayer(tw, ext4lite.UpperDir, ext4lite.LayerOptions{}); err != nil {
-					if errors.Is(err, ext4lite.ErrNotExist) {
-						return tw.Close() // the volume of a run that ended before its overlay was set up
-					}
-					return err
-				}
-				return tw.Close()
-			}
 		}
+		defer v.Close()
+		raw = tarPipe(func(tw *tar.Writer) error {
+			err := v.WriteLayer(tw, ext4lite.UpperDir, ext4lite.LayerOptions{HeadersOnly: headersOnly})
+			if errors.Is(err, ext4lite.ErrNotExist) {
+				return nil // the volume of a run that ended before its overlay was set up
+			}
+			return err
+		})
 	default:
 		return errNoRootfs(c, what)
 	}
-
-	raw, rawW := io.Pipe()
-	go func() { rawW.CloseWithError(src(rawW)) }()
 	defer raw.Close()
-	filtered, filteredW := io.Pipe()
-	go func() {
-		tw := tar.NewWriter(filteredW)
-		err := filterUpper(raw, tw)
-		if err == nil {
-			err = tw.Close()
-		}
-		filteredW.CloseWithError(err)
-	}()
+	filtered := tarPipe(func(tw *tar.Writer) error { return filterUpper(raw, tw) })
 	defer filtered.Close()
 	if err := fn(filtered); err != nil {
 		return err
@@ -235,3 +214,6 @@ func (e *Engine) withUpper(ctx context.Context, c Container, pause bool, what st
 	_, err := io.Copy(io.Discard, filtered)
 	return err
 }
+
+// emptyLayer is a layer tar with nothing in it.
+func emptyLayer() io.Reader { return bytes.NewReader(make([]byte, 1024)) }

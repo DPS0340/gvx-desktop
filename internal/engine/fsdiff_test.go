@@ -156,6 +156,11 @@ func readTarEntries(t *testing.T, b []byte) ([]string, map[string]testEntry) {
 	}
 }
 
+// Exists reports whether the merged file system has name ("etc/hosts").
+func (t *layerTree) Exists(name string) bool {
+	return t.lookup(layerName(name), false) != nil
+}
+
 func TestLayerTreeMerge(t *testing.T) {
 	layers := [][]byte{
 		tarOf(t,
@@ -191,14 +196,14 @@ func TestLayerTreeMerge(t *testing.T) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for i, l := range layers {
-		if err := tree.Emit(i, tar.NewReader(bytes.NewReader(l)), tw, func(name string) bool { return name == "a" }); err != nil {
+		if err := tree.Emit(i, tar.NewReader(bytes.NewReader(l)), tw); err != nil {
 			t.Fatal(err)
 		}
 	}
 	tw.Close()
 	names, m := readTarEntries(t, buf.Bytes())
 	slices.Sort(names)
-	want := []string{"a/y", "b/", "deep/er/than/before", "g", "h", "h2", "h3"}
+	want := []string{"a/", "a/y", "b/", "deep/er/than/before", "g", "h", "h2", "h3"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("merged:\n got %q\nwant %q", names, want)
 	}

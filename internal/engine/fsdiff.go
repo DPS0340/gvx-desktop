@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -74,10 +73,9 @@ const (
 	changeDeleted  = 2
 )
 
-// changesOf lists the changes an upper layer makes to the file system
-// lower holds: a whiteout deletes, an entry the lower layers have changes,
-// any other adds.
-func changesOf(upper io.Reader, lower *layerTree) ([]change, error) {
+// changesOf lists the changes an upper layer makes to a file system:
+// a whiteout deletes, an entry that exists below changes, any other adds.
+func changesOf(upper io.Reader, exists func(name string) (bool, error)) ([]change, error) {
 	out := []change{}
 	tr := tar.NewReader(upper)
 	for {
@@ -97,10 +95,16 @@ func changesOf(upper io.Reader, lower *layerTree) ([]change, error) {
 		case base == opaqueMarker:
 		case strings.HasPrefix(base, whiteoutPrefix):
 			out = append(out, change{"/" + dir + strings.TrimPrefix(base, whiteoutPrefix), changeDeleted})
-		case lower.Exists(name):
-			out = append(out, change{"/" + name, changeModified})
 		default:
-			out = append(out, change{"/" + name, changeAdded})
+			below, err := exists(name)
+			if err != nil {
+				return nil, err
+			}
+			kind := changeAdded
+			if below {
+				kind = changeModified
+			}
+			out = append(out, change{"/" + name, kind})
 		}
 	}
 	slices.SortFunc(out, func(a, b change) int { return strings.Compare(a.Path, b.Path) })
@@ -123,15 +127,10 @@ func (e *Engine) containerChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer img.Close()
-	lower := newLayerTree()
-	if err := applyImage(lower, img); err != nil {
-		writeError(w, r, err)
-		return
-	}
 	var out []change
-	err = e.withUpper(r.Context(), c, false, "list its changes", func(upper io.Reader) error {
+	err = e.withUpper(r.Context(), c, false, true, "list its changes", func(upper io.Reader) error {
 		var err error
-		out, err = changesOf(upper, lower)
+		out, err = changesOf(upper, img.Exists)
 		return err
 	})
 	if err != nil {
@@ -144,15 +143,15 @@ func (e *Engine) containerChanges(w http.ResponseWriter, r *http.Request) {
 // mountSkip leaves out what c's mounts hold, as docker export does: their
 // mount points stay, empty.
 func mountSkip(c Container) func(name string) bool {
-	var dsts []string
+	var dsts []string // each with a trailing slash
 	for _, m := range c.Mounts {
 		if d := layerName(m.Destination); d != "" {
-			dsts = append(dsts, d)
+			dsts = append(dsts, d+"/")
 		}
 	}
 	return func(name string) bool {
 		for _, d := range dsts {
-			if strings.HasPrefix(name, d+"/") {
+			if strings.HasPrefix(name, d) {
 				return true
 			}
 		}
@@ -225,7 +224,7 @@ func (e *Engine) exportStopped(ctx context.Context, c Container, w io.Writer) er
 		return err
 	}
 	defer func() { upper.Close(); os.Remove(upper.Name()) }()
-	if err := e.withUpper(ctx, c, false, "export it", func(r io.Reader) error {
+	if err := e.withUpper(ctx, c, false, false, "export it", func(r io.Reader) error {
 		_, err := io.Copy(upper, r)
 		return err
 	}); err != nil {
@@ -254,7 +253,7 @@ func (e *Engine) exportStopped(ctx context.Context, c Container, w io.Writer) er
 	tw := tar.NewWriter(w)
 	for i := range top {
 		rc := tarPipe(func(tw *tar.Writer) error { return img.WriteLayer(i, tw, false) })
-		err := tree.Emit(i, tar.NewReader(rc), tw, nil)
+		err := tree.Emit(i, tar.NewReader(rc), tw)
 		rc.Close()
 		if err != nil {
 			return err
@@ -263,7 +262,7 @@ func (e *Engine) exportStopped(ctx context.Context, c Container, w io.Writer) er
 	if tr, err = readUpper(); err != nil {
 		return err
 	}
-	if err := tree.Emit(top, tr, tw, nil); err != nil {
+	if err := tree.Emit(top, tr, tw); err != nil {
 		return err
 	}
 	return tw.Close()
@@ -282,7 +281,7 @@ func (e *Engine) tmpDir() string {
 	if e.cfg.Dir == "" {
 		return os.TempDir()
 	}
-	return filepath.Join(e.cfg.Dir, "tmp")
+	return e.path("tmp")
 }
 
 // sweepTmp removes what an earlier run left in the tmp directory.

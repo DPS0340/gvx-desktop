@@ -14,13 +14,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"os"
 	"path"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
 
 // commitRunConfig is an image config's "config", as docker commit writes it.
@@ -57,35 +58,18 @@ func mergeCommitConfig(cfg *ContainerConfig, from ContainerConfig) {
 	if cfg.User == "" {
 		cfg.User = from.User
 	}
-	if len(cfg.ExposedPorts) == 0 {
-		cfg.ExposedPorts = maps.Clone(from.ExposedPorts)
-	} else {
-		for p := range from.ExposedPorts {
-			cfg.ExposedPorts[p] = struct{}{}
+	cfg.ExposedPorts = fillMap(cfg.ExposedPorts, from.ExposedPorts)
+	have := map[string]bool{}
+	for _, kv := range cfg.Env {
+		k, _, _ := strings.Cut(kv, "=")
+		have[k] = true
+	}
+	for _, kv := range from.Env {
+		if k, _, _ := strings.Cut(kv, "="); !have[k] {
+			cfg.Env = append(cfg.Env, kv)
 		}
 	}
-	if len(cfg.Env) == 0 {
-		cfg.Env = slices.Clone(from.Env)
-	} else {
-		have := map[string]bool{}
-		for _, kv := range cfg.Env {
-			k, _, _ := strings.Cut(kv, "=")
-			have[k] = true
-		}
-		for _, kv := range from.Env {
-			if k, _, _ := strings.Cut(kv, "="); !have[k] {
-				cfg.Env = append(cfg.Env, kv)
-			}
-		}
-	}
-	if cfg.Labels == nil {
-		cfg.Labels = map[string]string{}
-	}
-	for k, v := range from.Labels {
-		if _, ok := cfg.Labels[k]; !ok {
-			cfg.Labels[k] = v
-		}
-	}
+	cfg.Labels = fillMap(cfg.Labels, from.Labels)
 	if len(cfg.Entrypoint) == 0 && len(cfg.Cmd) == 0 {
 		cfg.Entrypoint = slices.Clone(from.Entrypoint)
 		cfg.Cmd = slices.Clone(from.Cmd)
@@ -96,16 +80,23 @@ func mergeCommitConfig(cfg *ContainerConfig, from ContainerConfig) {
 	if cfg.WorkingDir == "" {
 		cfg.WorkingDir = from.WorkingDir
 	}
-	if len(cfg.Volumes) == 0 {
-		cfg.Volumes = maps.Clone(from.Volumes)
-	} else {
-		for v := range from.Volumes {
-			cfg.Volumes[v] = struct{}{}
-		}
-	}
+	cfg.Volumes = fillMap(cfg.Volumes, from.Volumes)
 	if cfg.StopSignal == "" {
 		cfg.StopSignal = from.StopSignal
 	}
+}
+
+// fillMap adds to dst the keys of from it lacks, and returns it.
+func fillMap[V any](dst, from map[string]V) map[string]V {
+	for k, v := range from {
+		if _, ok := dst[k]; !ok {
+			if dst == nil {
+				dst = make(map[string]V, len(from))
+			}
+			dst[k] = v
+		}
+	}
+	return dst
 }
 
 // applyChanges applies docker commit's --change instructions, the
@@ -211,7 +202,7 @@ func jsonArray(s string) ([]string, bool) {
 // double or single quotes and backslash escapes; ENV also takes the old
 // form "key value...".
 func keyValues(s string, oldForm bool) ([][2]string, error) {
-	words, err := shellWords(s)
+	words, err := rungv.SplitArgs(s)
 	if err != nil {
 		return nil, err
 	}
@@ -229,47 +220,6 @@ func keyValues(s string, oldForm bool) ([][2]string, error) {
 			return nil, fmt.Errorf("%q is not key=value", w)
 		}
 		out = append(out, [2]string{k, v})
-	}
-	return out, nil
-}
-
-// shellWords splits s at spaces outside quotes, removing the quotes.
-func shellWords(s string) ([]string, error) {
-	var out []string
-	var cur strings.Builder
-	in, quote, escaped := false, byte(0), false
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		switch {
-		case escaped:
-			cur.WriteByte(ch)
-			escaped = false
-		case ch == '\\' && quote != '\'':
-			escaped, in = true, true
-		case quote != 0:
-			if ch == quote {
-				quote = 0
-			} else {
-				cur.WriteByte(ch)
-			}
-		case ch == '"' || ch == '\'':
-			quote, in = ch, true
-		case ch == ' ' || ch == '\t':
-			if in {
-				out = append(out, cur.String())
-				cur.Reset()
-				in = false
-			}
-		default:
-			cur.WriteByte(ch)
-			in = true
-		}
-	}
-	if quote != 0 {
-		return nil, fmt.Errorf("unterminated quote")
-	}
-	if in {
-		out = append(out, cur.String())
 	}
 	return out, nil
 }
@@ -345,8 +295,7 @@ func commitImageConfig(base []byte, cfg ContainerConfig, diffID string, created 
 // ID). The manifest lists the image's other layers by the descriptors the
 // cache's manifest has, whose digests are the keys rungv's load finds them
 // under: it skips a cached layer the archive lacks.
-func commitArchive(w io.Writer, config []byte, base []json.RawMessage, layer *os.File, layerSize int64, diffID, repoTag string) error {
-	tw := tar.NewWriter(w)
+func commitArchive(tw *tar.Writer, config []byte, base []json.RawMessage, layer *os.File, layerSize int64, diffID, repoTag string) error {
 	add := func(name string, size int64, body io.Reader) error {
 		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: 0o644, Size: size}); err != nil {
 			return err
@@ -357,7 +306,7 @@ func commitArchive(w io.Writer, config []byte, base []json.RawMessage, layer *os
 	blob := func(b []byte) (string, error) {
 		sum := sha256.Sum256(b)
 		d := "sha256:" + hex.EncodeToString(sum[:])
-		return d, add("blobs/sha256/"+hex.EncodeToString(sum[:]), int64(len(b)), bytes.NewReader(b))
+		return d, add(ociDigestPath(d), int64(len(b)), bytes.NewReader(b))
 	}
 	type descriptor struct {
 		MediaType   string            `json:"mediaType"`
@@ -372,7 +321,7 @@ func commitArchive(w io.Writer, config []byte, base []json.RawMessage, layer *os
 	if _, err := layer.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	if err := add("blobs/sha256/"+strings.TrimPrefix(diffID, "sha256:"), layerSize, layer); err != nil {
+	if err := add(ociDigestPath(diffID), layerSize, layer); err != nil {
 		return err
 	}
 	cfgDigest, err := blob(config)
@@ -399,10 +348,7 @@ func commitArchive(w io.Writer, config []byte, base []json.RawMessage, layer *os
 		"mediaType":     "application/vnd.oci.image.index.v1+json",
 		"manifests":     []descriptor{desc},
 	})
-	if err := add("index.json", int64(len(index)), bytes.NewReader(index)); err != nil {
-		return err
-	}
-	return tw.Close()
+	return add("index.json", int64(len(index)), bytes.NewReader(index))
 }
 
 // commitTarget is the tag commit gives the image: repo with tag, or
@@ -481,7 +427,7 @@ func (e *Engine) commit(w http.ResponseWriter, r *http.Request) {
 	defer func() { layer.Close(); os.Remove(layer.Name()) }()
 	sum := sha256.New()
 	var size int64
-	err = e.withUpper(r.Context(), c, pause, "commit it", func(upper io.Reader) error {
+	err = e.withUpper(r.Context(), c, pause, false, "commit it", func(upper io.Reader) error {
 		n, err := io.Copy(io.MultiWriter(layer, sum), upper)
 		size = n
 		return err
@@ -498,10 +444,11 @@ func (e *Engine) commit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(commitArchive(pw, config, baseLayers, layer, size, diffID, target)) }()
-	err = e.runner.LoadImages(r.Context(), pr, func(string) {})
-	pr.Close()
+	archive := tarPipe(func(tw *tar.Writer) error {
+		return commitArchive(tw, config, baseLayers, layer, size, diffID, target)
+	})
+	err = e.runner.LoadImages(r.Context(), archive, func(string) {})
+	archive.Close()
 	if err != nil {
 		writeError(w, r, err)
 		return

@@ -68,7 +68,7 @@ func (v *Volume) replay(sb []byte) error {
 	if got := le.Uint32(sb[0xE0:]); got != journalIno {
 		return corrupt("journal inode is %d", got)
 	}
-	blocks := uint64(le.Uint32(sb[0x04:])) | uint64(le.Uint32(sb[0x150:]))<<32
+	blocks := superBlocks(sb)
 	v.blocks = blocks
 	v.groups = uint32((blocks + blocksPerGroup - 1) / blocksPerGroup)
 	jn, err := v.Stat(journalIno)
@@ -158,7 +158,7 @@ func (v *Volume) replay(sb []byte) error {
 			if err != nil {
 				return err
 			}
-			blocks = uint64(le.Uint32(d[superOffset+0x04:])) | uint64(le.Uint32(d[superOffset+0x150:]))<<32
+			blocks = superBlocks(d[superOffset:])
 			found = true
 			break
 		}

@@ -182,3 +182,23 @@ func TestReadRange(t *testing.T) {
 		t.Error("a read past the end succeeded")
 	}
 }
+
+func TestGVXImageExists(t *testing.T) {
+	g, err := OpenGVXImage(fixtureCache, fixtureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	for name, want := range map[string]bool{
+		"etc": true, "etc/hl": true, "etc/motd": true, "opt/new": true, "data/big.bin": true,
+		"etc/a.txt": false,                                         // deleted
+		"usr":       true, "usr/bin": false, "usr/bin/tool": false, // deleted with what it held
+		"etc/sub": true, "etc/sub/y": true, "etc/sub/x": false, // hidden by an opaque directory
+		"nope": false, "etc/motd/under": false,
+	} {
+		got, err := g.Exists(name)
+		if err != nil || got != want {
+			t.Errorf("Exists(%s) = %v, %v; want %v", name, got, err, want)
+		}
+	}
+}

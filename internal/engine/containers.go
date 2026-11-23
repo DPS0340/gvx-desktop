@@ -825,12 +825,13 @@ func (e *Engine) removeContainerCleanup(ctx context.Context, id string, stopFirs
 	e.syncOverlay()
 
 	e.ctr.mu.Lock()
-	if c := e.ctr.byID[id]; c != nil {
-		e.removeRootfs(*c)
-	}
+	removed := e.ctr.byID[id]
 	delete(e.ctr.byID, id)
 	_ = e.saveContainersLocked()
 	e.ctr.mu.Unlock()
+	if removed != nil {
+		e.removeRootfs(*removed) // a crash before this leaves it to sweepRootfs
+	}
 
 	if removeVols {
 		for _, v := range anonVols {

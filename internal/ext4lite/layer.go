@@ -15,9 +15,9 @@ const UpperDir = "/upper"
 
 // LayerOptions shape WriteLayer's archive.
 type LayerOptions struct {
-	// Skip leaves out the entry at name (relative, as "etc/hosts"), and, for
-	// a directory, what it holds.
-	Skip func(name string) bool
+	// HeadersOnly writes regular files with no content and a size of 0, for
+	// a reader that wants only the tree.
+	HeadersOnly bool
 }
 
 // WriteLayer writes the tree under dir (an overlay upper directory) to tw as
@@ -60,15 +60,11 @@ func (w *layerWriter) dir(n *Inode, prefix string, depth int) error {
 		if strings.ContainsRune(e.Name, '/') || e.Name == "" {
 			return corrupt("bad name %q in inode %d", e.Name, n.Ino)
 		}
-		name := prefix + e.Name
-		if w.o.Skip != nil && w.o.Skip(name) {
-			continue
-		}
 		c, err := w.v.Stat(e.Ino)
 		if err != nil {
 			return err
 		}
-		if err := w.entry(c, name, depth); err != nil {
+		if err := w.entry(c, prefix+e.Name, depth); err != nil {
 			return err
 		}
 	}
@@ -125,9 +121,12 @@ func (w *layerWriter) entry(n *Inode, name string, depth int) error {
 	case ModeDir:
 		hdr.Typeflag, hdr.Name = tar.TypeDir, name+"/"
 	case ModeRegular:
-		hdr.Typeflag, hdr.Size = tar.TypeReg, int64(n.Size)
-		if body, err = w.v.Open(n); err != nil {
-			return err
+		hdr.Typeflag = tar.TypeReg
+		if !w.o.HeadersOnly {
+			hdr.Size = int64(n.Size)
+			if body, err = w.v.Open(n); err != nil {
+				return err
+			}
 		}
 	case ModeSymlink:
 		hdr.Typeflag = tar.TypeSymlink

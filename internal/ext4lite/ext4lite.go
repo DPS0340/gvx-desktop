@@ -143,7 +143,7 @@ func (v *Volume) load() error {
 			return err
 		}
 	}
-	v.blocks = uint64(le.Uint32(sb[0x04:])) | uint64(le.Uint32(sb[0x150:]))<<32
+	v.blocks = superBlocks(sb)
 	v.groups = uint32((v.blocks + blocksPerGroup - 1) / blocksPerGroup)
 	return nil
 }
@@ -174,6 +174,11 @@ func checkSuper(sb []byte) error {
 		return fmt.Errorf("ext4lite: first_meta_bg %d is not supported", le.Uint32(sb[0x104:]))
 	}
 	return nil
+}
+
+// superBlocks is the block count a superblock gives (64bit).
+func superBlocks(sb []byte) uint64 {
+	return uint64(le.Uint32(sb[0x04:])) | uint64(le.Uint32(sb[0x150:]))<<32
 }
 
 // block reads block n, as a journal replay would leave it.
@@ -591,7 +596,8 @@ func (v *Volume) ReadDir(n *Inode) ([]DirEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		if data, err = io.ReadAll(r); err != nil {
+		data = make([]byte, n.Size)
+		if _, err := io.ReadFull(r, data); err != nil {
 			return nil, err
 		}
 	}

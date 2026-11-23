@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -37,18 +38,21 @@ func OpenGVXImage(cacheDir, imageID string) (*GVXImage, error) {
 	if len(rec.Manifests) == 0 {
 		return nil, errors.New("cached image has no manifest")
 	}
-	var man ociManifest
+	var man struct {
+		Layers []json.RawMessage `json:"layers"`
+	}
 	if err := json.Unmarshal(rec.Manifests[len(rec.Manifests)-1], &man); err != nil {
 		return nil, fmt.Errorf("decode image manifest: %w", err)
 	}
-	var descs struct {
-		Layers []json.RawMessage `json:"layers"`
-	}
-	if err := json.Unmarshal(rec.Manifests[len(rec.Manifests)-1], &descs); err != nil || len(descs.Layers) != len(man.Layers) {
-		return nil, fmt.Errorf("decode image manifest layers: %v", err)
-	}
-	g := &GVXImage{Config: rec.Config, LayerDescriptors: descs.Layers}
-	for _, l := range man.Layers {
+	g := &GVXImage{Config: rec.Config, LayerDescriptors: man.Layers}
+	for _, raw := range man.Layers {
+		var l struct {
+			Digest string `json:"digest"`
+		}
+		if err := json.Unmarshal(raw, &l); err != nil {
+			g.Close()
+			return nil, fmt.Errorf("decode image manifest layer: %w", err)
+		}
 		img, _, err := openGVXLayerFile(cacheDir, rec.Format, l.Digest)
 		if err != nil {
 			g.Close()
@@ -74,12 +78,33 @@ func (g *GVXImage) Close() error {
 	return first
 }
 
+// Exists reports whether the merged file system of the layers has name
+// ("etc/hosts"): the topmost layer that holds it, or a whiteout of it, or
+// that hides what the layers below hold there, decides.
+func (g *GVXImage) Exists(name string) (bool, error) {
+	name = CleanPath(name)
+	for _, img := range slices.Backward(g.layers) {
+		ino, ok, err := img.lookup(name)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return !ino.isWhiteout(), nil
+		}
+		if blocked, err := ancestorBlocksLower(img, name); err != nil || blocked {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
 // WriteLayer writes layer i (0 is the bottom) to tw as an OCI layer tar: a
 // whiteout becomes ".wh.<name>", an opaque directory gets ".wh..wh..opq",
 // names are relative, directories end in "/" and come before what they
 // hold, and a file with more than one name is written once and linked
 // after. With headersOnly, regular files are written with no content and a
-// size of 0, for a reader that wants only the tree.
+// size of 0, and symbolic links with no target, for a reader that wants
+// only the tree.
 func (g *GVXImage) WriteLayer(i int, tw *tar.Writer, headersOnly bool) error {
 	if i < 0 || i >= len(g.layers) {
 		return fmt.Errorf("layer %d of %d", i, len(g.layers))
@@ -186,11 +211,14 @@ func (w *erofsTarWriter) entry(ino erofsInode, name string, depth int) error {
 		}
 		return nil
 	case posixIFLNK:
-		target, err := w.img.readLink(ino)
-		if err != nil {
-			return err
+		hdr.Typeflag = tar.TypeSymlink
+		if !w.headersOnly {
+			target, err := w.img.readLink(ino)
+			if err != nil {
+				return err
+			}
+			hdr.Linkname = target
 		}
-		hdr.Typeflag, hdr.Linkname = tar.TypeSymlink, target
 	case posixIFCHR, 0o060000:
 		hdr.Typeflag = tar.TypeChar
 		if ino.mode&posixIFMT == 0o060000 {

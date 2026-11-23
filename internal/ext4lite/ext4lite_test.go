@@ -160,18 +160,20 @@ func TestWriteLayer(t *testing.T) {
 	}
 }
 
-func TestWriteLayerSkip(t *testing.T) {
+func TestWriteLayerHeadersOnly(t *testing.T) {
 	v := open(t, fixture(t, "layer.ext4"))
-	l := readLayer(t, v, LayerOptions{Skip: func(name string) bool {
-		return name == "etc/hosts" || name == "root/many"
-	}})
-	for n := range l {
-		if n == "etc/hosts" || strings.HasPrefix(n, "root/many/") {
-			t.Errorf("%s is in the layer", n)
-		}
+	full := readLayer(t, v, LayerOptions{})
+	l := readLayer(t, v, LayerOptions{HeadersOnly: true})
+	if len(l) != len(full) {
+		t.Errorf("%d entries, want %d", len(l), len(full))
 	}
-	if _, ok := l["etc/motd"]; !ok {
-		t.Error("etc/motd is missing")
+	for n, e := range l {
+		if e.hdr.Size != 0 || len(e.body) != 0 {
+			t.Errorf("%s has %d bytes", n, e.hdr.Size)
+		}
+		if f := full[n]; f.hdr == nil || f.hdr.Typeflag != e.hdr.Typeflag || f.hdr.Linkname != e.hdr.Linkname {
+			t.Errorf("%s: %+v, want %+v", n, e.hdr, f.hdr)
+		}
 	}
 }
 

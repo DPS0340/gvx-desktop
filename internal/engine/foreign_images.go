@@ -13,7 +13,6 @@ import (
 	"io"
 	"os"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -365,14 +364,7 @@ func (e *Engine) refuseForeignImage(ctx context.Context, ref, platform string) e
 // before feeding it to rungv load. On any error, the temp file is closed and
 // removed before returning.
 func (e *Engine) spoolImageArchive(body io.Reader) (f *os.File, cleanup func(), err error) {
-	tmpDir := os.TempDir()
-	if e.cfg.Dir != "" {
-		tmpDir = filepath.Join(e.cfg.Dir, "tmp")
-		if err := os.MkdirAll(tmpDir, 0o700); err != nil {
-			return nil, nil, err
-		}
-	}
-	f, err = os.CreateTemp(tmpDir, "load-*.tar")
+	f, err = e.tempFile("load-*.tar")
 	if err != nil {
 		return nil, nil, err
 	}

@@ -7,10 +7,7 @@ package engine
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
-	"compress/gzip"
-	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -27,22 +24,6 @@ const (
 func layerName(name string) string {
 	name = path.Clean("/" + name)
 	return strings.TrimPrefix(name, "/")
-}
-
-// openLayer returns the tar stream of a layer blob, gzip-compressed or not.
-func openLayer(r io.Reader) (io.Reader, error) {
-	br := bufio.NewReader(r)
-	magic, err := br.Peek(4)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	switch {
-	case len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b:
-		return gzip.NewReader(br)
-	case len(magic) == 4 && magic[0] == 0x28 && magic[1] == 0xb5 && magic[2] == 0x2f && magic[3] == 0xfd:
-		return nil, errors.New("zstd-compressed layers are not supported")
-	}
-	return br, nil
 }
 
 // implicitOwner marks a tree node no layer has an entry for: a directory
@@ -161,25 +142,18 @@ func (t *layerTree) Apply(i int, tr *tar.Reader) error {
 	}
 }
 
-// Exists reports whether the merged file system has name ("etc/hosts").
-func (t *layerTree) Exists(name string) bool {
-	return t.lookup(layerName(name), false) != nil
-}
-
 // maxLostLink bounds the content Emit keeps of a hard link's target that a
 // later layer replaced or deleted.
 const maxLostLink = 256 << 20
 
 // Emit replays layer i from tr, writing to tw the entries that won in the
-// merge: what Apply saw of layer i must be what tr reads now. skip, when
-// set, leaves an entry out.
+// merge: what Apply saw of layer i must be what tr reads now.
 //
 // A hard link whose target lost to a later layer still names the file, as
 // in an overlay: the first such link is written as a file with the
 // target's content, and the others link to it.
-func (t *layerTree) Emit(i int, tr *tar.Reader, tw *tar.Writer, skip func(name string) bool) error {
-	lost := map[string]*tar.Header{} // a linked target that did not win, with its content
-	lostBody := map[string][]byte{}
+func (t *layerTree) Emit(i int, tr *tar.Reader, tw *tar.Writer) error {
+	lost := map[string][]byte{}  // a linked target that did not win → its content
 	moved := map[string]string{} // a lost target → the link written in its place
 	for ord := 0; ; ord++ {
 		hdr, err := tr.Next()
@@ -193,18 +167,14 @@ func (t *layerTree) Emit(i int, tr *tar.Reader, tw *tar.Writer, skip func(name s
 		if name == "" || strings.HasPrefix(path.Base(name), whiteoutPrefix) {
 			continue
 		}
-		n := t.lookup(name, false)
-		wins := n != nil && n.owner == i && n.ord == ord && (skip == nil || !skip(name))
-		if !wins {
+		if n := t.lookup(name, false); n == nil || n.owner != i || n.ord != ord {
 			if t.linked[i][name] && hdr.Typeflag == tar.TypeReg {
 				if hdr.Size > maxLostLink {
 					return fmt.Errorf("%s: a hard link's target of %d bytes was replaced by a later layer", name, hdr.Size)
 				}
-				b, err := io.ReadAll(tr)
-				if err != nil {
+				if lost[name], err = io.ReadAll(tr); err != nil {
 					return err
 				}
-				lost[name], lostBody[name] = hdr, b
 			}
 			continue
 		}
@@ -221,10 +191,11 @@ func (t *layerTree) Emit(i int, tr *tar.Reader, tw *tar.Writer, skip func(name s
 			out.Linkname = target
 			if to, ok := moved[target]; ok {
 				out.Linkname = to
-			} else if th, ok := lost[target]; ok {
-				out.Typeflag, out.Linkname, out.Size = tar.TypeReg, "", th.Size
-				body = bytes.NewReader(lostBody[target])
+			} else if b, ok := lost[target]; ok {
+				out.Typeflag, out.Linkname, out.Size = tar.TypeReg, "", int64(len(b))
+				body = bytes.NewReader(b)
 				moved[target] = name
+				delete(lost, target)
 			}
 		}
 		if err := tw.WriteHeader(&out); err != nil {

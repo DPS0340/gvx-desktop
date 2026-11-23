@@ -128,16 +128,13 @@ func dragRegion(child ggui.Widget) ggui.Widget {
 // which a sidebar's entries are only as it is made; the sidebar carries its
 // highlight, hover and collapse across.
 func sidebar(m *Model) ggui.Widget {
-	access := ggui.Combine(m.ContainersAccess, m.PodsAccess, func(c ContainersAccess, p PodsAccess) [2]string {
-		return [2]string{c.Reason(), p.Reason()}
-	})
-	return ggui.View(access, func(why [2]string) ggui.Widget { return sidebarFor(m, why[0], why[1]) })
+	open := ggui.Combine(m.ContainersOpen, m.PodsOpen, func(c, p bool) [2]bool { return [2]bool{c, p} })
+	return ggui.View(open, func(o [2]bool) ggui.Widget { return sidebarFor(m, o[0], o[1]) })
 }
 
-// sidebarFor is the sidebar without the Containers (and Networks) and Pods
-// items while there is a reason they cannot open: their engine is not
-// running.
-func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
+// sidebarFor is the sidebar with the Containers (and Networks) and Pods
+// items only while they open: while their engine runs.
+func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
 	// The image registry has no page of its own: its entry opens its
 	// sandbox, or offers to set it up.
 	nav := ggui.Bind(m.Page.Get, func(key string) {
@@ -156,13 +153,13 @@ func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 		item(PageDashboard, tr("Dashboard"), lucide.LayoutDashboard),
 		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(runningBadge(m.Running, func(n int) string { return trn(n, "%d sandbox running", "%d sandboxes running") })),
 	}
-	if noContainers == "" {
+	if containers {
 		entries = append(entries,
 			item(PageContainers, tr("Containers"), lucide.Container).Action(runningBadge(m.RunningContainers,
 				func(n int) string { return trn(n, "%d container running", "%d containers running") })),
 			item(PageNetworks, tr("Networks"), lucide.Network))
 	}
-	if noPods == "" {
+	if pods {
 		entries = append(entries, item(PagePods, tr("Pods"), lucide.Hexagon).Action(runningBadge(m.RunningPods,
 			func(n int) string { return trn(n, "%d pod running", "%d pods running") })))
 	}

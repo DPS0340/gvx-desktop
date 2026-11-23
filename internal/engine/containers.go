@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -824,6 +825,9 @@ func (e *Engine) removeContainerCleanup(ctx context.Context, id string, stopFirs
 	e.syncOverlay()
 
 	e.ctr.mu.Lock()
+	if c := e.ctr.byID[id]; c != nil {
+		e.removeRootfs(*c)
+	}
 	delete(e.ctr.byID, id)
 	_ = e.saveContainersLocked()
 	e.ctr.mu.Unlock()
@@ -1063,6 +1067,16 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	spec.CreatedAt = created
+	if e.keepsRootfs(hc) {
+		// rungv makes the volume at the first start.
+		if err := os.MkdirAll(e.rootfsDir(), 0o700); err != nil {
+			e.ctr.mu.Unlock()
+			cleanupAnon()
+			writeError(w, r, err)
+			return
+		}
+		spec.RootfsVolume = e.rootfsPath(id)
+	}
 
 	c := &Container{
 		ID:               id,

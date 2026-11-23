@@ -21,10 +21,11 @@ behaves exactly as today.
 With `rungv` v0.20+ (control protocol, see `docs/design/gvx-v020.md`), the engine
 also supports `exec`, `cp` (archive), `pause`/`unpause`, `top`, `update`, guest
 `kill`, graceful `stop` (honoring `StopSignal` and timeout), guest-accurate
-`stats`, and live `network connect`/`disconnect` for containers on the overlay.
-With `rungv` v0.19, those endpoints answer 501 as before. Still not supported:
-`commit`, `export`, `diff` (`/changes`), WebSocket attach, swarm and plugins
-(all answer 501).
+`stats`, live `network connect`/`disconnect` for containers on the overlay, and
+`diff` (`/changes`), `export` and `commit`, of stopped containers too (§9.3): a
+container's writes to its root file system go to a volume of its own and outlive
+a stop, as docker's do. With `rungv` v0.19, those endpoints answer 501 as before.
+Still not supported: WebSocket attach, swarm and plugins (all answer 501).
 Image builds are supported through the engine's lazy BuildKit builder sandbox
 (§9.1). Containers on a user network reach each other by name through the
 overlay (§9.2).
@@ -166,6 +167,8 @@ fields marked "relied on" are read by A and C and stay as they are.
 | `networks.json` | C | `{"version":1,"networks":[Network...]}`: user networks and their members; builtins are not stored |
 | `logs/<id>.log` | A | docker json-file lines `{"log":"...","stream":"stdout","time":"RFC3339Nano"}`, capped (≈16 MiB, then drop the oldest half) |
 | `run/`, `snapshots/` | supervisor | unused (no checkpoints) |
+| `rootfs/<id>.ext4` | §9.3 | a container's root file system writes (`-rootfs-volume`), made at its first start, removed with it; Open removes the ones no container has |
+| `tmp/` | §9.3 | export's and commit's spool files; Open empties it |
 
 At Open, a record whose status was running/restarting/removing becomes
 `exited` (ExitCode 255 when it was not stopped cleanly, FinishedAt = now) and is saved.
@@ -631,6 +634,54 @@ no names on Docker either.
   `10.0.2.2`, which the hub needs.
   `host` and `container:` network modes are as before (NAT with a warning, refused).
 
+### 9.3 diff, export and commit (`rootfs.go`, `fsdiff.go`, `commit.go`, `layers.go`)
+
+With rungv v0.20 (Control), a new container gets `Spec.RootfsVolume =
+<Dir>/rootfs/<id>.ext4`, unless its root file system is read-only. rungv makes the
+ext4lite volume at the first start and keeps the overlay's upper layer in its
+`/upper`: the container's changes survive stop and start, and a restart policy's
+reruns, as docker's do. A container from before keeps its writes in memory: diff,
+export and commit of it work only while it runs (409 when stopped).
+
+**The changes** of a container are an OCI layer (`withUpper`):
+
+- running or paused: `rungv export --upper-only` of `/`, which writes whiteouts as
+  `.wh.<name>` and opaque directories as `.wh..wh..opq`.
+- stopped: `internal/ext4lite` reads the volume without a sandbox: a read-only
+  reader of ext4lite's profile (GVXIP-002: extents, inline data, xattrs, linear
+  directories, meta_bg, 64-bit), which applies a crash's journal (JBD2) in memory
+  and never writes. It takes the shared flock a read-only mount takes, so the
+  container cannot start meanwhile (409 when the volume is in use).
+
+`filterUpper` drops what rungv writes into every guest (`/etc/hosts`,
+`/etc/hostname`, `/etc/resolv.conf`) and the directories it makes when the image
+has none (`/workspace`, `/tmp`, ...) when nothing else is in them, as docker's init
+layer keeps its own out.
+
+**The image** is read from rungv's layer cache, not with `rungv save`: save fetches
+the layers from the registry again, and has no source for a loaded or built image.
+`imagefs.GVXImage` gives each compiled EROFS layer as an OCI layer tar and the
+cache's config and layer descriptors. `layerTree` merges layers (whiteouts, opaque
+directories, a file in place of a directory) and replays the winners; a hard link
+whose target a later layer replaced becomes a file with the target's content.
+
+- `GET /containers/{id}/changes`: each upper entry is `D` (a whiteout), `C` (the
+  image has the path) or `A`, by path.
+- `GET /containers/{id}/export`: running, rungv's export of `/` without what the
+  mounts hold (their mount points stay); stopped, the image's layers merged with the
+  changes (spooled to `tmp/` first).
+- `POST /commit` (`container`, `repo`, `tag`, `comment`, `author`, `pause` (default
+  true), `changes`, body: a config): the config is dockerd's: the body's, the
+  changes applied (CMD, ENTRYPOINT, ENV, LABEL, EXPOSE, VOLUME, USER, WORKDIR,
+  STOPSIGNAL), then what it leaves unset from the container's. The new image is the
+  base config with that config, one more diff ID and history entry. The engine loads
+  it as an OCI image layout holding only the new layer (uncompressed), the config and
+  the manifest; the manifest lists the image's other layers by the descriptors the
+  cache's manifest has, whose digests are the cache's keys, and rungv's load skips a
+  cached layer the archive lacks. (A docker save archive does not work: it names the
+  layers by diff ID, which the cache keys only loaded images by.) 201
+  `{"Id":"sha256:<config digest>"}`, events `container commit` and `image tag`.
+
 ## 10. App wiring and UI (D)
 
 - **Setting**: `store.Settings.SandboxEngine` (added). Default off.
@@ -708,11 +759,11 @@ Desktop's experimental sandbox engine yet"}`. Unknown paths answer 404 `page not
 | POST | /containers/{id}/resize | A | `h`, `w` |
 | GET | /containers/{id}/stats | A | `stream`, `one-shot`; guest stats via `rungv stats` (v0.20+), procstat fallback |
 | GET | /containers/{id}/top | W2 | `rungv top` (v0.20+; 501 on v0.19) |
-| GET | /containers/{id}/changes, /export | – | 501 |
+| GET | /containers/{id}/changes, /export | §9.3 | v0.20+; stopped containers from their volume (501 on v0.19) |
 | POST | /containers/{id}/update, /pause, /unpause | W2 | `rungv update`/`pause`/`unpause` (v0.20+; 501 on v0.19) |
 | HEAD,GET,PUT | /containers/{id}/archive | W2 | `rungv cp` for running containers (v0.20+; 501 on v0.19 or stopped) |
 | POST | /containers/{id}/exec, /exec/{id}/start, /exec/{id}/resize; GET /exec/{id}/json | W2 | `rungv exec` (v0.20+; 501 "exec" on v0.19) |
-| POST | /commit | – | 501 |
+| POST | /commit | §9.3 | `container`, `repo`, `tag`, `comment`, `author`, `pause`, `changes`; 201 `{"Id"}` (501 on v0.19) |
 | GET | /images/json | C | |
 | POST | /images/create | C | `fromImage`, `tag`, `platform`; JSON progress stream |
 | GET | /images/{name}/json | C | name may hold slashes |

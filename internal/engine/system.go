@@ -134,9 +134,9 @@ func (e *Engine) info(w http.ResponseWriter, r *http.Request) {
 		hostname = "gvx-desktop"
 	}
 
-	infoWarning := "GVX Desktop's experimental sandbox engine: exec and cp are not supported yet."
-	if e.runner.Features().Control {
-		infoWarning = "GVX Desktop's experimental sandbox engine: commit, export and diff are not supported yet."
+	warnings := []string{}
+	if !e.runner.Features().Control {
+		warnings = append(warnings, "GVX Desktop's experimental sandbox engine: exec, cp, diff, export and commit need rungv 0.20.")
 	}
 
 	resp := struct {
@@ -197,7 +197,7 @@ func (e *Engine) info(w http.ResponseWriter, r *http.Request) {
 		LoggingDriver:     "json-file",
 		CgroupDriver:      "none",
 		ExperimentalBuild: true,
-		Warnings:          []string{infoWarning},
+		Warnings:          warnings,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

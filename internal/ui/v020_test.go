@@ -695,12 +695,12 @@ func TestV020UIScreensAndGating(t *testing.T) {
 	// 3. Labs: the sandbox engine's notes for v0.20 vs v0.19.
 	m.Go(PageLabs)
 	p.Frame()
-	if !shows("Not yet supported: commit, export and diff.") {
+	if !shows("Also diff, export and commit, on stopped containers too. A container keeps the files it changed when it stops, as in Docker.") {
 		t.Errorf("Settings v0.20 notes missing:\n%s", p.Semantics())
 	}
 	m.RungvFeatures.Set(rungv.Features{})
 	p.Frame()
-	if !shows("Update rungv to v0.20 or later for exec, cp, pause, top and update.") {
+	if !shows("Update rungv to v0.20 or later for exec, cp, diff, export, commit, pause, top and update.") {
 		t.Errorf("Settings v0.19 upgrade note missing:\n%s", p.Semantics())
 	}
 

@@ -504,8 +504,8 @@ func sandboxEngineSettings(m *Model) ggui.Widget {
 					widget.Expanded(ui.Caption(tr("Works: docker run (-d, -i, -t, --rm), exec, cp, pause, top, update, stats, build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.")).Size(12)),
 				).Gap(8).Align(widget.AlignStart),
 				widget.Row(
-					widget.Padding(glyph(lucide.CircleMinus, 13).Color(colorGray), 2, 0, 0, 0),
-					widget.Expanded(ui.Caption(tr("Not yet supported: commit, export and diff.")).Size(12)),
+					widget.Padding(glyph(lucide.Check, 13).Color(colorGreen), 2, 0, 0, 0),
+					widget.Expanded(ui.Caption(tr("Also diff, export and commit, on stopped containers too. A container keeps the files it changed when it stops, as in Docker.")).Size(12)),
 				).Gap(8).Align(widget.AlignStart),
 			)
 		} else {
@@ -516,11 +516,11 @@ func sandboxEngineSettings(m *Model) ggui.Widget {
 				).Gap(8).Align(widget.AlignStart),
 				widget.Row(
 					widget.Padding(glyph(lucide.CircleMinus, 13).Color(colorGray), 2, 0, 0, 0),
-					widget.Expanded(ui.Caption(tr("Not yet supported: exec and cp.")).Size(12)),
+					widget.Expanded(ui.Caption(tr("Not yet supported: exec, cp, diff, export and commit.")).Size(12)),
 				).Gap(8).Align(widget.AlignStart),
 				widget.Row(
 					widget.Padding(glyph(lucide.Info, 13).Color(colorAmber), 2, 0, 0, 0),
-					widget.Expanded(ui.Caption(tr("Update rungv to v0.20 or later for exec, cp, pause, top and update.")).Size(12)),
+					widget.Expanded(ui.Caption(tr("Update rungv to v0.20 or later for exec, cp, diff, export, commit, pause, top and update.")).Size(12)),
 				).Gap(8).Align(widget.AlignStart),
 			)
 		}

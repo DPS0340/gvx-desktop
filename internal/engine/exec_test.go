@@ -37,6 +37,17 @@ type fakeControl struct {
 	killFn      func(ctx context.Context, o rungv.KillOptions) error
 	killCalls   []rungv.KillOptions
 	copyToCalls []fakeCopyToCall
+	// exportFn answers Export; exportCalls records its upperOnly arguments
+	// and whether the run was paused then.
+	exportFn    func(ctx context.Context, path string, upperOnly bool) (io.ReadCloser, error)
+	exportCalls []fakeExportCall
+	pausedNow   func() bool
+}
+
+type fakeExportCall struct {
+	Path      string
+	UpperOnly bool
+	Paused    bool
 }
 
 type fakeCopyToCall struct {
@@ -97,6 +108,19 @@ func (c *fakeControl) StatPath(ctx context.Context, guestPath string) (rungv.Pat
 }
 
 func (c *fakeControl) Export(ctx context.Context, guestPath string, upperOnly bool) (io.ReadCloser, error) {
+	c.mu.Lock()
+	fn, pausedNow := c.exportFn, c.pausedNow
+	c.mu.Unlock()
+	call := fakeExportCall{Path: guestPath, UpperOnly: upperOnly}
+	if pausedNow != nil {
+		call.Paused = pausedNow()
+	}
+	c.mu.Lock()
+	c.exportCalls = append(c.exportCalls, call)
+	c.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, guestPath, upperOnly)
+	}
 	return nil, errors.New("not configured")
 }
 

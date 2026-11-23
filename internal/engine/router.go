@@ -65,8 +65,8 @@ var routes = []route{
 	{"POST", "/containers/{id}/resize", (*Engine).containerResize},
 	{"GET", "/containers/{id}/stats", (*Engine).containerStats},
 	{"GET", "/containers/{id}/top", (*Engine).containerTop},
-	{"GET", "/containers/{id}/changes", unsupported("Listing the changes of a container")},
-	{"GET", "/containers/{id}/export", unsupported("Exporting a container")},
+	{"GET", "/containers/{id}/changes", (*Engine).containerChanges},
+	{"GET", "/containers/{id}/export", (*Engine).containerExport},
 	{"POST", "/containers/{id}/update", (*Engine).containerUpdate},
 	{"POST", "/containers/{id}/pause", (*Engine).containerPause},
 	{"POST", "/containers/{id}/unpause", (*Engine).containerUnpause},
@@ -78,7 +78,7 @@ var routes = []route{
 	{"POST", "/exec/{id}/start", (*Engine).execStart},
 	{"POST", "/exec/{id}/resize", (*Engine).execResize},
 	{"GET", "/exec/{id}/json", (*Engine).execInspect},
-	{"POST", "/commit", unsupported("Committing a container")},
+	{"POST", "/commit", (*Engine).commit},
 
 	// Images: workstream C (images.go).
 	{"GET", "/images/json", (*Engine).imageList},

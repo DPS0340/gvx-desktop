@@ -116,6 +116,8 @@ func (e *Engine) Open(ctx context.Context) error {
 	if err := e.loadContainers(); err != nil {
 		return err
 	}
+	e.sweepRootfs()
+	e.sweepTmp()
 	e.reconcileEndpoints()
 	e.openExecs()
 	e.openStreams()

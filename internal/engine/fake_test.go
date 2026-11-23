@@ -6,8 +6,12 @@ package engine
 // change here.
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -56,6 +60,12 @@ type fakeRunner struct {
 	images  map[string]ImageInspect // by every RepoTag and by ID
 	volumes map[string]rungv.Volume
 	pulls   []string
+
+	// layerCacheDir, when set, is Info's LayerCacheDir: a real rungv cache
+	// for what reads images from it (diff, export, commit).
+	layerCacheDir string
+	// loaded keeps every archive LoadImages read that was a tar.
+	loaded [][]byte
 }
 
 type fakeShutdownCall struct {
@@ -534,10 +544,85 @@ func (f *fakeRunner) LoadImages(ctx context.Context, archive io.Reader, line fun
 	if err != nil {
 		return err
 	}
+	if ids, ok := f.loadTar(b); ok {
+		for _, id := range ids {
+			line("Loaded image ID: " + id)
+		}
+		return nil
+	}
 	ref := strings.TrimSpace(string(b)) // the fake's archive is the reference it holds
 	f.addImage(ref, ImageConfig{Cmd: []string{"/bin/sh"}})
 	line("Loaded image: " + ref)
 	return nil
+}
+
+// loadTar registers the images of a docker save archive or an OCI image
+// layout: each by the digest of its config, under its tags.
+func (f *fakeRunner) loadTar(b []byte) ([]string, bool) {
+	files := map[string][]byte{}
+	tr := tar.NewReader(bytes.NewReader(b))
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, false
+		}
+		body, _ := io.ReadAll(tr)
+		files[h.Name] = body
+	}
+	var man []struct {
+		Config   string
+		RepoTags []string
+	}
+	if index, ok := files["index.json"]; ok {
+		var idx struct {
+			Manifests []struct {
+				Digest      string
+				Annotations map[string]string
+			}
+		}
+		if json.Unmarshal(index, &idx) != nil {
+			return nil, false
+		}
+		blob := func(d string) string { return "blobs/sha256/" + strings.TrimPrefix(d, "sha256:") }
+		for _, m := range idx.Manifests {
+			var mf struct{ Config struct{ Digest string } }
+			if json.Unmarshal(files[blob(m.Digest)], &mf) != nil {
+				return nil, false
+			}
+			var tags []string
+			if n := m.Annotations["io.containerd.image.name"]; n != "" {
+				tags = append(tags, n)
+			}
+			man = append(man, struct {
+				Config   string
+				RepoTags []string
+			}{blob(mf.Config.Digest), tags})
+		}
+	} else if json.Unmarshal(files["manifest.json"], &man) != nil {
+		return nil, false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loaded = append(f.loaded, b)
+	var ids []string
+	for _, m := range man {
+		sum := sha256.Sum256(files[m.Config])
+		id := "sha256:" + hex.EncodeToString(sum[:])
+		var cfg struct {
+			Config ImageConfig `json:"config"`
+		}
+		_ = json.Unmarshal(files[m.Config], &cfg)
+		img := ImageInspect{ID: id, RepoTags: m.RepoTags, Created: time.Now().UTC(), Architecture: "arm64", Os: "linux", Config: cfg.Config}
+		f.images[id] = img
+		for _, t := range m.RepoTags {
+			f.images[t] = img
+		}
+		ids = append(ids, id)
+	}
+	return ids, true
 }
 
 func (f *fakeRunner) SaveImages(ctx context.Context, w io.Writer, refs ...string) error {
@@ -589,8 +674,14 @@ func (f *fakeRunner) DiskUsage(ctx context.Context) ([]rungv.DiskUsage, error) {
 }
 
 func (f *fakeRunner) Info(ctx context.Context) (rungv.Info, error) {
+	f.mu.Lock()
+	cache := f.layerCacheDir
+	f.mu.Unlock()
+	if cache == "" {
+		cache = "/fake/cache"
+	}
 	return rungv.Info{OS: "darwin", Architecture: "arm64", NumCPU: 8, DefaultBackend: "hvf",
-		AvailableBackends: []string{"hvf"}, LayerCacheDir: "/fake/cache", VolumeDir: "/fake/cache/volumes"}, nil
+		AvailableBackends: []string{"hvf"}, LayerCacheDir: cache, VolumeDir: "/fake/cache/volumes"}, nil
 }
 
 // testEngine is an open engine over a fake runner, in a temporary

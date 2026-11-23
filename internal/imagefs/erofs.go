@@ -413,26 +413,36 @@ func (img *erofsImage) readData(ino erofsInode, limit int64) ([]byte, error) {
 	if limit > 0 && toRead > uint64(limit) {
 		toRead = uint64(limit)
 	}
-	if toRead == 0 {
+	return img.readRange(ino, 0, toRead)
+}
+
+// readRange reads n bytes of the file's data from off; off+n must not pass
+// the end of the file.
+func (img *erofsImage) readRange(ino erofsInode, off, n uint64) ([]byte, error) {
+	if n == 0 {
 		return nil, nil
+	}
+	end := off + n
+	if end < off || end > ino.size {
+		return nil, fmt.Errorf("erofs: read [%d, %d) of a %d-byte file", off, end, ino.size)
 	}
 	switch ino.dataLayout {
 	case erofsDataFlatPlain:
-		return img.readAt(ino.dataOff, toRead)
+		return img.readAt(ino.dataOff+off, n)
 	case erofsDataFlatInline:
+		// Whole blocks from dataOff, the tail inline behind the inode.
 		tailOff := ino.size &^ (img.blockSize - 1)
-		out := make([]byte, 0, toRead)
-		if tailOff > 0 {
-			n := min(toRead, tailOff)
-			head, err := img.readAt(ino.dataOff, n)
+		out := make([]byte, 0, n)
+		if off < tailOff {
+			head, err := img.readAt(ino.dataOff+off, min(end, tailOff)-off)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, head...)
 		}
-		if uint64(len(out)) < toRead {
-			rem := toRead - uint64(len(out))
-			tail, err := img.readAt(ino.idataOff, rem)
+		if end > tailOff {
+			from := max(off, tailOff)
+			tail, err := img.readAt(ino.idataOff+(from-tailOff), end-from)
 			if err != nil {
 				return nil, err
 			}
@@ -447,8 +457,8 @@ func (img *erofsImage) readData(ino erofsInode, limit int64) ([]byte, error) {
 		if indexes {
 			unit = erofsChunkIndexSize
 		}
-		out := make([]byte, 0, toRead)
-		for pos := uint64(0); pos < toRead; {
+		out := make([]byte, 0, n)
+		for pos := off; pos < end; {
 			chunkIdx := pos >> chunkBits
 			entryOff := ino.dataOff + chunkIdx*unit
 			eb, err := img.readAt(entryOff, unit)
@@ -462,17 +472,17 @@ func (img *erofsImage) readData(ino erofsInode, limit int64) ([]byte, error) {
 				blkAddr = binary.LittleEndian.Uint32(eb[0:4])
 			}
 			chunkOff := pos & (chunkSize - 1)
-			n := min(toRead-pos, chunkSize-chunkOff)
+			k := min(end-pos, chunkSize-chunkOff)
 			if blkAddr == erofsNullAddr {
-				out = append(out, make([]byte, n)...)
+				out = append(out, make([]byte, k)...)
 			} else {
-				part, err := img.readAt(img.blockOff(blkAddr)+chunkOff, n)
+				part, err := img.readAt(img.blockOff(blkAddr)+chunkOff, k)
 				if err != nil {
 					return nil, err
 				}
 				out = append(out, part...)
 			}
-			pos += n
+			pos += k
 		}
 		return out, nil
 	default:

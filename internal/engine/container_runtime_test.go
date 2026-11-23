@@ -28,7 +28,7 @@ func TestFeaturesCanControlAndInfoWarning(t *testing.T) {
 		t.Fatalf("v0.19 reported Control=%v CanControl=%v", te19.Features().Control, te19.CanControl(cid19))
 	}
 	_, b19 := te19.do(t, http.MethodGet, "/info", nil)
-	if !strings.Contains(string(b19), "exec and cp are not supported yet") {
+	if !strings.Contains(string(b19), "exec, cp, diff, export and commit need rungv 0.20") {
 		t.Fatalf("v0.19 /info warnings = %s", b19)
 	}
 
@@ -42,7 +42,7 @@ func TestFeaturesCanControlAndInfoWarning(t *testing.T) {
 		t.Fatal("CanControl(nonexistent) = true")
 	}
 	_, b20 := te20.do(t, http.MethodGet, "/info", nil)
-	if !strings.Contains(string(b20), "commit, export and diff are not supported yet") {
+	if !strings.Contains(string(b20), `"Warnings":[]`) {
 		t.Fatalf("v0.20 /info warnings = %s", b20)
 	}
 	// Stopped container -> CanControl false.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ironpark/ggui"
 
+	"github.com/ironpark/gvx-desktop/internal/dockercli"
 	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -317,9 +318,18 @@ func configureBuildxWithAmd64(
 		status.NoCLI = true
 		return status, "", false, false
 	}
+	if dockercli.IsBundledPath(cli) {
+		_, _ = dockercli.Sync(true)
+	}
 	if _, err := run(ctx, cli, "buildx", "version"); err != nil {
-		status.NoBuildx = true
-		return status, "", false, false
+		if b := dockercli.Bundled(); b.Buildx != "" {
+			_, _ = dockercli.Sync(true)
+			_, err = run(ctx, cli, "buildx", "version")
+		}
+		if err != nil {
+			status.NoBuildx = true
+			return status, "", false, false
+		}
 	}
 
 	wantEndpoint := buildxEndpointForSocket(sockPath)

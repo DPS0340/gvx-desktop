@@ -53,7 +53,7 @@ jobs:
       - name: Test off the UI goroutine
         run: go test -tags ggui_debug -short ./...
       - name: Install the ggui command
-        run: go install github.com/ironpark/ggui/cmd/ggui@latest
+        run: ./release/repro-build.sh install-ggui
       # A text the code translates that a catalog lacks, or whose format
       # verbs differ, fails here; ggui.toml names the app's tr, trn and
       # ui.T for it.
@@ -61,8 +61,8 @@ jobs:
         run: ggui i18n check
       - name: macOS
         run: |
-          GOARCH=arm64 ggui build --target macos --dmg
-          release/check-bundle.sh
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' ggui.toml | head -n 1)
+          ./release/repro-build.sh package macos arm64 "$version" build
       - uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
@@ -72,20 +72,28 @@ jobs:
       # the same way; that they still build is found here, and the Debian
       # package is installed on the system it is for.
       - name: Windows
-        env:
-          CGO_ENABLED: '0'
         run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' ggui.toml | head -n 1)
           for arch in amd64 arm64; do
-            GOARCH="$arch" ggui build --target windows --out "build/windows-$arch"
+            ./release/repro-build.sh package windows "$arch" "$version" "build/windows-$arch"
+            test -f "build/windows-$arch/gvx-desktop-$version-windows-$arch-setup.exe"
+            test -f "build/windows-$arch/gvx-desktop-$version-windows-$arch.zip"
             test -f "build/windows-$arch/ggfx_driver.dll"
+            test -f "build/windows-$arch/bin/docker.exe"
+            test -f "build/windows-$arch/cli-plugins/docker-buildx.exe"
+            test -f "build/windows-$arch/cli-plugins/docker-compose.exe"
           done
       - name: Linux
         run: |
-          GOARCH=amd64 ggui build --target linux --format tar,deb,rpm --out build/linux
-          GOARCH=arm64 ggui build --target linux --format tar --out build/linux-arm64
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' ggui.toml | head -n 1)
+          ./release/repro-build.sh package linux amd64 "$version" build/linux
+          ./release/repro-build.sh package linux arm64 "$version" build/linux-arm64
           sudo apt-get install -y ./build/linux/gvx-desktop_*_amd64.deb
           test -x /usr/bin/gvx-desktop
           test -f /usr/lib/gvx-desktop/libggfx_driver.so
+          test -x /usr/lib/gvx-desktop/bin/docker
+          test -x /usr/lib/gvx-desktop/cli-plugins/docker-buildx
+          test -x /usr/lib/gvx-desktop/cli-plugins/docker-compose
           test -f /usr/share/applications/io.github.ironpark.gvx-desktop.desktop
 
   # install.ps1 is what the README tells Windows users to pipe into iex:

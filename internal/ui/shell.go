@@ -18,6 +18,7 @@ import (
 	"github.com/ironpark/ggui/icons/lucide"
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/ui/icons"
+	"github.com/ironpark/ggui/updater"
 	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/recipes"
@@ -99,9 +100,14 @@ func build(m *Model) ggui.Widget {
 		statusBar(m),
 	).Stretch()
 
+	var updateDlg ggui.Widget = widget.Box()
+	if m.UpdateCtrl != nil {
+		updateDlg = updater.Dialog(m.UpdateCtrl)
+	}
 	return widget.Stack(
 		main,
 		editorSheet(m),
+		updateDlg,
 		confirmDialog(m),
 		pullDialog(m),
 		explorerDialog(m),

@@ -35,8 +35,17 @@ exe="$app/Contents/MacOS/$(got CFBundleExecutable)"
 if [ "$(field renderer)" = "zig" ]; then
 	[ -f "$app/Contents/Frameworks/libggfx_driver.dylib" ] || fail "the bundle has no Contents/Frameworks/libggfx_driver.dylib"
 fi
+for helper in \
+	"$app/Contents/Helpers/docker" \
+	"$app/Contents/Helpers/cli-plugins/docker-buildx" \
+	"$app/Contents/Helpers/cli-plugins/docker-compose"
+do
+	[ -x "$helper" ] || fail "the bundle is missing bundled Docker CLI binary $helper"
+done
 ent="com.apple.security.virtualization"
 if command -v codesign >/dev/null 2>&1; then
+	codesign --verify --deep --strict "$app" ||
+		fail "codesign --verify --deep --strict failed for $app"
 	codesign -d --entitlements - --xml "$app" 2>/dev/null | grep -Fq "<key>$ent</key>" ||
 		fail "the bundle's signature is missing the $ent entitlement"
 else

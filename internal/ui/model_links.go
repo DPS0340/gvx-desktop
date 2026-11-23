@@ -15,6 +15,7 @@ import (
 
 	"github.com/ironpark/ggui"
 
+	"github.com/ironpark/gvx-desktop/internal/dockercli"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -257,6 +258,9 @@ func (m *Model) CheckLink(l *Link) {
 		l.checking = false
 		c.Busy = ggui.Peek(l.State).Busy
 		l.State.Set(c)
+		if l == m.DockerLink {
+			m.refreshBundledDockerState()
+		}
 		if l.again {
 			l.again = false
 			m.CheckLink(l)
@@ -285,8 +289,9 @@ func overridesOf(tool string) []string {
 	return []string{"DOCKER_HOST", "DOCKER_CONTEXT"}
 }
 
-// findCLI finds a tool: the one the settings name, and otherwise where a
-// terminal would find it.
+// findCLI finds a tool: the one the settings name, otherwise where a terminal
+// would find it, and for docker falls back to the CLI bundled with GVX Desktop
+// when no system docker is installed.
 func findCLI(tool, setting string) (string, bool) {
 	if set := strings.TrimSpace(setting); set != "" {
 		p := rungv.ExpandHome(set)
@@ -297,8 +302,20 @@ func findCLI(tool, setting string) (string, bool) {
 	}
 	// Not exec.LookPath alone: started from the Dock the app has a PATH
 	// without Homebrew's directory, where brew install puts these.
-	p, err := rungv.FindTool(tool)
-	return p, err == nil
+	if p, err := rungv.FindTool(tool); err == nil {
+		return p, true
+	}
+	if tool == "docker" {
+		if b := dockercli.Bundled(); b.Available() {
+			if managed, err := dockercli.ManagedDockerPath(); err == nil {
+				if st, err := os.Stat(managed); err == nil && !st.IsDir() {
+					return managed, true
+				}
+			}
+			return b.Docker, true
+		}
+	}
+	return "", false
 }
 
 // SetUpLink creates the link's context, or brings it up to date, and uses

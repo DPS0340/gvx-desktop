@@ -277,6 +277,38 @@ package)
 			"$ggui_bin" "$@"
 	}
 
+	run_bundletool() {
+		bt_cgo=${GGUI_CGO:-0}
+		env -i \
+			PATH="$gobin_dir:/usr/local/bin:/usr/bin:/bin" \
+			HOME="$home_dir" \
+			TMPDIR="$tmp_dir" \
+			LC_ALL=C \
+			TZ=UTC \
+			SOURCE_DATE_EPOCH="$epoch" \
+			GOMODCACHE="$gomodcache" \
+			GOCACHE="$gocache" \
+			GOENV=off \
+			GOWORK=off \
+			GO111MODULE=on \
+			GOPROXY="$goproxy" \
+			GOSUMDB="$gosumdb" \
+			GOTOOLCHAIN="$toolchain" \
+			GOTELEMETRY=off \
+			GOFIPS140=off \
+			GOEXPERIMENT= \
+			GODEBUG= \
+			GOFLAGS="-mod=readonly" \
+			CGO_ENABLED="$bt_cgo" \
+			${SYSTEMROOT:+SYSTEMROOT="$SYSTEMROOT"} \
+			${USERPROFILE:+USERPROFILE="$USERPROFILE"} \
+			${LOCALAPPDATA:+LOCALAPPDATA="$LOCALAPPDATA"} \
+			${GGUI_P12_BASE64:+GGUI_P12_BASE64="$GGUI_P12_BASE64"} \
+			${GGUI_P12_PASSWORD:+GGUI_P12_PASSWORD="$GGUI_P12_PASSWORD"} \
+			${GGUI_NOTARY_PASSWORD:+GGUI_NOTARY_PASSWORD="$GGUI_NOTARY_PASSWORD"} \
+			"$go_bin" run -C "$repo_root/release/bundletool" . "$@"
+	}
+
 	case "$target" in
 	macos)
 		if [ "$(basename -- "$repo_root")" != "gvx-desktop" ]; then
@@ -284,44 +316,99 @@ package)
 		fi
 		(
 			cd "$repo_root"
-			run_ggui build --target macos --dmg --out "$outdir_abs" --ldflags "-buildid= -X main.version=$version" "$@"
+			# Build the .app bundle without creating/notarizing the DMG yet so we
+			# can bundle the Docker CLI helpers inside Contents/Helpers first,
+			# then sign the complete bundle and build the DMG in one pass.
+			run_ggui build --target macos --dmg=false --installer=false --out "$outdir_abs" --ldflags "-buildid= -X main.version=$version"
+			"$repo_root/release/fetch-docker-cli.sh" darwin "$arch" "$outdir_abs/$app_name.app/Contents/Helpers"
+			run_bundletool macos-finish \
+				--app "$outdir_abs/$app_name.app" \
+				--dmg "$outdir_abs/$app_name.dmg" \
+				--title "$app_name" \
+				--entitlements "$repo_root/assets/entitlements.plist" \
+				"$@"
 			"$repo_root/release/check-bundle.sh" "$outdir_abs"
 		)
 		dmg="gvx-desktop-$version-macos-$arch.dmg"
 		mv -f "$outdir_abs/$app_name.dmg" "$outdir_abs/$dmg"
 		;;
 	windows)
+		cli_tmp=$(mktemp -d)
+		win_extra=$(mktemp -d)
+		zip_stage=$(mktemp -d)
+		trap 'rm -rf "$cli_tmp" "$win_extra" "$zip_stage"' EXIT
+		"$repo_root/release/fetch-docker-cli.sh" windows "$arch" "$cli_tmp"
+		mkdir -p "$win_extra/bin" "$win_extra/cli-plugins"
+		cp -f "$cli_tmp/docker.exe" "$win_extra/bin/docker.exe"
+		cp -f "$cli_tmp/cli-plugins/docker-buildx.exe" "$win_extra/cli-plugins/docker-buildx.exe"
+		cp -f "$cli_tmp/cli-plugins/docker-compose.exe" "$win_extra/cli-plugins/docker-compose.exe"
 		(
 			cd "$repo_root"
-			run_ggui build --target windows --out "$outdir_abs" --ldflags "-buildid= -X main.version=$version" "$@"
+			run_ggui build --target windows --installer --installer-extra-dir "$win_extra" --out "$outdir_abs" --ldflags "-buildid= -X main.version=$version" "$@"
 		)
 		exe="$outdir_abs/$app_name.exe"
 		dll="$outdir_abs/ggfx_driver.dll"
+		setup_raw="$outdir_abs/$app_name-Setup.exe"
+		if [ ! -f "$dll" ] && [ "$build_renderer" = zig ]; then
+			echo "repro-build: expected $dll beside $exe for renderer=zig" >&2
+			exit 1
+		fi
+		if [ ! -f "$setup_raw" ]; then
+			echo "repro-build: expected $setup_raw from ggui build --target windows --installer" >&2
+			exit 1
+		fi
+		setup="$outdir_abs/gvx-desktop-$version-windows-$arch-setup.exe"
+		mv -f "$setup_raw" "$setup"
+		mkdir -p "$outdir_abs/bin" "$outdir_abs/cli-plugins" "$zip_stage/bin" "$zip_stage/cli-plugins"
+		cp -f "$win_extra/bin/docker.exe" "$outdir_abs/bin/docker.exe"
+		cp -f "$win_extra/cli-plugins/docker-buildx.exe" "$outdir_abs/cli-plugins/docker-buildx.exe"
+		cp -f "$win_extra/cli-plugins/docker-compose.exe" "$outdir_abs/cli-plugins/docker-compose.exe"
+		cp -f "$exe" "$zip_stage/$app_name.exe"
+		if [ -f "$dll" ]; then
+			cp -f "$dll" "$zip_stage/ggfx_driver.dll"
+		fi
+		cp -f "$outdir_abs/bin/docker.exe" "$zip_stage/bin/docker.exe"
+		cp -f "$outdir_abs/cli-plugins/docker-buildx.exe" "$zip_stage/cli-plugins/docker-buildx.exe"
+		cp -f "$outdir_abs/cli-plugins/docker-compose.exe" "$zip_stage/cli-plugins/docker-compose.exe"
 		zip="$outdir_abs/gvx-desktop-$version-windows-$arch.zip"
 		rm -f "$zip"
-		if [ -f "$dll" ]; then
-			run_repro_pack zip "$epoch" "$zip" "$exe" "$dll"
-		else
-			if [ "$build_renderer" = zig ]; then
-				echo "repro-build: expected $dll beside $exe for renderer=zig" >&2
-				exit 1
-			fi
-			run_repro_pack zip "$epoch" "$zip" "$exe"
-		fi
+		run_repro_pack zip "$epoch" "$zip" "$zip_stage"
+		rm -rf "$cli_tmp" "$win_extra" "$zip_stage"
+		trap - EXIT
 		;;
 	linux)
 		(
 			cd "$repo_root"
-			run_ggui build --target linux --format tar,deb,rpm --out "$outdir_abs" --ldflags "-buildid= -X main.version=$version" "$@"
+			run_ggui build --target linux --format "" --out "$outdir_abs" --ldflags "-buildid= -X main.version=$version" "$@"
 		)
 		tree="$outdir_abs/gvx-desktop-linux-$arch"
 		if [ "$build_renderer" = zig ] && [ ! -f "$tree/usr/lib/gvx-desktop/libggfx_driver.so" ]; then
 			echo "repro-build: expected $tree/usr/lib/gvx-desktop/libggfx_driver.so for renderer=zig" >&2
 			exit 1
 		fi
+		cli_tmp=$(mktemp -d)
+		trap 'rm -rf "$cli_tmp"' EXIT
+		"$repo_root/release/fetch-docker-cli.sh" linux "$arch" "$cli_tmp"
+		mkdir -p "$tree/usr/lib/gvx-desktop/bin" "$tree/usr/lib/gvx-desktop/cli-plugins"
+		cp -f "$cli_tmp/docker" "$tree/usr/lib/gvx-desktop/bin/docker"
+		cp -f "$cli_tmp/cli-plugins/docker-buildx" "$tree/usr/lib/gvx-desktop/cli-plugins/docker-buildx"
+		cp -f "$cli_tmp/cli-plugins/docker-compose" "$tree/usr/lib/gvx-desktop/cli-plugins/docker-compose"
+		chmod 0755 \
+			"$tree/usr/lib/gvx-desktop/bin/docker" \
+			"$tree/usr/lib/gvx-desktop/cli-plugins/docker-buildx" \
+			"$tree/usr/lib/gvx-desktop/cli-plugins/docker-compose"
+		rm -rf "$cli_tmp"
+		trap - EXIT
 		tarball="$outdir_abs/gvx-desktop-$version-linux-$arch.tar.gz"
 		rm -f "$tarball"
 		run_repro_pack tar "$epoch" "$tarball" "$tree"
+		run_bundletool linux-pkg \
+			--tree "$tree" \
+			--outdir "$outdir_abs" \
+			--config "$repo_root/ggui.toml" \
+			--arch "$arch" \
+			--epoch "$epoch" \
+			--formats deb,rpm
 		;;
 	*)
 		echo "repro-build: unknown target '$target' (expected macos, windows, or linux)" >&2

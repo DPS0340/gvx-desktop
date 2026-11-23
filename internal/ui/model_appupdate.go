@@ -2,12 +2,15 @@ package ui
 
 import (
 	"context"
+	"errors"
+	"math"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/ui"
+	"github.com/ironpark/ggui/updater"
 
 	"github.com/ironpark/gvx-desktop/internal/appupdate"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -63,6 +66,243 @@ func (u AppUpdate) page() string {
 // banner and the tray: one is available that the user did not skip.
 func (u AppUpdate) Offered(s store.Settings) bool { return u.Available() && u.Tag != s.SkipAppVersion }
 
+// initAppUpdater configures the Sparkle 2 ggui/updater Controller when
+// appupdate.PublicKey is configured and this is a release build. When not
+// active, m.UpdateCtrl stays nil and the app uses the GitHub Releases API +
+// .sha256 fallback seamlessly.
+func (m *Model) initAppUpdater(dataDir string) {
+	in := ggui.Peek(m.AppUpdate).Install
+	set := ggui.Peek(m.Settings)
+	u, err := appupdate.NewUpdater(dataDir, AppVersion, in,
+		appupdate.WithInitialSettings(!set.NoAppUpdateCheck, set.SkipAppVersion),
+	)
+	if err != nil || u == nil {
+		return
+	}
+	m.attachAppUpdater(u)
+}
+
+func (m *Model) attachAppUpdater(u *updater.Updater) {
+	if u == nil {
+		return
+	}
+	autoOpen := false
+	cfg := updater.ControllerConfig{
+		Quit:                 func() { quitApp() },
+		RelaunchArgs:         func() []string { return relaunchArgs(os.Args[1:]) },
+		AutoOpenOnBackground: &autoOpen,
+		Translate:            tr,
+		OnLink:               m.Open,
+		ResolveExternal:      m.resolveExternalUpdate,
+		BeforeInstall:        m.beforeAppUpdateInstall,
+	}
+	if m.host != nil {
+		cfg.Post = m.host.Post
+	}
+	ctrl := updater.NewController(u, cfg)
+	m.UpdateCtrl = ctrl
+
+	type ctrlSnap struct {
+		phase    updater.Phase
+		release  *updater.Release
+		progress float64
+		errText  string
+	}
+	snap := ggui.Derived(func() ctrlSnap {
+		return ctrlSnap{
+			phase:    ctrl.Phase.Get(),
+			release:  ctrl.Release.Get(),
+			progress: ctrl.Progress.Get(),
+			errText:  ctrl.ErrText.Get(),
+		}
+	})
+	var prevPhase updater.Phase
+	ggui.Watch(snap, func(s ctrlSnap) {
+		prev := prevPhase
+		prevPhase = s.phase
+
+		switch s.phase {
+		case updater.PhaseIdle:
+			if prev == updater.PhaseAvailable {
+				if skipped := appupdate.Plain(u.SkippedVersion()); skipped != "" {
+					tag := "v" + skipped
+					if ggui.Peek(m.Settings).SkipAppVersion != tag {
+						m.post(func() {
+							m.UpdateSettings(func(set *store.Settings) { set.SkipAppVersion = tag })
+						})
+					}
+				}
+			}
+			m.AppUpdate.Update(func(au AppUpdate) AppUpdate {
+				au.Checking, au.Downloading = false, false
+				return au
+			})
+		case updater.PhaseChecking:
+			m.AppUpdate.Update(func(au AppUpdate) AppUpdate {
+				au.Checking, au.Downloading, au.Err = true, false, ""
+				return au
+			})
+		case updater.PhaseUpToDate:
+			m.AppUpdate.Update(func(au AppUpdate) AppUpdate {
+				au.Checking, au.Downloading, au.Ready, au.Err = false, false, false, ""
+				if au.Tag == "" && appupdate.Comparable(AppVersion) {
+					au.Tag = "v" + appupdate.Plain(AppVersion)
+				}
+				return au
+			})
+		case updater.PhaseAvailable:
+			if s.release == nil {
+				return
+			}
+			ver := s.release.DisplayVersion()
+			tag := "v" + appupdate.Plain(ver)
+			page := releasePageFor(s.release)
+			m.AppUpdate.Update(func(au AppUpdate) AppUpdate {
+				au.Checking, au.Downloading, au.Ready, au.Err = false, false, false, ""
+				au.Tag = tag
+				au.Page = page
+				au.Command = au.Install.CommandForVersion(ver)
+				return au
+			})
+			if ggui.Peek(ctrl.ManualCheck) && ggui.Peek(m.Settings).SkipAppVersion == tag {
+				m.post(func() {
+					m.UpdateSettings(func(set *store.Settings) { set.SkipAppVersion = "" })
+				})
+			}
+		case updater.PhaseDownloading:
+			pct := int(math.Round(s.progress * 100))
+			if pct < 0 {
+				pct = 0
+			} else if pct > 100 {
+				pct = 100
+			}
+			m.AppUpdate.Update(func(au AppUpdate) AppUpdate {
+				au.Checking, au.Downloading, au.Ready, au.Err = false, true, false, ""
+				au.Percent = pct
+				return au
+			})
+		case updater.PhaseReadyToInstall, updater.PhaseInstalling:
+			m.AppUpdate.Update(func(au AppUpdate) AppUpdate {
+				au.Checking, au.Downloading, au.Ready, au.Err = false, false, true, ""
+				au.Percent = 100
+				return au
+			})
+		case updater.PhaseError:
+			// During the transition before a release publishes appcast.xml,
+			// fall back transparently to GitHub Releases API + .sha256.
+			if appupdate.IsFeedNotFound(errors.New(s.errText)) && ggui.Peek(ctrl.ManualCheck) {
+				m.AppUpdate.Update(func(au AppUpdate) AppUpdate {
+					au.Checking, au.Downloading, au.Err = false, false, ""
+					return au
+				})
+				m.post(func() {
+					ctrl.Dismiss()
+					m.checkAppUpdateLegacy(false)
+				})
+				return
+			}
+			m.AppUpdate.Update(func(au AppUpdate) AppUpdate {
+				au.Checking, au.Downloading = false, false
+				au.Err = s.errText
+				return au
+			})
+		}
+	})
+
+	ggui.Watch(ctrl.AutoCheck, func(enabled bool) {
+		if ggui.Peek(m.Settings).NoAppUpdateCheck == enabled {
+			m.post(func() {
+				m.UpdateSettings(func(set *store.Settings) { set.NoAppUpdateCheck = !enabled })
+			})
+		}
+	})
+
+	ggui.Watch(m.Settings, func(set store.Settings) {
+		wantAuto := !set.NoAppUpdateCheck
+		if ggui.Peek(ctrl.AutoCheck) != wantAuto {
+			ctrl.ToggleAutoCheck(wantAuto)
+		}
+		wantSkip := appupdate.Plain(set.SkipAppVersion)
+		if appupdate.Plain(u.SkippedVersion()) != wantSkip {
+			if wantSkip == "" {
+				_ = u.ClearSkippedVersion()
+			} else {
+				_ = u.SkipVersion(wantSkip)
+			}
+		}
+	})
+}
+
+func (m *Model) resolveExternalUpdate(rel *updater.Release) *updater.ExternalUpdate {
+	in := ggui.Peek(m.AppUpdate).Install
+	if in.Method.SelfUpdates() {
+		return nil
+	}
+	ver := ""
+	if rel != nil {
+		ver = rel.DisplayVersion()
+	}
+	tag := ""
+	if p := appupdate.Plain(ver); p != "" {
+		tag = "v" + p
+	}
+	page := releasePageFor(rel)
+	cmd := in.CommandForVersion(ver)
+	au := AppUpdate{
+		Tag:     tag,
+		Page:    page,
+		Install: in,
+		Command: cmd,
+	}
+	return &updater.ExternalUpdate{
+		Message:     appUpdateText(au),
+		Command:     cmd,
+		ActionLabel: appUpdateVerb(au),
+		OnAction: func() {
+			if cmd != "" {
+				m.Copy(cmd, appCommandHint(in.Method))
+				return
+			}
+			m.Open(page)
+		},
+	}
+}
+
+func (m *Model) beforeAppUpdateInstall(rel *updater.Release, proceed func()) {
+	name := ""
+	if rel != nil {
+		name = appupdate.Plain(rel.DisplayVersion())
+	}
+	if name == "" {
+		name = ggui.Peek(m.AppUpdate).Name()
+	}
+	if n := max(m.ActiveCount(), ggui.Peek(m.TotalRunning)); n > 0 {
+		if m.UpdateCtrl != nil {
+			m.UpdateCtrl.Open.Set(false)
+		}
+		text := trn(n, "%d sandbox is running and will be stopped: sandboxes live only while the app runs.",
+			"%d sandboxes are running and will be stopped: sandboxes live only while the app runs.") + " " +
+			tr("GVX Desktop quits, puts %s in place, and opens again.", name)
+		m.Confirm(tr("Restart to update?"), text, tr("Restart to update"), func() {
+			m.StopAllAndThen(proceed)
+		})
+		return
+	}
+	proceed()
+}
+
+func releasePageFor(rel *updater.Release) string {
+	if rel != nil {
+		if link := strings.TrimSpace(rel.Item.ReleaseNotesLink); link != "" {
+			return link
+		}
+		if p := appupdate.Plain(rel.DisplayVersion()); p != "" {
+			return appupdate.ReleasesURL + "/tag/v" + p
+		}
+	}
+	return appupdate.ReleasesURL
+}
+
 // startAppUpdates removes what an earlier update left, and looks for a
 // newer app a while after the app starts, and again once a day, while the
 // settings let it.
@@ -104,10 +344,76 @@ func (m *Model) checkAppUpdateDaily() {
 	m.CheckAppUpdate(true)
 }
 
-// CheckAppUpdate asks GitHub for the app's newest release. A quiet check,
-// as the app makes by itself, says nothing of its own; one the user asked
-// for tells them what it found, and shows again a version they skipped.
+// CheckAppUpdate checks for the app's newest release. When the Sparkle 2
+// ggui/updater controller is active, manual checks open updater.Dialog and
+// quiet checks run silently in the background (falling back to the GitHub
+// Releases API if appcast.xml returns HTTP 404).
 func (m *Model) CheckAppUpdate(quiet bool) {
+	if m.Offline {
+		return
+	}
+	if m.UpdateCtrl != nil {
+		switch ggui.Peek(m.UpdateCtrl.Phase) {
+		case updater.PhaseChecking, updater.PhaseDownloading, updater.PhaseInstalling:
+			if !quiet {
+				m.UpdateCtrl.Open.Set(true)
+			}
+			return
+		}
+		m.appChecked = time.Now().Round(0)
+		if !quiet {
+			m.UpdateCtrl.CheckNow()
+			return
+		}
+		m.checkAppUpdateSilentWithFallback()
+		return
+	}
+	m.checkAppUpdateLegacy(quiet)
+}
+
+func (m *Model) checkAppUpdateSilentWithFallback() {
+	ctrl := m.UpdateCtrl
+	if ctrl == nil {
+		return
+	}
+	u := ctrl.Updater()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		rel, ok, err := u.CheckWithOptions(ctx, updater.CheckOptions{Manual: false})
+		m.post(func() {
+			if err != nil {
+				if appupdate.IsFeedNotFound(err) {
+					m.checkAppUpdateLegacy(true)
+				}
+				return
+			}
+			if !ok || rel == nil {
+				return
+			}
+			switch ggui.Peek(ctrl.Phase) {
+			case updater.PhaseChecking, updater.PhaseDownloading, updater.PhaseReadyToInstall, updater.PhaseInstalling:
+				return
+			}
+			ctrl.ManualCheck.Set(false)
+			ctrl.Release.Set(rel)
+			ctrl.Downloaded.Set(nil)
+			ctrl.Progress.Set(0)
+			ctrl.ProgressText.Set("")
+			ctrl.ErrText.Set("")
+			ctrl.Phase.Set(updater.PhaseAvailable)
+		})
+	}()
+}
+
+// fetchLatestRelease asks GitHub for the latest release; tests may replace it
+// so transition-fallback tests never reach the network.
+var fetchLatestRelease = appupdate.Latest
+
+// checkAppUpdateLegacy asks GitHub for the app's newest release via the
+// Releases API. Used when PublicKey is not configured, on development builds,
+// or before the first release publishes appcast.xml.
+func (m *Model) checkAppUpdateLegacy(quiet bool) {
 	if u := ggui.Peek(m.AppUpdate); u.Checking || u.Downloading || m.Offline {
 		return
 	}
@@ -116,7 +422,7 @@ func (m *Model) CheckAppUpdate(quiet bool) {
 	var rel appupdate.Release
 	m.async(func(ctx context.Context) error {
 		var err error
-		rel, err = appupdate.Latest(ctx)
+		rel, err = fetchLatestRelease(ctx)
 		return err
 	}, func(err error) {
 		if err != nil {
@@ -158,13 +464,22 @@ func (m *Model) CheckAppUpdate(quiet bool) {
 	})
 }
 
-// UpdateApp does what updates the app as it was installed: it downloads
-// the new version, or once that is done asks to restart into it; copies
-// the command a package manager updates it with; or opens the release
-// page.
+// UpdateApp does what updates the app as it was installed: it opens the
+// updater dialog / downloads the new version, or once that is done asks to
+// restart into it; copies the command a package manager updates it with; or
+// opens the release page.
 func (m *Model) UpdateApp() {
 	u := ggui.Peek(m.AppUpdate)
 	if u.Checking || u.Downloading || !u.Available() {
+		return
+	}
+	if m.UpdateCtrl != nil && ggui.Peek(m.UpdateCtrl.Release) != nil && u.Install.Method.SelfUpdates() {
+		switch ggui.Peek(m.UpdateCtrl.Phase) {
+		case updater.PhaseReadyToInstall:
+			m.UpdateCtrl.Install()
+		default:
+			m.UpdateCtrl.Open.Set(true)
+		}
 		return
 	}
 	switch {
@@ -230,6 +545,10 @@ func (m *Model) AskRestartToUpdate() {
 	if !u.Ready {
 		return
 	}
+	if m.UpdateCtrl != nil && ggui.Peek(m.UpdateCtrl.Downloaded) != nil {
+		m.UpdateCtrl.Install()
+		return
+	}
 	text := tr("GVX Desktop quits, puts %s in place, and opens again.", u.Name())
 	if n := max(m.ActiveCount(), ggui.Peek(m.TotalRunning)); n > 0 {
 		text = trn(n, "%d sandbox is running and will be stopped: sandboxes live only while the app runs.",
@@ -284,6 +603,9 @@ func (m *Model) SkipAppVersion() {
 		return
 	}
 	m.UpdateSettings(func(s *store.Settings) { s.SkipAppVersion = u.Tag })
+	if m.UpdateCtrl != nil {
+		m.UpdateCtrl.Skip()
+	}
 	m.Toasts.Push(ui.Toast(tr("Skipped GVX Desktop %s", u.Name()), tr("Check for updates in Settings to see it again.")).Info())
 }
 

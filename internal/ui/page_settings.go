@@ -13,6 +13,7 @@ import (
 	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop-vm/vmhelper"
+	"github.com/ironpark/gvx-desktop/internal/dockercli"
 	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -347,9 +348,11 @@ func themeIcon(theme string) *icons.Widget {
 func dockerSettings(m *Model) ggui.Widget {
 	path := ggui.State(ggui.Peek(m.Settings).DockerPath)
 	setPath := func(v string) { m.UpdateSettings(func(s *storeSettings) { s.DockerPath = strings.TrimSpace(v) }) }
-	found := ui.CaptionOf(ggui.Map(m.Settings, func(s storeSettings) string {
+	found := ui.CaptionOf(ggui.Combine(m.Settings, m.BundledDocker, func(s storeSettings, bd BundledDockerState) string {
 		p, ok := m.DockerCLI()
 		switch {
+		case ok && (dockercli.IsBundledPath(p) || (bd.Available && bd.Using && strings.TrimSpace(s.DockerPath) == "")):
+			return tr("Using bundled Docker CLI (%s).", tildePath(p))
 		case ok:
 			return tr("Using %s.", tildePath(p))
 		case strings.TrimSpace(s.DockerPath) != "":
@@ -408,11 +411,12 @@ func dockerSettings(m *Model) ggui.Widget {
 		dockerModeSettings(m),
 		widget.Column(
 			settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Row(
-				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, Homebrew, Docker Desktop)")).Name(tr("docker path")).OnCommit(setPath)),
+				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, Homebrew, Docker Desktop, bundled)")).Name(tr("docker path")).OnCommit(setPath)),
 				ui.Button(tr("Browse…"), func() { browseFile(m, path, setPath) }).Outline(),
 			).Gap(8)),
 			found,
 		).Gap(4).Stretch(),
+		bundledDockerSettings(m),
 		widget.Column(
 			widget.Row(
 				widget.Expanded(widget.Column(
@@ -448,6 +452,30 @@ func dockerSettings(m *Model) ggui.Widget {
 		),
 		dockerConfigField(m),
 	)
+}
+
+// bundledDockerSettings shows the bundled Docker CLI status and lets the user
+// add or remove ~/.gvx/bin on their terminal PATH.
+func bundledDockerSettings(m *Model) ggui.Widget {
+	return ggui.View(m.BundledDocker, func(s BundledDockerState) ggui.Widget {
+		if !s.Available {
+			return widget.Box()
+		}
+		bin := tildePath(s.BinDir)
+		prof := tildePath(s.Profile)
+		var help string
+		var control ggui.Widget = widget.Box()
+		if s.InPATH {
+			help = tr("Ships %s inside the app (%s). Used automatically when no external docker CLI is installed; %s is on your terminal PATH.", s.ToolsList(), tildePath(s.CLIPath), bin)
+			if s.Managed {
+				control = ui.Button(tr("Remove from PATH"), m.RemoveBundledDockerFromPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy)
+			}
+		} else {
+			help = tr("Ships %s inside the app (%s). Used automatically when no external docker CLI is installed; add %s to %s to use it in new terminals.", s.ToolsList(), tildePath(s.CLIPath), bin, prof)
+			control = ui.Button(tr("Add to PATH"), m.AddBundledDockerToPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy)
+		}
+		return settingRow(tr("Bundled Docker CLI"), help, control)
+	})
 }
 
 // dockerConfigField leads to the editor of the Docker Engine's daemon.json.

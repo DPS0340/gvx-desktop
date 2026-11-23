@@ -21,11 +21,12 @@ name: Release
 # CI and local builds produce identical artifacts.
 #
 # Optional secrets (used only on real releases, never on PRs or dry runs):
-#   TAP_GITHUB_TOKEN     Token with write access to ironpark/homebrew-tap
-#   GGUI_P12_BASE64      Base64-encoded Developer ID Application .p12 bundle
-#   GGUI_P12_PASSWORD    Password for GGUI_P12_BASE64
-#   NOTARY_API_KEY_JSON  App Store Connect API key JSON for Apple notarization
-#   CHOCO_API_KEY        chocolatey.org API key (used when CHOCO_PUBLISH=true)
+#   TAP_GITHUB_TOKEN        Token with write access to ironpark/homebrew-tap
+#   GGUI_P12_BASE64         Base64-encoded Developer ID Application .p12 bundle
+#   GGUI_P12_PASSWORD       Password for GGUI_P12_BASE64
+#   NOTARY_API_KEY_JSON     App Store Connect API key JSON for Apple notarization
+#   GGUI_UPDATE_PRIVATE_KEY Base64-encoded Ed25519 private key from `ggui update keygen` for signing appcast.xml
+#   CHOCO_API_KEY           chocolatey.org API key (used when CHOCO_PUBLISH=true)
 on:
   push:
     tags: ['v*']
@@ -252,6 +253,7 @@ jobs:
       - name: Build and verify macOS arm64 bundle and DMG
         id: build
         env:
+          GGUI_CGO: ${{ needs.prepare.outputs.publish_mode == 'create' && secrets.GGUI_P12_BASE64 != '' && '1' || '0' }}
           PUBLISH_MODE: ${{ needs.prepare.outputs.publish_mode }}
           GGUI_P12_BASE64: ${{ needs.prepare.outputs.publish_mode == 'create' && secrets.GGUI_P12_BASE64 || '' }}
           GGUI_P12_PASSWORD: ${{ needs.prepare.outputs.publish_mode == 'create' && secrets.GGUI_P12_PASSWORD || '' }}
@@ -318,7 +320,7 @@ jobs:
         run: |
           ./release/repro-build.sh install-ggui "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Build Windows zips and verify bit-for-bit reproducibility
+      - name: Build Windows zips and setup installers and verify reproducibility
         id: build
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -331,31 +333,40 @@ jobs:
             ./release/repro-build.sh package windows "$arch" "$VERSION" "build/$arch"
             ./release/repro-build.sh verify-binary "build/$arch/$APP_NAME.exe" windows "$arch"
             zip="gvx-desktop-$VERSION-windows-$arch.zip"
+            setup="gvx-desktop-$VERSION-windows-$arch-setup.exe"
+            ./release/repro-build.sh verify-binary "build/$arch/$setup" windows "$arch"
             cp "build/$arch/$zip" "out/$zip"
+            cp "build/$arch/$setup" "out/$setup"
             sum="$(sha256sum "out/$zip" | awk '{print $1}')"
             echo "$arch=$sum" >> "$GITHUB_OUTPUT"
           done
 
           # Rebuild windows/amd64 in a separate output directory with a clean
-          # build cache and verify the zip digest matches bit for bit.
+          # build cache and verify both the portable zip and setup installer match bit for bit.
           repro_cache="$(mktemp -d)"
           repro_out="$(mktemp -d)"
           trap 'rm -rf "$repro_cache" "$repro_out"' EXIT
           GOCACHE="$repro_cache" ./release/repro-build.sh package windows amd64 "$VERSION" "$repro_out"
-          zip_amd64="gvx-desktop-$VERSION-windows-amd64.zip"
-          sum_a="$(sha256sum "out/$zip_amd64" | awk '{print $1}')"
-          sum_b="$(sha256sum "$repro_out/$zip_amd64" | awk '{print $1}')"
-          if [ "$sum_a" != "$sum_b" ]; then
-            echo "::error::Windows amd64 zip is not reproducible: $sum_a != $sum_b"
-            exit 1
-          fi
-          echo "Reproducibility verified for $zip_amd64 ($sum_a)"
-          ls -lh out/*.zip
+          for f in \
+            "gvx-desktop-$VERSION-windows-amd64.zip" \
+            "gvx-desktop-$VERSION-windows-amd64-setup.exe"
+          do
+            sum_a="$(sha256sum "out/$f" | awk '{print $1}')"
+            sum_b="$(sha256sum "$repro_out/$f" | awk '{print $1}')"
+            if [ "$sum_a" != "$sum_b" ]; then
+              echo "::error::Windows amd64 artifact $f is not reproducible: $sum_a != $sum_b"
+              exit 1
+            fi
+            echo "Reproducibility verified for $f ($sum_a)"
+          done
+          ls -lh out/
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-windows
-          path: out/gvx-desktop-*-windows-*.zip
+          path: |
+            out/gvx-desktop-*-windows-*.zip
+            out/gvx-desktop-*-windows-*-setup.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -417,6 +428,9 @@ jobs:
           sudo apt-get install -y ./out/gvx-desktop_*_amd64.deb
           test -x /usr/bin/gvx-desktop
           test -f /usr/lib/gvx-desktop/libggfx_driver.so
+          test -x /usr/lib/gvx-desktop/bin/docker
+          test -x /usr/lib/gvx-desktop/cli-plugins/docker-buildx
+          test -x /usr/lib/gvx-desktop/cli-plugins/docker-compose
           test -f /usr/share/applications/io.github.ironpark.gvx-desktop.desktop
           dpkg -s gvx-desktop | grep -E '^(Version|Maintainer|Homepage)'
       - name: Upload Linux artifacts
@@ -439,13 +453,32 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
+      - name: Checkout target revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
+          persist-credentials: false
+      - name: Set up pinned Go toolchain
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ needs.prepare.outputs.go_version }}
+      - name: Install pinned ggui CLI
+        run: |
+          ./release/repro-build.sh install-ggui "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Download release artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           path: dist
           merge-multiple: true
-      - name: Generate dry-run checksums
+      - name: Generate dry-run checksums and verify appcast
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          APP_NAME: ${{ needs.prepare.outputs.app_name }}
+          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -eu
           (
@@ -458,6 +491,21 @@ jobs:
           ) > SHA256SUMS
           test -s SHA256SUMS
           cat SHA256SUMS
+
+          SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" ggui update appcast \
+            --dir dist \
+            --base-url "https://github.com/$REPOSITORY/releases/download/$TAG" \
+            --version "$VERSION" \
+            --title "$APP_NAME" \
+            --min-os 13.0 \
+            --notes-url "https://github.com/$REPOSITORY/releases/tag/$TAG" \
+            --allow-unsigned \
+            --out appcast.xml
+          grep -Fq "macos-arm64.dmg" appcast.xml
+          grep -Fq "windows-amd64-setup.exe" appcast.xml
+          grep -Fq "windows-amd64.zip" appcast.xml
+          grep -Fq "linux-amd64.tar.gz" appcast.xml
+          cat appcast.xml
 
   # Collects all built artifacts, writes checksums and transparent build
   # metadata, generates and verifies signed SLSA v1.0 build provenance via
@@ -479,6 +527,21 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Checkout target revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
+          persist-credentials: false
+      - name: Set up pinned Go toolchain
+        if: needs.prepare.outputs.publish_mode == 'create'
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ needs.prepare.outputs.go_version }}
+      - name: Install pinned ggui CLI
+        if: needs.prepare.outputs.publish_mode == 'create'
+        run: |
+          ./release/repro-build.sh install-ggui "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Download release artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -544,6 +607,48 @@ jobs:
           GO111MODULE=on GOPROXY=$GOPROXY GOSUMDB=$GOSUMDB GOENV=off GOWORK=off GOTELEMETRY=off GOFIPS140=off GOEXPERIMENT= GODEBUG= GOFLAGS= GOBIN= CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=$GOAMD64_LINUX GOTOOLCHAIN=go$GO_VERSION go install -trimpath -pgo=off -compiler=gc -tags=ggfxzig -ldflags='-s -w -buildid= -X main.version=$VERSION -X github.com/ironpark/ggui.buildID=io.github.ironpark.gvx-desktop' -- github.com/ironpark/gvx-desktop@v$VERSION
           EOF
           cat meta/BUILD_INFO.txt
+      - name: Generate signed Sparkle 2 appcast.xml
+        if: needs.prepare.outputs.publish_mode == 'create'
+        env:
+          GGUI_UPDATE_PRIVATE_KEY: ${{ secrets.GGUI_UPDATE_PRIVATE_KEY }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          APP_NAME: ${{ needs.prepare.outputs.app_name }}
+          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -eu
+          if [ -z "$GGUI_UPDATE_PRIVATE_KEY" ]; then
+            echo "::warning::GGUI_UPDATE_PRIVATE_KEY is not set; skipping appcast.xml generation (clients will fall back to GitHub Releases API)"
+            exit 0
+          fi
+
+          # If PublicKey is already embedded in source, verify the signing secret matches it.
+          embedded_pub="$(sed -n 's/^var PublicKey = "\([^"]*\)"/\1/p' internal/appupdate/appupdate.go | head -n 1)"
+          if [ -n "$embedded_pub" ]; then
+            derived_pub="$(ggui update pubkey | tr -d '\r\n')"
+            if [ "$embedded_pub" != "$derived_pub" ]; then
+              echo "::error::GGUI_UPDATE_PRIVATE_KEY public key ($derived_pub) does not match internal/appupdate.PublicKey ($embedded_pub)"
+              exit 1
+            fi
+          fi
+
+          merge_args=""
+          if curl -fsSL -o prev_appcast.xml "https://github.com/$REPOSITORY/releases/latest/download/appcast.xml" 2>/dev/null; then
+            merge_args="--merge prev_appcast.xml"
+          fi
+          # shellcheck disable=SC2086
+          SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" ggui update appcast \
+            --dir dist \
+            --base-url "https://github.com/$REPOSITORY/releases/download/$TAG" \
+            --version "$VERSION" \
+            --title "$APP_NAME" \
+            --min-os 13.0 \
+            --notes-url "https://github.com/$REPOSITORY/releases/tag/$TAG" \
+            $merge_args \
+            --out meta/appcast.xml
+          rm -f prev_appcast.xml
+          test -s meta/appcast.xml
       - name: Generate SLSA v1.0 build provenance attestation
         id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -585,7 +690,7 @@ jobs:
             --verify-tag \
             --title "$APP_NAME $VERSION" \
             --generate-notes \
-            --notes "On an Apple silicon Mac (macOS 13 or later), install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. On Windows, unzip the program for your PC: amd64 for Intel and AMD, arm64 for Arm. On Linux, install the .deb or .rpm for your CPU, or unpack the tarball. Verify downloads with \`SHA256SUMS\` and SLSA build provenance via \`gh attestation verify <file> --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG --deny-self-hosted-runners --bundle gvx-desktop-$TAG.sigstore.json\`."
+            --notes "On an Apple silicon Mac (macOS 13 or later), install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. On Windows, run the setup installer (\`-setup.exe\`) or unzip the portable archive for your PC: amd64 for Intel and AMD, arm64 for Arm. On Linux, install the .deb or .rpm for your CPU, or unpack the tarball. Verify downloads with \`SHA256SUMS\` and SLSA build provenance via \`gh attestation verify <file> --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG --deny-self-hosted-runners --bundle gvx-desktop-$TAG.sigstore.json\`."
       - name: Upload rebuilt artifacts to existing release
         if: needs.prepare.outputs.publish_mode == 'upload'
         env:

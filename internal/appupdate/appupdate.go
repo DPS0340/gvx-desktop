@@ -10,12 +10,16 @@ package appupdate
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/ironpark/ggui/updater"
 
 	"github.com/ironpark/gvx-desktop/internal/ghrelease"
 )
@@ -23,9 +27,26 @@ import (
 // ReleasesURL is where a person reads about the app's releases.
 const ReleasesURL = "https://github.com/ironpark/gvx-desktop/releases"
 
+// AppcastURL is the Sparkle 2 appcast feed published with each GitHub release.
+const AppcastURL = "https://github.com/ironpark/gvx-desktop/releases/latest/download/appcast.xml"
+
+// PublicKey is the standard base64-encoded 32-byte Ed25519 public key
+// (Sparkle SUPublicEDKey) used to verify release enclosures in appcast.xml.
+//
+// Generate a key pair with `ggui update keygen`, store the private key in the
+// repository's GGUI_UPDATE_PRIVATE_KEY secret, and paste the printed public key
+// here. Keeping the key in source preserves bit-for-bit reproducible builds
+// without CI secrets. While PublicKey is empty (or before the first release
+// publishes appcast.xml), the app falls back to GitHub Releases API + .sha256.
+var PublicKey = ""
+
 // latestURL answers with the app's newest release; a test points it at a
 // server of its own.
 var latestURL = "https://api.github.com/repos/ironpark/gvx-desktop/releases/latest"
+
+// appcastURL points to the Sparkle 2 appcast feed; a test points it at a
+// server of its own.
+var appcastURL = AppcastURL
 
 // Package is the app's name to Homebrew, Chocolatey, dpkg and rpm, and the
 // start of its release files' names.
@@ -140,6 +161,12 @@ type Install struct {
 	Path string
 	// Tool is what installs an RPM: dnf, zypper or rpm.
 	Tool string
+	// PreferWindowsSetup is true on Windows for installs created by the Setup
+	// installer (install-manifest.json beside the executable) and for existing
+	// install.ps1 installs in %LOCALAPPDATA%\Programs\GVX Desktop so their next
+	// in-app update transitions smoothly to GVX Desktop-Setup.exe. Portable zip
+	// installs in other folders keep false and update from the zip archive.
+	PreferWindowsSetup bool
 }
 
 // probe is what detect looks at, which a test makes up.
@@ -218,10 +245,15 @@ func detect(p probe) Install {
 		if root := strings.ToLower(strings.TrimRight(strings.ReplaceAll(p.getenv("ChocolateyInstall"), "/", `\`), `\`)); root != "" && strings.HasPrefix(lower, root+`\lib\`) {
 			return Install{Method: Chocolatey, Path: p.exe}
 		}
-		if !strings.HasSuffix(lower, ".exe") || !p.writable(windowsDir(p.exe)) {
+		dir := windowsDir(p.exe)
+		if !strings.HasSuffix(lower, ".exe") || !p.writable(dir) {
 			return manual
 		}
-		return Install{Method: Program, Path: p.exe}
+		return Install{
+			Method:             Program,
+			Path:               p.exe,
+			PreferWindowsSetup: isWindowsSetupInstall(p, dir),
+		}
 	case "linux":
 		if (strings.HasPrefix(p.exe, "/usr/") && !strings.HasPrefix(p.exe, "/usr/local/")) || strings.HasPrefix(p.exe, "/opt/") {
 			if p.exists("/var/lib/dpkg/info/"+Package+".list") || p.exists("/var/lib/dpkg/info/"+Package+":"+p.goarch+".list") {
@@ -292,6 +324,28 @@ func windowsDir(p string) string {
 	return "."
 }
 
+// isWindowsSetupInstall reports whether a writable Windows install in dir
+// should update via the Setup installer rather than the portable zip: either it
+// was already installed by Setup (install-manifest.json beside the exe) or it
+// lives in the standard per-user install.ps1 directory
+// (%LOCALAPPDATA%\Programs\GVX Desktop).
+func isWindowsSetupInstall(p probe, dir string) bool {
+	sep := `\`
+	if !strings.Contains(dir, `\`) && strings.Contains(dir, "/") {
+		sep = "/"
+	}
+	if p.exists(strings.TrimRight(dir, `\/`) + sep + "install-manifest.json") {
+		return true
+	}
+	localAppData := strings.TrimRight(strings.ReplaceAll(strings.TrimSpace(p.getenv("LOCALAPPDATA")), "/", `\`), `\`)
+	if localAppData == "" {
+		return false
+	}
+	normDir := strings.TrimRight(strings.ReplaceAll(dir, "/", `\`), `\`)
+	wantDir := localAppData + `\Programs\GVX Desktop`
+	return strings.EqualFold(normDir, wantDir)
+}
+
 // AssetName is the file of the release tagged tag that installs the app
 // on goos and goarch by method m. The app is built for Apple silicon Macs,
 // and for amd64 and arm64 PCs on Windows and Linux.
@@ -328,6 +382,35 @@ func AssetName(tag, goos, goarch string, m Method) (string, bool) {
 // for a release with no package for this machine.
 func (in Install) Command(rel Release) string { return in.command(rel, runtime.GOARCH) }
 
+// CommandForVersion builds the terminal update command for version (such as
+// "0.9.0" or "v0.9.0") using deterministic GitHub release download URLs, for
+// feeds such as appcast.xml that do not enumerate .deb/.rpm enclosures.
+func (in Install) CommandForVersion(version string) string {
+	return in.commandForVersion(version, runtime.GOARCH)
+}
+
+func (in Install) commandForVersion(version, goarch string) string {
+	switch in.Method {
+	case Homebrew:
+		return "brew upgrade --cask " + Package
+	case Chocolatey:
+		return "choco upgrade " + Package + " -y"
+	case Deb, RPM:
+		plain := Plain(version)
+		if plain == "" {
+			return ""
+		}
+		tag := "v" + plain
+		name, ok := AssetName(tag, "linux", goarch, in.Method)
+		if !ok {
+			return ""
+		}
+		base := ReleasesURL + "/download/" + tag + "/"
+		return in.linuxPackageCommand(name, base+name, base+name+".sha256")
+	}
+	return ""
+}
+
 func (in Install) command(rel Release, goarch string) string {
 	switch in.Method {
 	case Homebrew:
@@ -344,21 +427,140 @@ func (in Install) command(rel Release, goarch string) string {
 		if !ok1 || !ok2 {
 			return ""
 		}
-		install := "sudo apt install"
-		if in.Method == RPM {
-			switch in.Tool {
-			case "dnf":
-				install = "sudo dnf install"
-			case "zypper":
-				install = "sudo zypper install"
-			default:
-				install = "sudo rpm -U"
-			}
-		}
-		return `cd "$(mktemp -d)" && curl -fL -O ` + shellQuote(pkg.URL) + ` -O ` + shellQuote(sum.URL) +
-			` && sha256sum -c ` + shellQuote(name+".sha256") + ` && ` + install + ` ./` + shellQuote(name)
+		return in.linuxPackageCommand(name, pkg.URL, sum.URL)
 	}
 	return ""
+}
+
+func (in Install) linuxPackageCommand(name, pkgURL, sumURL string) string {
+	install := "sudo apt install"
+	if in.Method == RPM {
+		switch in.Tool {
+		case "dnf":
+			install = "sudo dnf install"
+		case "zypper":
+			install = "sudo zypper install"
+		default:
+			install = "sudo rpm -U"
+		}
+	}
+	return `cd "$(mktemp -d)" && curl -fL -O ` + shellQuote(pkgURL) + ` -O ` + shellQuote(sumURL) +
+		` && sha256sum -c ` + shellQuote(name+".sha256") + ` && ` + install + ` ./` + shellQuote(name)
+}
+
+// UpdaterOption customizes NewUpdater, primarily for tests and first-run
+// settings migration.
+type UpdaterOption func(*updaterInitOptions)
+
+type updaterInitOptions struct {
+	cfg             updater.Config
+	seedSettings    bool
+	seedAutoCheck   bool
+	seedSkipVersion string
+}
+
+// WithInitialSettings seeds updater-state.json from GVX Desktop's settings.json
+// when updater-state.json does not exist yet, preserving existing users'
+// NoAppUpdateCheck and SkipAppVersion preferences across the upgrade.
+func WithInitialSettings(autoCheck bool, skipVersion string) UpdaterOption {
+	return func(o *updaterInitOptions) {
+		o.seedSettings = true
+		o.seedAutoCheck = autoCheck
+		o.seedSkipVersion = skipVersion
+	}
+}
+
+// WithPublicKey overrides PublicKey when constructing an Updater.
+func WithPublicKey(pubKey string) UpdaterOption {
+	return func(o *updaterInitOptions) { o.cfg.PublicKey = pubKey }
+}
+
+// WithFeedURL overrides AppcastURL when constructing an Updater.
+func WithFeedURL(feedURL string) UpdaterOption {
+	return func(o *updaterInitOptions) { o.cfg.FeedURL = feedURL }
+}
+
+// WithAllowInsecureHTTP enables plain HTTP URLs (for local tests).
+func WithAllowInsecureHTTP(allow bool) UpdaterOption {
+	return func(o *updaterInitOptions) { o.cfg.AllowInsecureHTTP = allow }
+}
+
+// WithApplier overrides the platform update applier (for tests).
+func WithApplier(a updater.Applier) UpdaterOption {
+	return func(o *updaterInitOptions) { o.cfg.Applier = a }
+}
+
+// WithOSArch overrides the detected OS and architecture (for tests).
+func WithOSArch(osName, arch string) UpdaterOption {
+	return func(o *updaterInitOptions) {
+		o.cfg.OS = osName
+		o.cfg.Arch = arch
+	}
+}
+
+// WithCheckInterval overrides the automatic check interval (for tests).
+func WithCheckInterval(d time.Duration) UpdaterOption {
+	return func(o *updaterInitOptions) { o.cfg.CheckInterval = d }
+}
+
+// NewUpdater constructs a ggui/updater.Updater for GVX Desktop backed by the
+// signed Sparkle 2 appcast feed.
+//
+// It returns (nil, nil) when PublicKey is empty (and not overridden) or when
+// currentVersion is not a release version (such as "dev"), allowing callers to
+// fall back cleanly to the GitHub Releases API + .sha256 updater.
+func NewUpdater(dataDir, currentVersion string, in Install, opts ...UpdaterOption) (*updater.Updater, error) {
+	if !Comparable(currentVersion) {
+		return nil, nil
+	}
+	initOpts := updaterInitOptions{
+		cfg: updater.Config{
+			FeedURL:            appcastURL,
+			PublicKey:          PublicKey,
+			CurrentVersion:     Plain(currentVersion),
+			AppID:              BundleID,
+			AppName:            "GVX Desktop",
+			StateDir:           dataDir,
+			CacheDir:           filepath.Join(dataDir, "updates"),
+			PreferWindowsSetup: in.PreferWindowsSetup,
+		},
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&initOpts)
+		}
+	}
+	if strings.TrimSpace(initOpts.cfg.PublicKey) == "" && !initOpts.cfg.AllowUnsigned {
+		return nil, nil
+	}
+
+	var firstRun bool
+	if initOpts.seedSettings && initOpts.cfg.StateDir != "" {
+		_, err := os.Stat(filepath.Join(initOpts.cfg.StateDir, "updater-state.json"))
+		firstRun = errors.Is(err, os.ErrNotExist)
+	}
+
+	u, err := updater.New(initOpts.cfg)
+	if err != nil {
+		return nil, err
+	}
+	if firstRun {
+		_ = u.SetAutoCheckEnabled(initOpts.seedAutoCheck)
+		if skip := Plain(initOpts.seedSkipVersion); skip != "" {
+			_ = u.SkipVersion(skip)
+		}
+	}
+	return u, nil
+}
+
+// IsFeedNotFound reports whether err was caused by appcast.xml returning HTTP
+// 404 (for example during the transition before a release publishes
+// appcast.xml).
+func IsFeedNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "returned HTTP 404")
 }
 
 // shellQuote quotes s for a POSIX shell, leaving it bare when it needs

@@ -173,23 +173,32 @@ func TestProgramPaths(t *testing.T) {
 }
 
 func TestProgramUpdateWithDriverLibrary(t *testing.T) {
-	zipWithDLL := func(t *testing.T, program, dll []byte) []byte {
+	zipWithDLL := func(t *testing.T, program, dll, docker, buildx, compose []byte) []byte {
 		t.Helper()
 		var buf bytes.Buffer
 		zw := zip.NewWriter(&buf)
-		w, _ := zw.Create("GVX Desktop.exe")
-		w.Write(program)
-		w, _ = zw.Create("ggfx_driver.dll")
-		w.Write(dll)
+		for _, f := range []struct {
+			name string
+			data []byte
+		}{
+			{"GVX Desktop.exe", program},
+			{"ggfx_driver.dll", dll},
+			{"bin/docker.exe", docker},
+			{"cli-plugins/docker-buildx.exe", buildx},
+			{"cli-plugins/docker-compose.exe", compose},
+		} {
+			w, _ := zw.Create(f.name)
+			w.Write(f.data)
+		}
 		zw.Close()
 		return buf.Bytes()
 	}
-	tarWithSO := func(t *testing.T, program, so []byte) []byte {
+	tarWithSO := func(t *testing.T, program, so, docker, buildx, compose []byte) []byte {
 		t.Helper()
 		var buf bytes.Buffer
 		gz := gzip.NewWriter(&buf)
 		tw := tar.NewWriter(gz)
-		for _, d := range []string{"usr/", "usr/bin/", "usr/lib/", "usr/lib/gvx-desktop/"} {
+		for _, d := range []string{"usr/", "usr/bin/", "usr/lib/", "usr/lib/gvx-desktop/", "usr/lib/gvx-desktop/bin/", "usr/lib/gvx-desktop/cli-plugins/"} {
 			tw.WriteHeader(&tar.Header{Name: d, Typeflag: tar.TypeDir, Mode: 0o755})
 		}
 		for _, f := range []struct {
@@ -199,6 +208,9 @@ func TestProgramUpdateWithDriverLibrary(t *testing.T) {
 		}{
 			{"usr/bin/gvx-desktop", 0o755, program},
 			{"usr/lib/gvx-desktop/libggfx_driver.so", 0o644, so},
+			{"usr/lib/gvx-desktop/bin/docker", 0o755, docker},
+			{"usr/lib/gvx-desktop/cli-plugins/docker-buildx", 0o755, buildx},
+			{"usr/lib/gvx-desktop/cli-plugins/docker-compose", 0o755, compose},
 		} {
 			tw.WriteHeader(&tar.Header{Name: f.name, Typeflag: tar.TypeReg, Mode: f.mode, Size: int64(len(f.data))})
 			tw.Write(f.data)
@@ -225,9 +237,9 @@ func TestProgramUpdateWithDriverLibrary(t *testing.T) {
 			name, _ := AssetName("v0.6.0", c.goos, "amd64", Program)
 			var body []byte
 			if c.goos == "windows" {
-				body = zipWithDLL(t, []byte(c.magic+" new exe"), []byte(c.magic+" new lib"))
+				body = zipWithDLL(t, []byte(c.magic+" new exe"), []byte(c.magic+" new lib"), []byte(c.magic+" new docker"), []byte(c.magic+" new buildx"), []byte(c.magic+" new compose"))
 			} else {
-				body = tarWithSO(t, []byte(c.magic+" new exe"), []byte(c.magic+" new lib"))
+				body = tarWithSO(t, []byte(c.magic+" new exe"), []byte(c.magic+" new lib"), []byte(c.magic+" new docker"), []byte(c.magic+" new buildx"), []byte(c.magic+" new compose"))
 			}
 			rel := serveRelease(t, name, body, "")
 
@@ -241,10 +253,14 @@ func TestProgramUpdateWithDriverLibrary(t *testing.T) {
 				target = filepath.Join(binDir, "gvx-desktop")
 			}
 			os.WriteFile(target, []byte(c.magic+" old exe"), 0o755)
-			libTarget := driverLibraryTarget(target, c.goos)
+			specs := companionSpecs(target, c.goos)
+			libTarget := specs[0].target
+			dockerTarget := specs[1].target
 			if c.hadPrevLib {
-				os.MkdirAll(filepath.Dir(libTarget), 0o755)
-				os.WriteFile(libTarget, []byte(c.magic+" old lib"), 0o644)
+				for _, sp := range specs {
+					os.MkdirAll(filepath.Dir(sp.target), 0o755)
+					os.WriteFile(sp.target, []byte(c.magic+" old "+filepath.Base(sp.target)), sp.mode)
+				}
 			}
 
 			s, err := stageProgram(context.Background(), rel, target, c.goos, "amd64", nil)
@@ -265,8 +281,17 @@ func TestProgramUpdateWithDriverLibrary(t *testing.T) {
 			if got := read(t, libTarget); got != c.magic+" new lib" {
 				t.Errorf("after Prepare lib = %q", got)
 			}
+			if got := read(t, dockerTarget); got != c.magic+" new docker" {
+				t.Errorf("after Prepare docker = %q", got)
+			}
+			if got := read(t, specs[2].target); got != c.magic+" new buildx" {
+				t.Errorf("after Prepare buildx = %q", got)
+			}
+			if got := read(t, specs[3].target); got != c.magic+" new compose" {
+				t.Errorf("after Prepare compose = %q", got)
+			}
 			if c.hadPrevLib {
-				if got := read(t, libOld); got != c.magic+" old lib" {
+				if got := read(t, libOld); got != c.magic+" old "+filepath.Base(libTarget) {
 					t.Errorf("old lib = %q", got)
 				}
 			} else if exists(libOld) {
@@ -276,8 +301,11 @@ func TestProgramUpdateWithDriverLibrary(t *testing.T) {
 			if err := cleanup(Install{Method: Program, Path: target}, c.goos); err != nil {
 				t.Fatal(err)
 			}
-			if exists(libFresh) || exists(libOld) {
-				t.Errorf("cleanup left staged/old lib files")
+			for _, sp := range specs {
+				cf, co := programPaths(sp.target, c.goos)
+				if exists(cf) || exists(co) {
+					t.Errorf("cleanup left staged/old files for %s", sp.target)
+				}
 			}
 			if got := read(t, libTarget); got != c.magic+" new lib" {
 				t.Errorf("cleanup touched live lib: %q", got)

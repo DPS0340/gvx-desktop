@@ -3,10 +3,15 @@ package appupdate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ironpark/ggui/updater"
 
 	"github.com/ironpark/gvx-desktop/internal/ghrelease"
 )
@@ -156,6 +161,16 @@ func TestDetect(t *testing.T) {
 
 		{name: "windows installer", goos: "windows", exe: `C:\Users\me\AppData\Local\Programs\GVX Desktop\GVX Desktop.exe`,
 			want: Install{Method: Program, Path: `C:\Users\me\AppData\Local\Programs\GVX Desktop\GVX Desktop.exe`}},
+		{name: "windows legacy install.ps1 default dir prefers setup", goos: "windows", exe: `C:\Users\me\AppData\Local\Programs\GVX Desktop\GVX Desktop.exe`,
+			env:  map[string]string{"LOCALAPPDATA": `C:\Users\me\AppData\Local`},
+			want: Install{Method: Program, Path: `C:\Users\me\AppData\Local\Programs\GVX Desktop\GVX Desktop.exe`, PreferWindowsSetup: true}},
+		{name: "windows custom dir with install-manifest prefers setup", goos: "windows", exe: `D:\Apps\GVX Desktop\GVX Desktop.exe`,
+			env:    map[string]string{"LOCALAPPDATA": `C:\Users\me\AppData\Local`},
+			exists: []string{`D:\Apps\GVX Desktop\install-manifest.json`},
+			want:   Install{Method: Program, Path: `D:\Apps\GVX Desktop\GVX Desktop.exe`, PreferWindowsSetup: true}},
+		{name: "windows portable zip in custom dir stays portable", goos: "windows", exe: `D:\Portable\GVX Desktop\GVX Desktop.exe`,
+			env:  map[string]string{"LOCALAPPDATA": `C:\Users\me\AppData\Local`},
+			want: Install{Method: Program, Path: `D:\Portable\GVX Desktop\GVX Desktop.exe`, PreferWindowsSetup: false}},
 		{name: "windows chocolatey", goos: "windows", exe: `C:\ProgramData\chocolatey\lib\gvx-desktop\tools\GVX Desktop.exe`,
 			want: Install{Method: Chocolatey, Path: `C:\ProgramData\chocolatey\lib\gvx-desktop\tools\GVX Desktop.exe`}},
 		{name: "windows chocolatey, other case", goos: "windows", exe: `C:\ProgramData\Chocolatey\Lib\gvx-desktop\tools\GVX Desktop.exe`,
@@ -281,5 +296,87 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(in); got != want {
 			t.Errorf("shellQuote(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+func TestCommandForVersion(t *testing.T) {
+	for _, c := range []struct {
+		in   Install
+		ver  string
+		arch string
+		want string
+	}{
+		{Install{Method: Homebrew}, "0.9.0", "arm64", "brew upgrade --cask gvx-desktop"},
+		{Install{Method: Chocolatey}, "0.9.0", "amd64", "choco upgrade gvx-desktop -y"},
+		{Install{Method: Deb}, "0.9.0", "amd64", `cd "$(mktemp -d)" && curl -fL -O https://github.com/ironpark/gvx-desktop/releases/download/v0.9.0/gvx-desktop_0.9.0_amd64.deb -O https://github.com/ironpark/gvx-desktop/releases/download/v0.9.0/gvx-desktop_0.9.0_amd64.deb.sha256 && sha256sum -c gvx-desktop_0.9.0_amd64.deb.sha256 && sudo apt install ./gvx-desktop_0.9.0_amd64.deb`},
+		{Install{Method: RPM, Tool: "dnf"}, "v0.9.0", "arm64", `cd "$(mktemp -d)" && curl -fL -O https://github.com/ironpark/gvx-desktop/releases/download/v0.9.0/gvx-desktop-0.9.0-1.aarch64.rpm -O https://github.com/ironpark/gvx-desktop/releases/download/v0.9.0/gvx-desktop-0.9.0-1.aarch64.rpm.sha256 && sha256sum -c gvx-desktop-0.9.0-1.aarch64.rpm.sha256 && sudo dnf install ./gvx-desktop-0.9.0-1.aarch64.rpm`},
+		{Install{Method: Bundle}, "0.9.0", "arm64", ""},
+		{Install{Method: Manual}, "0.9.0", "amd64", ""},
+	} {
+		if got := c.in.commandForVersion(c.ver, c.arch); got != c.want {
+			t.Errorf("%+v (%s/%s):\n got %s\nwant %s", c.in, c.ver, c.arch, got, c.want)
+		}
+	}
+}
+
+func TestNewUpdaterAndInitialSettingsMigration(t *testing.T) {
+	pub, _, err := updater.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty PublicKey falls back cleanly (returns nil, nil).
+	if u, err := NewUpdater(t.TempDir(), "0.8.0", Install{Method: Bundle}); err != nil || u != nil {
+		t.Fatalf("empty PublicKey: u=%v err=%v", u, err)
+	}
+
+	// Non-release build ("dev") falls back cleanly even when PublicKey is set.
+	if u, err := NewUpdater(t.TempDir(), "dev", Install{Method: Bundle}, WithPublicKey(pub)); err != nil || u != nil {
+		t.Fatalf("dev build: u=%v err=%v", u, err)
+	}
+
+	// First-run seeds updater-state.json from existing settings.json values.
+	dir := t.TempDir()
+	in := Install{Method: Program, PreferWindowsSetup: true}
+	u1, err := NewUpdater(dir, "0.8.0", in,
+		WithPublicKey(pub),
+		WithInitialSettings(false, "v0.8.1"),
+	)
+	if err != nil || u1 == nil {
+		t.Fatalf("NewUpdater first run: u=%v err=%v", u1, err)
+	}
+	if !u1.Config().PreferWindowsSetup {
+		t.Error("PreferWindowsSetup not propagated to updater.Config")
+	}
+	if u1.AutoCheckEnabled() {
+		t.Error("AutoCheckEnabled = true, want migrated false")
+	}
+	if got := u1.SkippedVersion(); got != "0.8.1" {
+		t.Errorf("SkippedVersion = %q, want 0.8.1", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "updater-state.json")); err != nil {
+		t.Fatalf("expected updater-state.json: %v", err)
+	}
+
+	// Subsequent runs keep existing updater-state.json instead of overwriting it.
+	u2, err := NewUpdater(dir, "0.8.0", in,
+		WithPublicKey(pub),
+		WithInitialSettings(true, "v0.9.9"),
+	)
+	if err != nil || u2 == nil {
+		t.Fatalf("NewUpdater second run: u=%v err=%v", u2, err)
+	}
+	if u2.AutoCheckEnabled() {
+		t.Error("second run overwrote AutoCheckEnabled")
+	}
+	if got := u2.SkippedVersion(); got != "0.8.1" {
+		t.Errorf("second run overwrote SkippedVersion: %q", got)
+	}
+
+	if !IsFeedNotFound(errors.New("updater: appcast https://example.com/appcast.xml returned HTTP 404")) {
+		t.Error("IsFeedNotFound should match HTTP 404")
+	}
+	if IsFeedNotFound(errors.New("updater: appcast https://example.com/appcast.xml returned HTTP 500")) {
+		t.Error("IsFeedNotFound should not match HTTP 500")
 	}
 }

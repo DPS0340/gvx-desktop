@@ -531,13 +531,21 @@
     $api = "https://api.github.com/repos/$repo/releases/tags/v$($env:GVX_DESKTOP_VERSION.TrimStart('v'))"
   }
   $release = Invoke-RestMethod -Uri $api -Headers $headers
-  $zip = $release.assets | Where-Object { $_.name -like "*-windows-$arch.zip" } | Select-Object -First 1
-  if (-not $zip) {
+  $setupAsset = $release.assets | Where-Object { $_.name -like "*-windows-$arch-setup.exe" } | Select-Object -First 1
+  $zipAsset = $release.assets | Where-Object { $_.name -like "*-windows-$arch.zip" } | Select-Object -First 1
+  $useSetup = $false
+  $pkg = $null
+  if ($setupAsset) {
+    $pkg = $setupAsset
+    $useSetup = $true
+  } elseif ($zipAsset) {
+    $pkg = $zipAsset
+  } else {
     throw (T 'no_asset' @($release.tag_name, $arch))
   }
-  $sum = $release.assets | Where-Object { $_.name -eq "$($zip.name).sha256" } | Select-Object -First 1
+  $sum = $release.assets | Where-Object { $_.name -eq "$($pkg.name).sha256" } | Select-Object -First 1
   if (-not $sum) {
-    throw (T 'no_sum' @($release.tag_name, $zip.name))
+    throw (T 'no_sum' @($release.tag_name, $pkg.name))
   }
 
   if ($interactive) {
@@ -602,17 +610,17 @@
   New-Item -ItemType Directory -Path $tmp | Out-Null
   try {
     Write-StepPending (T 'step_download' @($app, $release.tag_name, $arch))
-    $zipFile = Join-Path $tmp $zip.name
+    $pkgFile = Join-Path $tmp $pkg.name
     $sumFile = Join-Path $tmp $sum.name
-    Invoke-WebRequest -Uri $zip.browser_download_url -OutFile $zipFile -Headers $headers -UseBasicParsing
+    Invoke-WebRequest -Uri $pkg.browser_download_url -OutFile $pkgFile -Headers $headers -UseBasicParsing
     Invoke-WebRequest -Uri $sum.browser_download_url -OutFile $sumFile -Headers $headers -UseBasicParsing
-    Write-StepDone (T 'done_download' @($zip.name))
+    Write-StepDone (T 'done_download' @($pkg.name))
 
     Write-StepPending (T 'step_verify')
     $want = ((Get-Content -Path $sumFile -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
-    $got = (Get-FileHash -Path $zipFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    $got = (Get-FileHash -Path $pkgFile -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($got -ne $want) {
-      throw (T 'bad_sum' @($zip.name, $got, $want))
+      throw (T 'bad_sum' @($pkg.name, $got, $want))
     }
     Write-StepDone (T 'done_verify')
 
@@ -623,34 +631,51 @@
     }
 
     Write-StepPending (T 'step_extract' @($dir))
-    New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    Expand-Archive -Path $zipFile -DestinationPath $dir -Force
-    if (-not (Test-Path $exe)) {
-      throw (T 'no_exe' @($app))
-    }
-    Write-StepDone (T 'done_extract' @($dir))
+    if ($useSetup) {
+      $setupArgs = @('--silent', '--dir', $dir, '--no-launch')
+      if (-not $makeStartMenu) { $setupArgs += '--no-start-menu' }
+      if (-not $makeDesktop) { $setupArgs += '--no-desktop-shortcut' }
+      $proc = Start-Process -FilePath $pkgFile -ArgumentList $setupArgs -Wait -PassThru
+      if ($proc.ExitCode -ne 0) {
+        throw "Installer exited with code $($proc.ExitCode)."
+      }
+      if (-not (Test-Path $exe)) {
+        throw (T 'no_exe' @($app))
+      }
+      Write-StepDone (T 'done_extract' @($dir))
+      if ($makeStartMenu) { Write-StepDone (T 'done_startmenu') }
+      if ($makeDesktop) { Write-StepDone (T 'done_desktop') }
+      if (-not $makeStartMenu -and -not $makeDesktop) { Write-StepDone (T 'done_shortcuts_none') }
+    } else {
+      New-Item -ItemType Directory -Path $dir -Force | Out-Null
+      Expand-Archive -Path $pkgFile -DestinationPath $dir -Force
+      if (-not (Test-Path $exe)) {
+        throw (T 'no_exe' @($app))
+      }
+      Write-StepDone (T 'done_extract' @($dir))
 
-    Write-StepPending (T 'step_shortcuts')
-    $desc = T 'shortcut_desc'
-    $madeAny = $false
-    if ($makeStartMenu) {
-      $menu = [Environment]::GetFolderPath('Programs')
-      if ($menu) {
-        New-AppShortcut (Join-Path $menu "$app.lnk") $exe $dir $desc
-        Write-StepDone (T 'done_startmenu')
-        $madeAny = $true
+      Write-StepPending (T 'step_shortcuts')
+      $desc = T 'shortcut_desc'
+      $madeAny = $false
+      if ($makeStartMenu) {
+        $menu = [Environment]::GetFolderPath('Programs')
+        if ($menu) {
+          New-AppShortcut (Join-Path $menu "$app.lnk") $exe $dir $desc
+          Write-StepDone (T 'done_startmenu')
+          $madeAny = $true
+        }
       }
-    }
-    if ($makeDesktop) {
-      $desktop = [Environment]::GetFolderPath('Desktop')
-      if ($desktop -and (Test-Path $desktop)) {
-        New-AppShortcut (Join-Path $desktop "$app.lnk") $exe $dir $desc
-        Write-StepDone (T 'done_desktop')
-        $madeAny = $true
+      if ($makeDesktop) {
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        if ($desktop -and (Test-Path $desktop)) {
+          New-AppShortcut (Join-Path $desktop "$app.lnk") $exe $dir $desc
+          Write-StepDone (T 'done_desktop')
+          $madeAny = $true
+        }
       }
-    }
-    if (-not $madeAny) {
-      Write-StepDone (T 'done_shortcuts_none')
+      if (-not $madeAny) {
+        Write-StepDone (T 'done_shortcuts_none')
+      }
     }
 
     Write-Host ''

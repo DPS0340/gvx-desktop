@@ -18,6 +18,7 @@ import (
 
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/ui"
+	"github.com/ironpark/ggui/updater"
 
 	"github.com/ironpark/gvx-desktop/internal/appupdate"
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
@@ -120,10 +121,12 @@ type Model struct {
 	// AppUpdate is what the app knows of its own newest release; see
 	// model_appupdate.go.
 	AppUpdate  *ggui.StateValue[AppUpdate]
+	UpdateCtrl *updater.Controller
 	appRelease appupdate.Release // what AppUpdate tells of
 	appStaged  *appupdate.Staged // downloaded, for a restart to put in place
 	appRestart *appupdate.Staged // to finish once the app has ended
 	appChecked time.Time         // when the app's releases were last asked for, by the wall clock
+	dataDir    string
 	Now        *ggui.StateValue[time.Time]
 	// Lang is the language the app is worded in, from the settings or the
 	// system: one of LanguageTags.
@@ -251,6 +254,9 @@ type Model struct {
 	// DockerLink and KubeLink are the contexts docker and kubectl on this
 	// machine reach the recipes' engines through.
 	DockerLink, KubeLink *Link
+	// BundledDocker describes the Docker CLI + plugins bundled inside this app
+	// package and whether ~/.gvx/bin is wired into the user's terminal PATH.
+	BundledDocker *ggui.StateValue[BundledDockerState]
 	// LinkCommandsOpen unfolds the commands that set the contexts up by hand.
 	LinkCommandsOpen *ggui.StateValue[bool]
 	// Menus is what the Docker and Kubernetes menus tell; see RecipeMenu.
@@ -392,8 +398,9 @@ func NewModel(st store.Store, dataDir string) *Model {
 		}
 	}
 	m := &Model{
-		store:  st,
-		Toasts: ui.NewToaster().Limit(3),
+		store:   st,
+		dataDir: dataDir,
+		Toasts:  ui.NewToaster().Limit(3),
 
 		Page:          ggui.State(PageDashboard),
 		Settings:      ggui.State(settings),
@@ -433,6 +440,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		DockerProxyErr:    ggui.State(""),
 		DockerExposeLAN:   ggui.State(settings.DockerExposeLAN),
 		DockerSSHAgent:    ggui.State(settings.DockerSSHAgent),
+		BundledDocker:     ggui.State(BundledDockerState{}).WithEqual(BundledDockerState.Equal),
 		ContainerQuery:    ggui.State(""),
 		ContainerStatus:   ggui.State("all"),
 		SelectedContainer: ggui.State(""),
@@ -659,6 +667,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		}
 		return wrapCommand(spec.RunArgs(p))
 	})
+	m.initAppUpdater(dataDir)
 	return m
 }
 
@@ -704,7 +713,12 @@ func takesValue(flag string) bool {
 }
 
 // Attach gives the model its host once the app exists.
-func (m *Model) Attach(host ggui.Host) { m.host = host }
+func (m *Model) Attach(host ggui.Host) {
+	m.host = host
+	if m.UpdateCtrl != nil && host != nil {
+		m.UpdateCtrl.SetPost(host.Post)
+	}
+}
 
 // SetMenuSource supplies the application menu items for non-macOS windows
 // that render ui.AppMenubar inside the window frame.
@@ -845,6 +859,7 @@ func (m *Model) Start() {
 			m.startWithApp()
 		}
 	})
+	m.syncBundledDocker()
 	m.startDockerProxy()
 	m.followDocker()
 	m.followPods()

@@ -1,11 +1,21 @@
 package ui
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/updater"
 
 	"github.com/ironpark/gvx-desktop/internal/appupdate"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -143,5 +153,259 @@ func TestRelaunchArgs(t *testing.T) {
 		if got := relaunchArgs(c.in); !slices.Equal(got, c.want) {
 			t.Errorf("relaunchArgs(%q) = %q", c.in, got)
 		}
+	}
+}
+
+type testApplier struct {
+	applied atomic.Int32
+}
+
+func (a *testApplier) Apply(_ context.Context, _ *updater.DownloadedUpdate, opts updater.ApplyOptions) error {
+	a.applied.Add(1)
+	if opts.QuitFunc != nil {
+		opts.QuitFunc()
+	}
+	return nil
+}
+
+func TestAppUpdateControllerSignedFeedAndHooks(t *testing.T) {
+	pub, priv, err := updater.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("signed release payload")
+	sig, err := updater.SignBytes(priv, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	shaHex := hex.EncodeToString(sum[:])
+
+	feedOS := runtime.GOOS
+	if feedOS == "darwin" {
+		feedOS = "macos"
+	}
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/appcast.xml":
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>GVX Desktop</title>
+    <item>
+      <title>GVX Desktop 0.9.0</title>
+      <sparkle:version>0.9.0</sparkle:version>
+      <sparkle:shortVersionString>0.9.0</sparkle:shortVersionString>
+      <sparkle:releaseNotesLink>https://github.com/ironpark/gvx-desktop/releases/tag/v0.9.0</sparkle:releaseNotesLink>
+      <description><![CDATA[### Highlights
+- Windows setup installer
+]]></description>
+      <enclosure url="%s/gvx-desktop-0.9.0.zip"
+        sparkle:os="%s" sparkle:arch="%s"
+        sparkle:edSignature="%s" sparkle:sha256="%s"
+        length="%d" type="application/octet-stream" />
+    </item>
+  </channel>
+</rss>`, srv.URL, feedOS, runtime.GOARCH, sig, shaHex, len(payload))
+		case "/gvx-desktop-0.9.0.zip":
+			_, _ = w.Write(payload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	oldVer := AppVersion
+	AppVersion = "0.8.0"
+	t.Cleanup(func() { AppVersion = oldVer })
+
+	oldQuit := quitApp
+	var quits atomic.Int32
+	quitApp = func() { quits.Add(1) }
+	t.Cleanup(func() { quitApp = oldQuit })
+
+	dir := t.TempDir()
+	set := store.DefaultSettings()
+	set.Language = LangEnglish
+	st := store.Store{Dir: dir}
+	_ = st.SaveSettings(set)
+	t.Cleanup(func() { SetLanguage(LangEnglish) })
+
+	ap := &testApplier{}
+	var m *Model
+	p := ggui.ProbeBuilder(func() ggui.Widget { return Build(m) }, ggui.Sz(1100, 760))
+	p.Setup(func() {
+		m = NewModel(st, dir)
+		m.AppUpdate.Set(AppUpdate{Install: appupdate.Install{Method: appupdate.Bundle}})
+		u, uerr := appupdate.NewUpdater(dir, AppVersion, appupdate.Install{Method: appupdate.Bundle},
+			appupdate.WithPublicKey(pub),
+			appupdate.WithFeedURL(srv.URL+"/appcast.xml"),
+			appupdate.WithAllowInsecureHTTP(true),
+			appupdate.WithApplier(ap),
+		)
+		if uerr != nil || u == nil {
+			t.Fatalf("NewUpdater: u=%v err=%v", u, uerr)
+		}
+		m.attachAppUpdater(u)
+		m.Attach(p)
+	})
+	defer p.Close()
+	p.Frame()
+
+	waitFor := func(cond func() bool, msg string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			p.Frame()
+			if cond() {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", msg)
+	}
+
+	// 1. Quiet check surfaces the Dashboard banner WITHOUT popping the modal dialog.
+	m.CheckAppUpdate(true)
+	waitFor(func() bool { return ggui.Peek(m.UpdateCtrl.Phase) == updater.PhaseAvailable }, "silent check available")
+	if ggui.Peek(m.UpdateCtrl.Open) {
+		t.Error("AutoOpenOnBackground=false: silent check should not open dialog")
+	}
+	if au := ggui.Peek(m.AppUpdate); au.Tag != "v0.9.0" || !au.Available() {
+		t.Errorf("AppUpdate not synced from UpdateCtrl: %+v", au)
+	}
+	if !strings.Contains(p.Semantics().String(), "GVX Desktop 0.9.0 is available") {
+		t.Error("Dashboard banner should show 0.9.0 after silent check")
+	}
+
+	// 2. External package manager resolution (Homebrew) shows copyable brew command in updater.Dialog.
+	m.AppUpdate.Update(func(au AppUpdate) AppUpdate { au.Install = appupdate.Install{Method: appupdate.Homebrew}; return au })
+	m.UpdateCtrl.CheckNow()
+	waitFor(func() bool { return ggui.Peek(m.UpdateCtrl.Phase) == updater.PhaseAvailable }, "homebrew manual check available")
+	p.Frame()
+	sem := p.Semantics().String()
+	if !strings.Contains(sem, "brew upgrade --cask gvx-desktop") {
+		t.Errorf("Homebrew updater dialog should show brew command:\n%s", sem)
+	}
+	if !strings.Contains(sem, "Copy command") {
+		t.Errorf("Homebrew updater dialog should show Copy command button:\n%s", sem)
+	}
+
+	// 3. Switch back to self-updating Bundle, download, and test BeforeInstall gate when sandboxes are running.
+	m.AppUpdate.Update(func(au AppUpdate) AppUpdate { au.Install = appupdate.Install{Method: appupdate.Bundle}; return au })
+	m.UpdateCtrl.CheckNow()
+	waitFor(func() bool { return ggui.Peek(m.UpdateCtrl.Phase) == updater.PhaseAvailable }, "bundle manual check available")
+	m.UpdateCtrl.Download()
+	waitFor(func() bool { return ggui.Peek(m.UpdateCtrl.Phase) == updater.PhaseReadyToInstall }, "download ready")
+	if !ggui.Peek(m.AppUpdate).Ready {
+		t.Error("AppUpdate.Ready should be true once verified")
+	}
+
+	// Simulate a running sandbox-engine container so BeforeInstall prompts for confirmation first.
+	m.EngineRunning.Set(1)
+	p.Frame()
+	m.UpdateCtrl.Install()
+	p.Frame()
+	if !ggui.Peek(m.ConfirmOpen) {
+		t.Fatal("BeforeInstall should ask confirmation when sandboxes are running")
+	}
+	if ap.applied.Load() != 0 {
+		t.Fatal("Apply ran before user confirmed stopping sandboxes")
+	}
+	// Cancel confirmation -> stays in PhaseReadyToInstall; clear running count and install directly.
+	m.ConfirmOpen.Set(false)
+	m.EngineRunning.Set(0)
+	p.Frame()
+	m.UpdateCtrl.Install()
+	waitFor(func() bool { return ap.applied.Load() == 1 && quits.Load() == 1 }, "apply and quit")
+}
+
+func TestAppUpdate404FallsBackToGitHubReleases(t *testing.T) {
+	pub, _, err := updater.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	oldVer := AppVersion
+	AppVersion = "0.8.0"
+	t.Cleanup(func() { AppVersion = oldVer })
+
+	var legacyCalls atomic.Int32
+	oldFetch := fetchLatestRelease
+	fetchLatestRelease = func(context.Context) (appupdate.Release, error) {
+		legacyCalls.Add(1)
+		return appupdate.Release{
+			Tag:  "v0.8.5",
+			Page: "https://github.com/ironpark/gvx-desktop/releases/tag/v0.8.5",
+		}, nil
+	}
+	t.Cleanup(func() { fetchLatestRelease = oldFetch })
+
+	dir := t.TempDir()
+	st := store.Store{Dir: dir}
+	set := store.DefaultSettings()
+	set.Language = LangEnglish
+	_ = st.SaveSettings(set)
+	t.Cleanup(func() { SetLanguage(LangEnglish) })
+
+	var m *Model
+	p := ggui.ProbeBuilder(func() ggui.Widget { return Build(m) }, ggui.Sz(1100, 760))
+	p.Setup(func() {
+		m = NewModel(st, dir)
+		m.AppUpdate.Set(AppUpdate{Install: appupdate.Install{Method: appupdate.Bundle}})
+		u, uerr := appupdate.NewUpdater(dir, AppVersion, appupdate.Install{Method: appupdate.Bundle},
+			appupdate.WithPublicKey(pub),
+			appupdate.WithFeedURL(srv.URL+"/appcast.xml"),
+			appupdate.WithAllowInsecureHTTP(true),
+		)
+		if uerr != nil || u == nil {
+			t.Fatalf("NewUpdater: u=%v err=%v", u, uerr)
+		}
+		m.attachAppUpdater(u)
+		m.Attach(p)
+	})
+	defer p.Close()
+	p.Frame()
+
+	// Manual check against 404 appcast.xml dismisses the updater modal and
+	// seamlessly falls back to the GitHub Releases API.
+	m.CheckAppUpdate(false)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		p.Frame()
+		if legacyCalls.Load() > 0 && ggui.Peek(m.AppUpdate).Tag == "v0.8.5" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if legacyCalls.Load() == 0 {
+		t.Fatal("expected HTTP 404 appcast to fall back to GitHub Releases API")
+	}
+	if ggui.Peek(m.UpdateCtrl.Open) {
+		t.Error("updater dialog should dismiss when falling back from 404")
+	}
+	if got := ggui.Peek(m.AppUpdate).Tag; got != "v0.8.5" {
+		t.Errorf("AppUpdate.Tag = %q, want v0.8.5", got)
+	}
+
+	// Quiet check against 404 appcast.xml also falls back silently.
+	m.AppUpdate.Update(func(au AppUpdate) AppUpdate { au.Tag = ""; return au })
+	before := legacyCalls.Load()
+	m.CheckAppUpdate(true)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		p.Frame()
+		if legacyCalls.Load() > before && ggui.Peek(m.AppUpdate).Tag == "v0.8.5" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if legacyCalls.Load() <= before {
+		t.Fatal("expected quiet HTTP 404 appcast to fall back to GitHub Releases API")
 	}
 }

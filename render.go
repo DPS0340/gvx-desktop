@@ -267,6 +267,16 @@ func renderAll(tmp, out, lang string) error {
 		}},
 		{"docker", func(m *ui.Model) {
 			m.BuildxStatus.Set(ui.BuildxStatus{Checked: true, Ready: true, Selected: true})
+			m.BundledDocker.Set(ui.BundledDockerState{
+				Available:  true,
+				HasBuildx:  true,
+				HasCompose: true,
+				Using:      true,
+				CLIPath:    demoHome + "/.gvx/bin/docker",
+				BinDir:     demoHome + "/.gvx/bin",
+				Profile:    demoHome + "/.zshrc",
+				InPATH:     false,
+			})
 			m.Page.Set(ui.PageDocker)
 		}},
 		{"docker-compat", func(m *ui.Model) {
@@ -595,6 +605,16 @@ func demoState(m *ui.Model, now time.Time) {
 	// up for the cluster.
 	m.DockerLink.State.Set(ui.CLIContext{Checked: true, CLI: "/opt/homebrew/bin/docker", Exists: true, Host: m.DockerHost(),
 		Current: "desktop-linux", Contexts: []string{"default", "desktop-linux", ui.DockerContextName}})
+	m.BundledDocker.Set(ui.BundledDockerState{
+		Available:  true,
+		HasBuildx:  true,
+		HasCompose: true,
+		Using:      false,
+		CLIPath:    demoHome + "/.gvx/bin/docker",
+		BinDir:     demoHome + "/.gvx/bin",
+		Profile:    demoHome + "/.zshrc",
+		InPATH:     false,
+	})
 	m.KubeLink.State.Set(ui.CLIContext{Checked: true, CLI: "/opt/homebrew/bin/kubectl", Current: "kind-dev", Contexts: []string{"kind-dev"}})
 	m.DockerVersion.Set(dockerapi.Version{Version: "29.9.3", APIVersion: "1.56", OS: "linux", Arch: "arm64", KernelVersion: "4.19.0-gvisor"})
 	m.Amd64Check.Set(ui.Amd64CheckState{

@@ -933,6 +933,7 @@ func (m *Model) UpdateSettings(fn func(*store.Settings)) {
 	}
 	if s.DockerPath != before.DockerPath {
 		m.CheckLink(m.DockerLink)
+		m.refreshBundledDockerState()
 		if s.SandboxEngine {
 			m.syncSandboxBuilder(true)
 			if s.Amd64Builds {

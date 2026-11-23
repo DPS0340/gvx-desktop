@@ -82,6 +82,14 @@ Install-ChocolateyZipPackage \`
 # The program has a window: the shim Chocolatey makes for it must not wait
 # for it to end.
 New-Item "\$exe.gui" -ItemType File -Force | Out-Null
+# Keep Chocolatey from auto-shimming the bundled Docker CLI binaries onto the
+# global PATH; the app manages ~/.gvx/bin and optional user PATH entries itself.
+foreach (\$rel in @('bin\\docker.exe', 'cli-plugins\\docker-buildx.exe', 'cli-plugins\\docker-compose.exe')) {
+  \$bundled = Join-Path \$toolsDir \$rel
+  if (Test-Path \$bundled) {
+    New-Item "\$bundled.ignore" -ItemType File -Force | Out-Null
+  }
+}
 
 \$shortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) "\$app.lnk"
 Install-ChocolateyShortcut -ShortcutFilePath \$shortcut -TargetPath \$exe -Description 'Run and manage gvx sandboxes'

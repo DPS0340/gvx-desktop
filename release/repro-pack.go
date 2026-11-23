@@ -6,7 +6,7 @@
 //
 // Usage:
 //
-//	go run ./release/repro-pack.go zip EPOCH OUT.zip FILE [FILE...]
+//	go run ./release/repro-pack.go zip EPOCH OUT.zip DIR_OR_FILE [FILE...]
 //	go run ./release/repro-pack.go tar EPOCH OUT.tar.gz TREE_DIR
 package main
 
@@ -68,10 +68,10 @@ func packZip(outPath string, srcFiles []string, mtime time.Time) (err error) {
 		src  string
 		mode fs.FileMode
 	}
-	entries := make([]zipEntry, 0, len(srcFiles))
-	seen := make(map[string]bool, len(srcFiles))
-	for _, src := range srcFiles {
-		name := filepath.Base(src)
+	var entries []zipEntry
+	seen := make(map[string]bool)
+	addEntry := func(name, src string) error {
+		name = filepath.ToSlash(name)
 		if seen[name] {
 			return fmt.Errorf("duplicate zip entry %q", name)
 		}
@@ -81,6 +81,38 @@ func packZip(outPath string, srcFiles []string, mtime time.Time) (err error) {
 			mode = 0o755
 		}
 		entries = append(entries, zipEntry{name: name, src: src, mode: mode})
+		return nil
+	}
+	for _, src := range srcFiles {
+		fi, err := os.Stat(src)
+		if err != nil {
+			return err
+		}
+		if fi.IsDir() {
+			err = filepath.WalkDir(src, func(p string, d fs.DirEntry, werr error) error {
+				if werr != nil {
+					return werr
+				}
+				if d.IsDir() {
+					return nil
+				}
+				if !d.Type().IsRegular() {
+					return fmt.Errorf("unsupported non-regular zip entry %s", p)
+				}
+				rel, err := filepath.Rel(src, p)
+				if err != nil {
+					return err
+				}
+				return addEntry(rel, p)
+			})
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if err := addEntry(filepath.Base(src), src); err != nil {
+			return err
+		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 
@@ -124,7 +156,10 @@ type tarEntry struct {
 }
 
 func modeFor(rel string) fs.FileMode {
-	if path.Dir(rel) == "usr/bin" {
+	dir := path.Dir(rel)
+	if dir == "usr/bin" ||
+		(strings.HasSuffix(dir, "/bin") && strings.HasPrefix(dir, "usr/lib/")) ||
+		(strings.HasSuffix(dir, "/cli-plugins") && strings.HasPrefix(dir, "usr/lib/")) {
 		return 0o755
 	}
 	return 0o644

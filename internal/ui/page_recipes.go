@@ -13,6 +13,7 @@ import (
 	"github.com/ironpark/ggui/ui/icons"
 	"github.com/ironpark/ggui/widget"
 
+	"github.com/ironpark/gvx-desktop/internal/dockercli"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
@@ -325,10 +326,43 @@ func displayDockerHost(host string) string {
 func dockerCLICard(m *Model) ggui.Widget {
 	return ui.Card(
 		ui.CardHeader(tr("Use it from a terminal"), tr("docker on this machine reaches the engine through a context named gvx.")),
-		ui.CardContent(linkPanel(m, m.DockerLink, func(v LinkView) []ggui.Widget {
-			return dockerCommands(m, v, copyable(m, "docker run --rm -p 9000:80 nginx:alpine", tr("example")))
-		})),
+		ui.CardContent(widget.Column(
+			bundledDockerBanner(m),
+			linkPanel(m, m.DockerLink, func(v LinkView) []ggui.Widget {
+				return dockerCommands(m, v, copyable(m, "docker run --rm -p 9000:80 nginx:alpine", tr("example")))
+			}),
+		).Gap(8).Stretch()),
 	)
+}
+
+func bundledDockerBanner(m *Model) ggui.Widget {
+	return ggui.View(m.BundledDocker, func(s BundledDockerState) ggui.Widget {
+		if !s.Available || !s.Using {
+			return widget.Box()
+		}
+		bin := tildePath(s.BinDir)
+		prof := tildePath(s.Profile)
+		title := widget.Text(tr("Bundled Docker CLI (%s)", s.ToolsList())).Size(13).Weight(ggui.WeightMedium)
+		if s.InPATH {
+			return widget.Box(widget.Row(
+				widget.Padding(glyph(lucide.CircleCheck, 16).Color(colorGreen), 1, 0, 0, 0),
+				widget.Expanded(widget.Column(
+					title,
+					ui.Caption(tr("Available in terminals via %s.", bin)).Size(12),
+				).Gap(3).Stretch()),
+			).Gap(10).Align(widget.AlignStart)).Pad(12).Radius(8).Border(1, colorBorder)
+		}
+		return widget.Box(widget.Row(
+			widget.Padding(glyph(lucide.Terminal, 16).Color(colorBlue), 1, 0, 0, 0),
+			widget.Expanded(widget.Column(
+				title,
+				ui.Caption(tr("Add %s to %s to run docker from any new terminal.", bin, prof)).Size(12),
+				widget.Padding(widget.Row(
+					ui.Button(tr("Add to PATH"), m.AddBundledDockerToPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy),
+				), 4, 0, 0, 0),
+			).Gap(3).Stretch()),
+		).Gap(10).Align(widget.AlignStart)).Pad(12).Radius(8).Border(1, colorBorder)
+	})
 }
 
 // dockerCommands are the commands that set the gvx context up by hand, with
@@ -338,10 +372,14 @@ func dockerCommands(m *Model, v LinkView, extra ...ggui.Widget) []ggui.Widget {
 	if v.C.Exists {
 		verb = "update"
 	}
-	out := []ggui.Widget{
+	var out []ggui.Widget
+	if bd := ggui.Peek(m.BundledDocker); bd.Available && bd.Using && !bd.InPATH {
+		out = append(out, copyable(m, dockercli.ManualPathCommand(), tr("PATH")))
+	}
+	out = append(out,
 		copyable(m, "docker context "+verb+" gvx --docker host="+v.Want, "docker context "+verb),
 		copyable(m, "docker context use gvx", "docker context use"),
-	}
+	)
 	out = append(out, extra...)
 	return append(out, copyable(m, "docker context use "+v.Back, tr("switch back")))
 }

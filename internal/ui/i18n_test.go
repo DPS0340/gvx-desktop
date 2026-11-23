@@ -136,6 +136,51 @@ func appKeys(t *testing.T) map[string]key {
 	for _, k := range []string{"System", "Light", "Dark"} {
 		keys[k] = key{at: "a theme"}
 	}
+	for _, k := range []string{
+		"Software Update",
+		"Application",
+		"Check whether a newer version of %s is available.",
+		"Check for Updates",
+		"Checking for updates…",
+		"Looking for the latest version of %s.",
+		"%s is currently the newest version available.",
+		"%s %s is currently the newest version available.",
+		"You're up to date!",
+		"OK",
+		"A new version of %s is available!",
+		"Critical",
+		"%s %s is now available — you have %s.",
+		"%s %s is now available.",
+		"No release notes were provided for this version.",
+		"View full release notes",
+		"Automatically check for updates",
+		"Skip This Version",
+		"Remind Me Later",
+		"Open release page",
+		"Install Update",
+		"Downloading %s…",
+		"Downloading %s %s…",
+		"Ready to Install",
+		"Verified",
+		"%s %s has been downloaded and verified. Click below to install and relaunch.",
+		"%s %s has been downloaded. Click below to install and relaunch.",
+		"The update for %s has been downloaded and verified. Click below to install and relaunch.",
+		"The update for %s has been downloaded. Click below to install and relaunch.",
+		"Later",
+		"Install and Relaunch",
+		"Installing update…",
+		"%s will restart shortly.",
+		"An unexpected error occurred while updating.",
+		"Update Failed",
+		"Starting download…",
+		"Signature verified.",
+		"Download complete.",
+		"Verifying signature…",
+		"Downloaded %s",
+		"Downloading…",
+	} {
+		keys[k] = key{at: "ggui/updater"}
+	}
 	return keys
 }
 

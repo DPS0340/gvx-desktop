@@ -14,6 +14,7 @@ import (
 	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/recipes"
+	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
@@ -117,8 +118,8 @@ func dockerPage(m *Model) ggui.Widget {
 			dockerImagesSummary(m),
 		).Gap(10).Stretch(),
 		widget.Responsive(900,
-			widget.Row(widget.Flex(dockerCLICard(m), 1), widget.Flex(dockerNotesCard(), 1)).Gap(16).Stretch(),
-			widget.Column(dockerCLICard(m), dockerNotesCard()).Gap(16).Stretch(),
+			widget.Row(widget.Flex(dockerCLICard(m), 1), widget.Flex(dockerNotesCard(m), 1)).Gap(16).Stretch(),
+			widget.Column(dockerCLICard(m), dockerNotesCard(m)).Gap(16).Stretch(),
 		),
 	)
 }
@@ -339,17 +340,23 @@ func linkButton(m *Model, l *Link, v LinkView) *ui.ButtonWidget {
 	return b.Size(ui.ButtonSmall).Disabled(v.C.Busy)
 }
 
-func dockerNotesCard() ggui.Widget {
+func dockerNotesCard(m *Model) ggui.Widget {
 	note := func(title, text string) ggui.Widget {
 		return widget.Column(widget.Text(title).Size(13).Weight(ggui.WeightMedium), ui.Caption(text)).Gap(2)
 	}
+	limitsText := ggui.Map(m.RungvFeatures, func(f rungv.Features) string {
+		if f.KeepBlobs {
+			return tr("docker run -m and --cpus are enforced, and docker stats reports per-container BLOCK I/O.")
+		}
+		return tr("docker run -m and --cpus are enforced; BLOCK I/O reads 0B because the guest has no io controller.")
+	})
 	return ui.Card(
 		ui.CardHeader(tr("Good to know"), tr("Limits that come from running dockerd in a user-space kernel.")),
 		ui.CardContent(widget.Column(
 			note(tr("Paths in docker run -v"), tr("A -v path names a path in the sandbox. The folders shared in Settings → Docker, your home folder unless you changed them, are at the same paths there, so -v and compose bind mounts of what is in them work; bind mounts outside them are rejected.")),
 			note(tr("Ports"), tr("A port a container publishes reaches this computer at 127.0.0.1 under the same number once the container listens on it, unless something here has that port. The container's Connect tab says which.")),
 			note(tr("Architecture"), tr("The engine runs images for this CPU (linux/%s) natively.", goarch())),
-			note(tr("Limits"), tr("docker run -m and --cpus are enforced; BLOCK I/O reads 0B because the guest has no io controller.")),
+			widget.Column(widget.Text(tr("Limits")).Size(13).Weight(ggui.WeightMedium), ui.CaptionOf(limitsText)).Gap(2),
 		).Gap(10).Stretch()),
 	)
 }

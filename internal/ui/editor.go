@@ -36,7 +36,7 @@ func editorActionOf(st sandbox.State, active sandbox.Spec, hasActive bool, edite
 		running:      true,
 		control:      st.Control,
 		dynamicPorts: st.DynamicPorts,
-		bindAttach:   st.BindAttach,
+		bindAttach:   st.BindAttach || st.LiveMounts,
 		netQoS:       st.NetQoS,
 		natPolicy:    st.NATPolicy,
 	}
@@ -131,6 +131,10 @@ func editorSheet(m *Model) ggui.Widget {
 			Help(tr("Replaces the image's CMD and keeps its ENTRYPOINT. Quote words as in a shell.")),
 	).Gap(14).Stretch()
 
+	network := d.Field(func(x *Draft) *string { return &x.Network })
+	isWG := ggui.Map(network, func(n string) bool { return n == "wg" })
+	isNAT := ggui.Map(network, func(n string) bool { return n == "nat" || n == "" })
+
 	ports := widget.Column(
 		ui.Field(tr("Published ports"), ui.TextField(str(func(x *Draft) *string { return &x.Ports })).Multiline().Lines(3).
 			Placeholder("8080:80\n127.0.0.1:9000-9019:9000-9019\nunix:~/.gvx/app.sock:3000").Name(tr("Published ports"))).
@@ -138,6 +142,16 @@ func editorSheet(m *Model) ggui.Widget {
 		ui.Field(tr("Unix socket forwards"), ui.TextField(str(func(x *Draft) *string { return &x.UnixForwards })).Multiline().Lines(2).
 			Placeholder("/var/run/app.sock=~/.gvx/app.sock").Name(tr("Unix socket forwards"))).
 			Help(tr("One per line: GUEST_PATH=HOST_SOCKET[,uid=N,gid=N,mode=0600]. Relays a guest Unix socket to a host socket under lockdown (rungv v0.21+).")),
+		ggui.If(isNAT, func() ggui.Widget {
+			return widget.Column(
+				ui.Field(tr("Auto-publish bind address"), ui.TextField(str(func(x *Draft) *string { return &x.AutoPublishAddr })).
+					Placeholder("127.0.0.1").Name(tr("Auto-publish bind address"))).
+					Help(tr("Host IP for --auto-publish, such as 0.0.0.0. Leave empty for 127.0.0.1 only (requires -auto-publish and rungv v0.21+).")),
+				ui.Field(tr("Allowed live port addresses"), ui.TextField(str(func(x *Draft) *string { return &x.DynamicPortAddrs })).Multiline().Lines(2).
+					Placeholder("0.0.0.0\n192.168.1.10").Name(tr("Allowed live port addresses"))).
+					Help(tr("IP literals, one per line or comma-separated, allowed for live port publishing under lockdown (rungv v0.21+).")),
+			).Gap(14).Stretch()
+		}),
 	).Gap(14).Stretch()
 
 	workspace := str(func(x *Draft) *string { return &x.Workspace })
@@ -168,9 +182,6 @@ func editorSheet(m *Model) ggui.Widget {
 		Placeholder("KEY=value\nHTTP_PROXY").Name(tr("Environment variables"))).
 		Help(tr("KEY=value per line. KEY alone copies the variable from this machine."))
 
-	network := d.Field(func(x *Draft) *string { return &x.Network })
-	isWG := ggui.Map(network, func(n string) bool { return n == "wg" })
-	isNAT := ggui.Map(network, func(n string) bool { return n == "nat" || n == "" })
 	netSec := widget.Column(
 		ui.Field(tr("Network"), ui.ToggleGroup(network).Options([]string{"nat", "none", "wg"}).Format(func(s string) string {
 			switch s {

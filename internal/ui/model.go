@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -242,6 +243,10 @@ type Model struct {
 	// DockerProxyErr is the last listener error from the app's Docker API
 	// proxy, or empty when listening normally.
 	DockerProxyErr *ggui.StateValue[string]
+	// DockerExposeLAN mirrors Settings.DockerExposeLAN for reactive UI bindings.
+	DockerExposeLAN *ggui.StateValue[bool]
+	// DockerSSHAgent mirrors Settings.DockerSSHAgent for reactive UI bindings.
+	DockerSSHAgent *ggui.StateValue[bool]
 	// DockerLink and KubeLink are the contexts docker and kubectl on this
 	// machine reach the recipes' engines through.
 	DockerLink, KubeLink *Link
@@ -350,6 +355,9 @@ type Model struct {
 	dockerProxyStarted                         bool
 	dockerBackend                              string // overrides recipes.DockerBackendHost() in tests
 	engineSpec                                 atomic.Pointer[sandbox.Spec]
+	engineLiveMounts                           atomic.Bool
+	dockerExposeLAN                            atomic.Bool
+	dockerSSHAgent                             atomic.Bool
 	sandboxEngine                              sandboxEngine // in-app Docker Engine API (*engine.Engine); tests may replace
 	sandboxEngineGen                           int
 	amd64Gen                                   int
@@ -420,6 +428,8 @@ func NewModel(st store.Store, dataDir string) *Model {
 		DockerContainers:  ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
 		DockerVersion:     ggui.State(dockerapi.Version{}),
 		DockerProxyErr:    ggui.State(""),
+		DockerExposeLAN:   ggui.State(settings.DockerExposeLAN),
+		DockerSSHAgent:    ggui.State(settings.DockerSSHAgent),
 		ContainerQuery:    ggui.State(""),
 		SelectedContainer: ggui.State(""),
 		ContainerDetail:   ggui.State(0),
@@ -513,6 +523,8 @@ func NewModel(st store.Store, dataDir string) *Model {
 		runVMHelper:      defaultRunVMHelper,
 		forwarder:        forwardThroughCluster,
 	}
+	m.dockerExposeLAN.Store(settings.DockerExposeLAN)
+	m.dockerSSHAgent.Store(settings.DockerSSHAgent)
 	ggui.OnCleanup(m.Toasts.Close)
 	m.nodes = &nodenet.Network{Dir: filepath.Join(dataDir, "nodes"), Client: m.Client}
 	m.sup = &sandbox.Supervisor{
@@ -623,7 +635,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 				running:      run,
 				control:      run && st.Control,
 				dynamicPorts: run && st.DynamicPorts,
-				bindAttach:   run && st.BindAttach,
+				bindAttach:   run && (st.BindAttach || st.LiveMounts),
 				netQoS:       run && st.NetQoS,
 				natPolicy:    run && st.NATPolicy,
 			}
@@ -1078,6 +1090,16 @@ func (m *Model) StartSandbox(id string) {
 		m.toastError(tr("The engine is not ready"), errors.New(engineProblem(ggui.Peek(m.Engine))))
 		return
 	}
+	if spec.Recipe == recipes.Docker {
+		if refreshed, changed := m.syncDockerRecipeSpec(spec); changed {
+			spec = refreshed
+			specs := slices.Clone(ggui.Peek(m.Specs))
+			if i := slices.IndexFunc(specs, func(s sandbox.Spec) bool { return s.ID == spec.ID }); i >= 0 {
+				specs[i] = spec
+				m.saveSpecs(specs)
+			}
+		}
+	}
 	if err := m.sup.Start(spec); err != nil {
 		m.toastError(tr("Could not start %s", spec.Name), err)
 		return
@@ -1093,6 +1115,27 @@ func (m *Model) StartSandbox(id string) {
 	}
 	m.refreshStates()
 	m.LoadVolumes()
+}
+
+// syncDockerRecipeSpec refreshes the Docker Engine sandbox spec from current
+// LAN-port and SSH-agent settings before starting (for example updating a
+// rotated macOS SSH_AUTH_SOCK path after reboot).
+func (m *Model) syncDockerRecipeSpec(spec sandbox.Spec) (sandbox.Spec, bool) {
+	set := ggui.Peek(m.Settings)
+	updated := spec
+	if set.DockerExposeLAN && recipes.DockerAutoPublishAddr(updated) == "" {
+		if !sandbox.HasAutoPublish(updated) {
+			updated = sandbox.WithAutoPublish(updated, true)
+		}
+		updated = recipes.WithDockerAutoPublishAddr(updated, "0.0.0.0")
+	}
+	if set.DockerSSHAgent {
+		updated = recipes.WithSSHAgentForward(updated, os.Getenv("SSH_AUTH_SOCK"))
+	}
+	if updated.Equal(spec) {
+		return spec, false
+	}
+	return updated, true
 }
 
 // startWithApp starts what starts with the app: the sandboxes set to, and
@@ -1496,7 +1539,14 @@ func (m *Model) CreateFromRecipe(key string) {
 	var spec sandbox.Spec
 	switch key {
 	case recipes.Docker:
-		spec = recipes.WithSharedFolders(recipes.DockerEngine(), sharedSetting(ggui.Peek(m.Settings)))
+		set := ggui.Peek(m.Settings)
+		spec = recipes.WithSharedFolders(recipes.DockerEngine(), sharedSetting(set))
+		if set.DockerExposeLAN {
+			spec = recipes.WithDockerAutoPublishAddr(spec, "0.0.0.0")
+		}
+		if set.DockerSSHAgent {
+			spec = recipes.WithSSHAgentForward(spec, os.Getenv("SSH_AUTH_SOCK"))
+		}
 	case recipes.Kubernetes:
 		spec = recipes.KubernetesNodeWith(ggui.Peek(m.Settings).K3sServiceLB)
 	case recipes.Registry:

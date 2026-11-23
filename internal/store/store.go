@@ -71,6 +71,13 @@ type Settings struct {
 	// with Rosetta (experimental, macOS on Apple silicon; meaningful only
 	// with SandboxEngine on).
 	Amd64Builds bool `json:"amd64Builds,omitempty"`
+	// DockerExposeLAN publishes container ports on 0.0.0.0 (all interfaces)
+	// instead of loopback 127.0.0.1 only (opt-in; defaults to false).
+	DockerExposeLAN bool `json:"docker_expose_lan,omitempty"`
+	// DockerSSHAgent forwards the host SSH_AUTH_SOCK into Docker containers
+	// at /run/host-services/ssh-auth.sock via rungv v0.21+ --unix-forward
+	// (opt-in; defaults to false).
+	DockerSSHAgent bool `json:"docker_ssh_agent,omitempty"`
 }
 
 // Equal makes Settings comparable for signals, which a list in it keeps

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
+	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
@@ -153,6 +154,7 @@ func containersTable(m *Model) ggui.Widget {
 		}
 	}
 	engine := engineSpecOf(m)
+	liveMounts := dockerLiveMountsOf(m)
 	// As tall as its rows up to six, as the sandboxes' table is.
 	return ui.Table(rows, containerRow.key,
 		ui.Col(tr("Status"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
@@ -161,12 +163,15 @@ func containersTable(m *Model) ggui.Widget {
 			return ggui.View(ggui.Map(r, func(row containerRow) []dockerapi.Container { return row.Members }).WithEqual(nil), projectStatusLabel)
 		})).W(150),
 		ui.Col(tr("Name"), cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
-			unshared := ggui.Derived(func() []dockerapi.Mount {
+			unshared := ggui.Derived(func() unsharedView {
 				if m.Settings.Get().SandboxEngine {
-					return nil
+					return unsharedView{}
 				}
-				return unsharedBinds(r.Get(), engine.Get())
-			}).WithEqual(slices.Equal[[]dockerapi.Mount])
+				return unsharedView{
+					binds: unsharedBinds(r.Get(), engine.Get()),
+					live:  liveMounts.Get(),
+				}
+			}).WithEqual(unsharedView.equal)
 			name := widget.Row(
 				widget.Flexible(widget.Column(
 					widget.TextOf(ggui.Map(r, dockerapi.Container.Name)).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
@@ -510,6 +515,24 @@ func engineSpecOf(m *Model) ggui.Readable[sandbox.Spec] {
 	}).WithEqual(sandbox.Spec.Equal)
 }
 
+// dockerLiveMountsOf reports whether shared-folder changes apply live to the
+// Docker Engine without restarting (v0.21+ bind attach or Windows mount serve).
+func dockerLiveMountsOf(m *Model) ggui.Readable[bool] {
+	row := recipeRow(m, recipes.Docker)
+	return ggui.Combine(row, m.RungvFeatures, func(r Row, f rungv.Features) bool {
+		return r.State.BindAttach || r.State.LiveMounts || f.BindAttach || f.KeepBlobs
+	})
+}
+
+type unsharedView struct {
+	binds []dockerapi.Mount
+	live  bool
+}
+
+func (u unsharedView) equal(o unsharedView) bool {
+	return u.live == o.live && slices.Equal(u.binds, o.binds)
+}
+
 // unsharedBinds are a container's bind mounts that look like folders of
 // this computer the engine does not share, which dockerd made empty
 // folders in the sandbox.
@@ -525,22 +548,25 @@ func unsharedBinds(c dockerapi.Container, engine sandbox.Spec) []dockerapi.Mount
 
 // unsharedWhy says what a bind mount of a folder the engine does not share
 // does, and what to do.
-func unsharedWhy(src string) string {
+func unsharedWhy(src string, liveMounts bool) string {
+	if liveMounts {
+		return tr("%s is not in a folder shared with the Docker Engine, so the container sees an empty folder there. Share it in Settings → Docker and create the container again.", src)
+	}
 	return tr("%s is not in a folder shared with the Docker Engine, so the container sees an empty folder there. Share it in Settings → Docker, restart the engine, and create the container again.", src)
 }
 
 // unsharedMark warns of a container's bind mounts of folders the engine
 // does not share, or is nothing.
-func unsharedMark(binds []dockerapi.Mount) ggui.Widget {
-	if len(binds) == 0 {
+func unsharedMark(v unsharedView) ggui.Widget {
+	if len(v.binds) == 0 {
 		return widget.Box()
 	}
-	return tip(glyph(lucide.TriangleExclamationPoint, 13).Color(colorAmber), unsharedWhy(binds[0].Source))
+	return tip(glyph(lucide.TriangleExclamationPoint, 13).Color(colorAmber), unsharedWhy(v.binds[0].Source, v.live))
 }
 
 // containerBinds lists a container's bind mounts, warning of those of
 // folders the engine does not share (in Docker Engine sandbox mode).
-func containerBinds(c dockerapi.Container, engine sandbox.Spec, sandboxEngine bool) []ggui.Widget {
+func containerBinds(c dockerapi.Container, engine sandbox.Spec, sandboxEngine bool, liveMounts ggui.Readable[bool]) []ggui.Widget {
 	binds := c.Binds()
 	if len(binds) == 0 {
 		return nil
@@ -561,8 +587,10 @@ func containerBinds(c dockerapi.Container, engine sandbox.Spec, sandboxEngine bo
 		mark := glyph(lucide.Folder, 14).Color(colorGray)
 		row := []ggui.Widget{mark, widget.Expanded(ui.Mono(label).Size(12).NoWrap().Ellipsis())}
 		if slices.Contains(unshared, b) {
+			src := b.Source
 			row[0] = glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber)
-			parts = append(parts, widget.Row(row...).Gap(10).Align(widget.AlignCenter), ui.Caption(unsharedWhy(b.Source)))
+			parts = append(parts, widget.Row(row...).Gap(10).Align(widget.AlignCenter),
+				ui.CaptionOf(ggui.Map(liveMounts, func(live bool) string { return unsharedWhy(src, live) })))
 			continue
 		}
 		parts = append(parts, widget.Row(row...).Gap(10).Align(widget.AlignCenter))
@@ -625,7 +653,7 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 		parts = append(parts, ui.Caption(tr("No ports are published. Publish one with docker run -p 9000:80.")))
 	}
 	parts = append(parts, containerNetworks(m, c, se)...)
-	parts = append(parts, containerBinds(c, engine.Spec, se)...)
+	parts = append(parts, containerBinds(c, engine.Spec, se, dockerLiveMountsOf(m))...)
 	name := c.Name()
 	parts = append(parts,
 		sectionTitle(tr("Commands"), tr("For a terminal where docker uses the gvx context.")),

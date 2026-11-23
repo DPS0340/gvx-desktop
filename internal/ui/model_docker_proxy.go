@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -121,8 +122,17 @@ func (m *Model) initDockerProxy(dataDir string) {
 		KeepImages:       m.sandboxKeepImages,
 		BuilderSocketDir: recipes.EngineSocketDir(),
 		DockerSocket:     recipes.DockerSocket(),
+		AllowLANPorts:    m.dockerExposeLAN.Load,
+		SSHAuthSock:      m.sandboxSSHAuthSock,
 	})
 	ggui.OnCleanup(m.CloseDockerProxy)
+}
+
+func (m *Model) sandboxSSHAuthSock() string {
+	if !m.dockerSSHAgent.Load() {
+		return ""
+	}
+	return os.Getenv("SSH_AUTH_SOCK")
 }
 
 func (m *Model) syncKeepImages(specs []sandbox.Spec) {
@@ -364,17 +374,24 @@ func (m *Model) syncEngineSpec(rows []Row) {
 		if r.Spec.Recipe != recipes.Docker {
 			continue
 		}
+		live := r.State.Status.Active() && (r.State.BindAttach || r.State.LiveMounts)
 		if m.sup != nil {
+			if st := m.sup.State(r.Spec.ID); st.Status.Active() {
+				live = st.BindAttach || st.LiveMounts
+			}
 			if active, ok := m.sup.ActiveSpec(r.Spec.ID); ok {
 				m.engineSpec.Store(&active)
+				m.engineLiveMounts.Store(live)
 				return
 			}
 		}
 		c := r.Spec.Clone()
 		m.engineSpec.Store(&c)
+		m.engineLiveMounts.Store(live)
 		return
 	}
 	m.engineSpec.Store(nil)
+	m.engineLiveMounts.Store(false)
 }
 
 // startDockerProxy binds the Docker API proxy listener for the configured
@@ -421,18 +438,25 @@ func (m *Model) checkContainerCreate(_ *http.Request, body []byte) error {
 		return nil
 	}
 	spec := *sp
+	live := m.engineLiveMounts.Load()
 	if m.sup != nil {
 		if active, ok := m.sup.ActiveSpec(spec.ID); ok {
 			spec = active
+			st := m.sup.State(spec.ID)
+			live = st.BindAttach || st.LiveMounts
 		}
 	}
-	return checkCreateBinds(body, spec)
+	return checkCreateBindsLive(body, spec, live)
 }
 
 // checkCreateBinds rejects a POST /containers/create body that bind-mounts a
 // host path outside the folders shared with engine. Unparsable bodies pass
 // through untouched so dockerd returns its own error.
 func checkCreateBinds(body []byte, engine sandbox.Spec) error {
+	return checkCreateBindsLive(body, engine, false)
+}
+
+func checkCreateBindsLive(body []byte, engine sandbox.Spec, liveMounts bool) error {
 	var req struct {
 		HostConfig *struct {
 			Binds  []string `json:"Binds"`
@@ -451,7 +475,7 @@ func checkCreateBinds(body []byte, engine sandbox.Spec) error {
 			continue
 		}
 		if recipes.UnsharedBind(src, engine) {
-			return unsharedBindError(src)
+			return unsharedBindError(src, liveMounts)
 		}
 	}
 	for _, m := range req.HostConfig.Mounts {
@@ -459,13 +483,16 @@ func checkCreateBinds(body []byte, engine sandbox.Spec) error {
 			continue
 		}
 		if recipes.UnsharedBind(m.Source, engine) {
-			return unsharedBindError(m.Source)
+			return unsharedBindError(m.Source, liveMounts)
 		}
 	}
 	return nil
 }
 
-func unsharedBindError(path string) error {
+func unsharedBindError(path string, liveMounts bool) error {
+	if liveMounts {
+		return fmt.Errorf("%s is not in a folder shared with the Docker Engine. Share it in GVX Desktop → Settings → Docker and run this again.", path)
+	}
 	return fmt.Errorf("%s is not in a folder shared with the Docker Engine. Share it in GVX Desktop → Settings → Docker, restart the engine, and run this again.", path)
 }
 

@@ -401,6 +401,9 @@ func dockerSettings(m *Model) ggui.Widget {
 		).Gap(8).Align(widget.AlignStart)
 	})
 
+	exposeLAN := ggui.Bind(m.DockerExposeLAN.Get, m.SetDockerExposeLAN)
+	sshAgent := ggui.Bind(m.DockerSSHAgent.Get, m.SetDockerSSHAgent)
+
 	return settingsGroup(dockerIcon, "Docker",
 		widget.Column(
 			settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Row(
@@ -432,6 +435,16 @@ func dockerSettings(m *Model) ggui.Widget {
 			proxyErr,
 		).Gap(6).Stretch(),
 		sharedFoldersField(m),
+		settingRow(
+			tr("Publish container ports on local network (0.0.0.0)"),
+			tr("Published container ports default to 127.0.0.1 only. Turning this on binds ports on 0.0.0.0, exposing them to other devices on your local network (requires rungv v0.21+ for Docker Engine)."),
+			ui.Switch(exposeLAN, "").Name(tr("Publish container ports on local network (0.0.0.0)")),
+		),
+		settingRow(
+			tr("Forward host SSH agent"),
+			tr("Relays this machine's SSH_AUTH_SOCK to /run/host-services/ssh-auth.sock for containers that mount it. Requires rungv v0.21+."),
+			ui.Switch(sshAgent, "").Name(tr("Forward host SSH agent")),
+		),
 		dockerConfigField(m),
 	)
 }
@@ -892,7 +905,7 @@ func sharedFoldersField(m *Model) ggui.Widget {
 			return widget.Column(rows...).Gap(6).Stretch()
 		})
 		caption := ui.CaptionOf(ggui.Map(m.RungvFeatures, func(f rungv.Features) string {
-			if f.BindAttach && runtime.GOOS != "windows" {
+			if f.BindAttach || f.KeepBlobs {
 				return tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. Changes apply live to a running engine without restarting.")
 			}
 			return tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. The engine sees a change when it is restarted.")

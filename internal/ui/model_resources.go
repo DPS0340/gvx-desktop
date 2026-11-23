@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
@@ -501,8 +502,9 @@ func (m *Model) SharedFolders() []string {
 
 // SetSharedFolders changes the folders the Docker Engine shares, in the
 // settings and in the engine's sandbox when there is one. With rungv v0.21+
-// bind attach on Unix, changes apply live to a running engine; otherwise the
-// engine keeps what it started with until restarted.
+// live mounts (bind attach on Unix or rpcfs mount serve on Windows), changes
+// apply live to a running engine; otherwise the engine keeps what it started
+// with until restarted.
 func (m *Model) SetSharedFolders(folders []string) {
 	folders = append([]string{}, folders...) // empty, not nil: none, not the default
 	m.UpdateSettings(func(s *store.Settings) { s.DockerSharedFolders = folders })
@@ -523,7 +525,7 @@ func (m *Model) SetSharedFolders(folders []string) {
 		specs[i] = desiredSpec
 		m.saveSpecs(specs)
 		if st.Status.Active() {
-			if st.BindAttach && hasActive {
+			if (st.BindAttach || st.LiveMounts) && hasActive {
 				add, remove := recipes.SharedFolderDiff(activeSpec, desiredSpec)
 				if len(add) > 0 || len(remove) > 0 {
 					id := spec.ID
@@ -549,6 +551,93 @@ func (m *Model) SetSharedFolders(folders []string) {
 				tr("It sees the folders it started with until then.")).Duration(8 * time.Second))
 		}
 		return
+	}
+}
+
+// SetDockerExposeLAN toggles opt-in LAN port publishing (0.0.0.0) versus
+// loopback-only (127.0.0.1) in settings and in the Docker Engine sandbox spec
+// when one exists.
+func (m *Model) SetDockerExposeLAN(on bool) {
+	before := ggui.Peek(m.Settings).DockerExposeLAN
+	m.UpdateSettings(func(s *store.Settings) { s.DockerExposeLAN = on })
+	addr := ""
+	if on {
+		addr = "0.0.0.0"
+	}
+	specs := slices.Clone(ggui.Peek(m.Specs))
+	for i, spec := range specs {
+		if spec.Recipe != recipes.Docker {
+			continue
+		}
+		updated := spec
+		if on && !sandbox.HasAutoPublish(updated) {
+			updated = sandbox.WithAutoPublish(updated, true)
+		}
+		updated = recipes.WithDockerAutoPublishAddr(updated, addr)
+		changed := !updated.Equal(spec)
+		if changed {
+			specs[i] = updated
+			m.saveSpecs(specs)
+		}
+		st := m.sup.State(spec.ID)
+		if !st.Status.Active() && m.Offline {
+			st = ggui.Peek(m.States)[spec.ID]
+		}
+		if st.Status.Active() && (changed || before != on) {
+			if ggui.Peek(m.Settings).SandboxEngine {
+				m.Toasts.Push(ui.Toast(tr("LAN port publishing updated"),
+					tr("New sandbox-engine containers use this setting immediately; restart the Docker Engine sandbox if you switch back to it.")).Duration(8 * time.Second))
+			} else {
+				m.Toasts.Push(ui.Toast(tr("Restart the Docker Engine to apply the change"),
+					tr("The new port bind address applies on the next start of the Docker Engine.")).Duration(8 * time.Second))
+			}
+		}
+		return
+	}
+}
+
+// SetDockerSSHAgent toggles opt-in host SSH agent forwarding in settings and
+// in the Docker Engine sandbox spec when one exists.
+func (m *Model) SetDockerSSHAgent(on bool) {
+	before := ggui.Peek(m.Settings).DockerSSHAgent
+	m.UpdateSettings(func(s *store.Settings) { s.DockerSSHAgent = on })
+	hostSock := ""
+	if on {
+		hostSock = strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK"))
+	}
+	dockerRunning := false
+	changed := false
+	specs := slices.Clone(ggui.Peek(m.Specs))
+	for i, spec := range specs {
+		if spec.Recipe != recipes.Docker {
+			continue
+		}
+		updated := recipes.WithSSHAgentForward(spec, hostSock)
+		if !updated.Equal(spec) {
+			specs[i] = updated
+			m.saveSpecs(specs)
+			changed = true
+		}
+		st := m.sup.State(spec.ID)
+		if !st.Status.Active() && m.Offline {
+			st = ggui.Peek(m.States)[spec.ID]
+		}
+		dockerRunning = st.Status.Active()
+		break
+	}
+	if on && hostSock == "" {
+		m.Toasts.Push(ui.Toast(tr("SSH_AUTH_SOCK is not set"),
+			tr("Start an SSH agent and set SSH_AUTH_SOCK so containers can use /run/host-services/ssh-auth.sock.")).Warning().Duration(8 * time.Second))
+		return
+	}
+	if dockerRunning && (changed || before != on) {
+		if ggui.Peek(m.Settings).SandboxEngine {
+			m.Toasts.Push(ui.Toast(tr("SSH agent forwarding updated"),
+				tr("New sandbox-engine containers use this setting immediately; restart the Docker Engine sandbox if you switch back to it.")).Duration(8 * time.Second))
+		} else {
+			m.Toasts.Push(ui.Toast(tr("Restart the Docker Engine to apply the change"),
+				tr("SSH agent forwarding applies when the Docker Engine starts next.")).Duration(8 * time.Second))
+		}
 	}
 }
 
@@ -827,6 +916,14 @@ func (m *Model) UpdateSettings(fn func(*store.Settings)) {
 	s := ggui.Peek(m.Settings)
 	before := s
 	fn(&s)
+	m.dockerExposeLAN.Store(s.DockerExposeLAN)
+	m.dockerSSHAgent.Store(s.DockerSSHAgent)
+	if ggui.Peek(m.DockerExposeLAN) != s.DockerExposeLAN {
+		m.DockerExposeLAN.Set(s.DockerExposeLAN)
+	}
+	if ggui.Peek(m.DockerSSHAgent) != s.DockerSSHAgent {
+		m.DockerSSHAgent.Set(s.DockerSSHAgent)
+	}
 	m.Settings.Set(s)
 	if err := m.store.SaveSettings(s); err != nil {
 		m.toastError(tr("Could not save settings"), err)
@@ -1016,6 +1113,31 @@ func lines(s string) []string {
 	return out
 }
 
+// splitAddrList splits newline- or comma-separated IP literals, ignoring empty
+// items and comment lines starting with '#'.
+func splitAddrList(s string) []string {
+	var out []string
+	for _, line := range lines(s) {
+		for item := range strings.SplitSeq(line, ",") {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+	}
+	return out
+}
+
+func validateBareIPAddr(raw string) error {
+	addr, err := netip.ParseAddr(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	if addr.Zone() != "" {
+		return errors.New("IP address must not include a zone")
+	}
+	return nil
+}
+
 // parseMount splits SRC:/DST[:ro|rw], keeping colons in SRC such as a
 // Windows drive letter.
 func parseMount(line string) (src, dst string, ro bool, err error) {
@@ -1128,6 +1250,18 @@ func (d Draft) Spec() (sandbox.Spec, error) {
 	if err != nil {
 		return sandbox.Spec{}, err
 	}
+	autoPubAddr := strings.TrimSpace(d.AutoPublishAddr)
+	if autoPubAddr != "" {
+		if err := validateBareIPAddr(autoPubAddr); err != nil {
+			return sandbox.Spec{}, fmt.Errorf("Auto-publish address %q: must be a valid IP literal.", autoPubAddr)
+		}
+	}
+	dynAddrs := splitAddrList(d.DynamicPortAddrs)
+	for _, addr := range dynAddrs {
+		if err := validateBareIPAddr(addr); err != nil {
+			return sandbox.Spec{}, fmt.Errorf("Dynamic port bind address %q: must be a valid IP literal.", addr)
+		}
+	}
 	s := sandbox.Spec{
 		ID: d.ID, Name: strings.TrimSpace(d.Name), Image: strings.TrimSpace(d.Image),
 		Command: strings.TrimSpace(d.Command), Entrypoint: strings.TrimSpace(d.Entrypoint), SetEntrypoint: d.SetEntrypoint,
@@ -1135,7 +1269,7 @@ func (d Draft) Spec() (sandbox.Spec, error) {
 		Workspace: strings.TrimSpace(d.Workspace), WorkspaceRO: d.WorkspaceRO, RootfsVolume: strings.TrimSpace(d.RootfsVolume),
 		Memory: strings.TrimSpace(d.Memory), CPUs: strings.TrimSpace(d.CPUs), WGConf: strings.TrimSpace(d.WGConf), IsolateLAN: d.IsolateLAN,
 		NetTXBPS: tx, NetRXBPS: rx, NATPolicyFile: strings.TrimSpace(d.NATPolicyFile),
-		DynamicPortAddrs: lines(d.DynamicPortAddrs), AutoPublishAddr: strings.TrimSpace(d.AutoPublishAddr),
+		DynamicPortAddrs: dynAddrs, AutoPublishAddr: autoPubAddr,
 		Hostname: strings.TrimSpace(d.Hostname), User: strings.TrimSpace(d.User), Workdir: strings.TrimSpace(d.Workdir),
 		Unprivileged: !d.Privileged, HostCACerts: d.HostCACerts,
 		Checkpoint: d.Checkpoint, AutoStart: d.AutoStart, ReadyPattern: strings.TrimSpace(d.ReadyPattern),

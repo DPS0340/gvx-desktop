@@ -1208,6 +1208,8 @@ var simplifiedChinese = &i18n.Catalog{
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d container running":      {Other: "%d 个容器运行中"},
+		"%d sandbox running":        {Other: "%d 个沙盒运行中"},
+		"%d pod running":            {Other: "%d 个 Pod 运行中"},
 		"Removed %d unused volume.": {Other: "已移除 %d 个未使用卷。"},
 		"%d sandbox is running and will be stopped: sandboxes live only while the app runs.": {Other: "%d 个沙盒正在运行，将被停止：沙盒只在应用运行期间存在。"},
 		"%d layer": {Other: "%d 层"},

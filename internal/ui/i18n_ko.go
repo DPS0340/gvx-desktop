@@ -1210,6 +1210,8 @@ var korean = &i18n.Catalog{
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d container running":      {Other: "컨테이너 %d개 실행 중"},
+		"%d sandbox running":        {Other: "샌드박스 %d개 실행 중"},
+		"%d pod running":            {Other: "파드 %d개 실행 중"},
 		"Removed %d unused volume.": {Other: "미사용 볼륨 %d개를 제거했습니다."},
 		"%d sandbox is running and will be stopped: sandboxes live only while the app runs.": {Other: "샌드박스 %d개가 실행 중이며 중지됩니다. 샌드박스는 앱이 실행되는 동안에만 유지됩니다."},
 		"%d layer": {Other: "레이어 %d개"},

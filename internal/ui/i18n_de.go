@@ -1208,6 +1208,8 @@ var german = &i18n.Catalog{
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d container running":      {One: "%d Container läuft", Other: "%d Container laufen"},
+		"%d sandbox running":        {One: "%d Sandbox läuft", Other: "%d Sandboxes laufen"},
+		"%d pod running":            {One: "%d Pod läuft", Other: "%d Pods laufen"},
 		"Removed %d unused volume.": {One: "%d ungenutztes Volume entfernt.", Other: "%d ungenutzte Volumes entfernt."},
 		"%d sandbox is running and will be stopped: sandboxes live only while the app runs.": {One: "%d Sandbox läuft und wird gestoppt: Sandboxes bestehen nur, solange die App läuft.", Other: "%d Sandboxes laufen und werden gestoppt: Sandboxes bestehen nur, solange die App läuft."},
 		"%d layer": {One: "%d Ebene", Other: "%d Ebenen"},

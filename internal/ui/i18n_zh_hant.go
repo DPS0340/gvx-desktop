@@ -1196,6 +1196,8 @@ var traditionalChinese = &i18n.Catalog{
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d container running":      {Other: "%d 個容器執行中"},
+		"%d sandbox running":        {Other: "%d 個沙箱執行中"},
+		"%d pod running":            {Other: "%d 個 Pod 執行中"},
 		"Removed %d unused volume.": {Other: "已移除 %d 個未使用磁碟區。"},
 		"%d sandbox is running and will be stopped: sandboxes live only while the app runs.": {Other: "有 %d 個沙箱正在執行，將會停止：沙箱只會在 App 執行時存在。"},
 		"%d layer": {Other: "%d 個圖層"},

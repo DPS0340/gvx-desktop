@@ -1202,6 +1202,8 @@ var hindi = &i18n.Catalog{
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d container running":      {One: "%d कंटेनर चल रहा है", Other: "%d कंटेनर चल रहे हैं"},
+		"%d sandbox running":        {One: "%d सैंडबॉक्स चल रहा है", Other: "%d सैंडबॉक्स चल रहे हैं"},
+		"%d pod running":            {One: "%d पॉड चल रहा है", Other: "%d पॉड चल रहे हैं"},
 		"Removed %d unused volume.": {One: "%d अप्रयुक्त वॉल्यूम हटाया गया।", Other: "%d अप्रयुक्त वॉल्यूम हटाए गए।"},
 		"%d sandbox is running and will be stopped: sandboxes live only while the app runs.": {One: "%d सैंडबॉक्स चालू है और रोका जाएगा: सैंडबॉक्स केवल तब तक रहते हैं जब तक ऐप चलता है।", Other: "%d सैंडबॉक्स चालू हैं और रोके जाएँगे: सैंडबॉक्स केवल तब तक रहते हैं जब तक ऐप चलता है।"},
 		"%d layer": {One: "%d लेयर", Other: "%d लेयर"},

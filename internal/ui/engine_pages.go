@@ -158,21 +158,37 @@ func engineLogsView(m *Model, logs ggui.Readable[ContainerLogs], caption, empty 
 	return widget.Column(logViewer(m, lines, empty, actions...), status).Gap(8).Stretch()
 }
 
-// countBadge is a sidebar item's count, or nothing for none.
-func countBadge(n ggui.Readable[int]) ggui.Widget {
+// runningBadge is how many of a sidebar item's things run, or nothing for
+// none: a small green dot, as the lists mark what runs, and the number in
+// the muted color, which reads as a state rather than as news waiting to be
+// read, with the words in a tip.
+// words says it for n, with trn.
+func runningBadge(n ggui.Readable[int], words func(n int) string) ggui.Widget {
 	return ggui.View(n, func(n int) ggui.Widget {
 		if n == 0 {
 			return widget.Box()
 		}
-		return ui.Badge(itoa(n))
+		text := itoa(n)
+		if n > 99 {
+			text = "99+"
+		}
+		// A status dot and the number in the muted color, as modern sidebars
+		// count: no fill to read as news. The sidebar gives an action the room
+		// of a badge, 20 points wide, which two digits still fit.
+		count := widget.Row(
+			dot(colorGreen, 5),
+			widget.Text(text).Size(11).Weight(ggui.WeightMedium).Color(colorGray).NoWrap(),
+		).Gap(3).Align(widget.AlignCenter)
+		return tip(count, words(n))
 	})
 }
 
 // gatedItem is a sidebar item that leads into a recipe's engine: greyed
 // out while the engine is not running, with a mark at its end that says
 // why in a tip, as the sidebar tells the item's own Tooltip only on a
-// rail of icons; and a count of what runs while it is, if count is not nil.
-func gatedItem(item ui.SidebarEntry, why string, count ggui.Readable[int]) ui.SidebarEntry {
+// rail of icons; and how many of its things run while it is, if count is
+// not nil (runningBadge, with words).
+func gatedItem(item ui.SidebarEntry, why string, count ggui.Readable[int], words func(int) string) ui.SidebarEntry {
 	if why != "" {
 		return item.Disabled(true).Tooltip(why).
 			Action(tip(widget.Box(glyph(lucide.PowerOff, 14).Color(colorGray)).Pad(3), why))
@@ -180,7 +196,7 @@ func gatedItem(item ui.SidebarEntry, why string, count ggui.Readable[int]) ui.Si
 	if count == nil {
 		return item
 	}
-	return item.Action(countBadge(count))
+	return item.Action(runningBadge(count, words))
 }
 
 // poll runs load at once whenever every changes, as when an engine has

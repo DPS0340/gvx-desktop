@@ -149,9 +149,11 @@ func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 	}
 	// Containers and Pods lead into the recipes' engines, and are greyed
 	// out while those are not running.
-	containers := gatedItem(item(PageContainers, tr("Containers"), lucide.Boxes), noContainers, m.RunningContainers)
-	networks := gatedItem(item(PageNetworks, tr("Networks"), lucide.Network), noContainers, nil)
-	pods := gatedItem(item(PagePods, tr("Pods"), lucide.Hexagon), noPods, m.RunningPods)
+	containers := gatedItem(item(PageContainers, tr("Containers"), lucide.Boxes), noContainers, m.RunningContainers,
+		func(n int) string { return trn(n, "%d container running", "%d containers running") })
+	networks := gatedItem(item(PageNetworks, tr("Networks"), lucide.Network), noContainers, nil, nil)
+	pods := gatedItem(item(PagePods, tr("Pods"), lucide.Hexagon), noPods, m.RunningPods,
+		func(n int) string { return trn(n, "%d pod running", "%d pods running") })
 	brandTop := 4.0
 	if TitlebarHidden {
 		brandTop = 40 // room for the traffic lights
@@ -166,7 +168,7 @@ func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 
 	return ui.Sidebar(nav,
 		item(PageDashboard, tr("Dashboard"), lucide.LayoutDashboard),
-		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(countBadge(m.Running)),
+		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(runningBadge(m.Running, func(n int) string { return trn(n, "%d sandbox running", "%d sandboxes running") })),
 		containers,
 		networks,
 		pods,

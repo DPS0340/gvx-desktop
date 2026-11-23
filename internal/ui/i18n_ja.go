@@ -1204,6 +1204,8 @@ var japanese = &i18n.Catalog{
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d container running":      {Other: "コンテナ %d 個が実行中"},
+		"%d sandbox running":        {Other: "サンドボックス %d 個が実行中"},
+		"%d pod running":            {Other: "Pod %d 個が実行中"},
 		"Removed %d unused volume.": {Other: "未使用ボリュームを %d 個削除しました。"},
 		"%d sandbox is running and will be stopped: sandboxes live only while the app runs.": {Other: "%d 件のサンドボックスが実行中で、停止されます。サンドボックスはアプリの実行中だけ維持されます。"},
 		"%d layer": {Other: "%d レイヤー"},

@@ -183,22 +183,6 @@ func runningBadge(n ggui.Readable[int], words func(n int) string) ggui.Widget {
 	})
 }
 
-// gatedItem is a sidebar item that leads into a recipe's engine: greyed
-// out while the engine is not running, with a mark at its end that says
-// why in a tip, as the sidebar tells the item's own Tooltip only on a
-// rail of icons; and how many of its things run while it is, if count is
-// not nil (runningBadge, with words).
-func gatedItem(item ui.SidebarEntry, why string, count ggui.Readable[int], words func(int) string) ui.SidebarEntry {
-	if why != "" {
-		return item.Disabled(true).Tooltip(why).
-			Action(tip(widget.Box(glyph(lucide.PowerOff, 14).Color(colorGray)).Pad(3), why))
-	}
-	if count == nil {
-		return item
-	}
-	return item.Action(runningBadge(count, words))
-}
-
 // poll runs load at once whenever every changes, as when an engine has
 // just come up or stopped or a page that shows what it runs opens, and
 // tick every so often after, while every is not zero.

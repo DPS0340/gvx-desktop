@@ -10,6 +10,11 @@ import (
 var japanese = &i18n.Catalog{
 	Lang: "ja",
 	Messages: map[string]string{
+		"Labs":           "ラボ",
+		"Open Labs":      "ラボを開く",
+		"Sandbox engine": "サンドボックスエンジン",
+		"Experimental features to try before they are done.":                                                                        "完成前に試せる実験的な機能です。",
+		"These features are still being built. They may change or go away in an update, and turning one off undoes what it set up.": "まだ開発中の機能です。アップデートで変わったりなくなったりすることがあり、オフにするとその機能が設定したものは元に戻ります。",
 		"New sandbox":   "新しいサンドボックス",
 		"Edit %s":       "%s を編集",
 		"Cached images": "キャッシュ済みのイメージ",
@@ -242,7 +247,6 @@ var japanese = &i18n.Catalog{
 		"Limits that come from running dockerd in a user-space kernel.": "dockerd をユーザー空間カーネルで実行することによる制約です。",
 		"Paths in docker run -v": "docker run -v のパス",
 		"A -v path names a path in the sandbox, not on the host. Add a bind mount to the sandbox first (Edit → Storage), then use its guest path.": "-v のパスはホストではなくサンドボックス内のパスを指します。先にサンドボックスにバインドマウントを追加し (編集 → ストレージ)、そのゲスト側のパスを使ってください。",
-		"Host ports are fixed when the sandbox starts. Add more to the range in the sandbox settings and restart.":                                 "ホストのポートはサンドボックスの起動時に固定されます。サンドボックスの設定で範囲を広げてから再起動してください。",
 		"Architecture": "アーキテクチャ",
 		"The engine runs images for this CPU (linux/%s) natively.": "エンジンは、この CPU (linux/%s) 向けのイメージをネイティブに実行します。",
 		"Limits": "制限",
@@ -1014,7 +1018,6 @@ var japanese = &i18n.Catalog{
 		"Images shared with gvx's image cache.":                                                                  "gvx のイメージキャッシュと共有されているイメージです。",
 		"%d images · %s. Shared with gvx's image cache.":                                                         "%d 個のイメージ · %s。gvx のイメージキャッシュと共有されます。",
 		"Loading images…": "イメージを読み込み中…",
-		"Experimental":    "実験的機能",
 		"Run containers as sandboxes, without a Docker Engine": "Docker Engine なしでコンテナをサンドボックスとして実行",
 		"GVX Desktop answers the Docker API directly and runs each container as its own gvx sandbox. Takes effect immediately; turning it off stops those containers.":                                                          "GVX Desktop が Docker API に直接応答し、各コンテナを個別の gvx サンドボックスとして実行します。すぐに適用され、オフにするとそれらのコンテナは停止します。",
 		"Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.": "対応: docker run (-d, -i, -t, --rm)、build (BuildKit・Compose)、ps、logs、stop、start、rm、127.0.0.1 へのポート公開、ボリューム、バインドマウント、pull/images、コンテナ間ネットワーキング、複数サービスの Compose。",

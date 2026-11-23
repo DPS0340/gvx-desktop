@@ -58,9 +58,9 @@ func (s shot) live() bool {
 // long page whole.
 func (s shot) tall() bool {
 	return strings.HasSuffix(s.name, "-whole") ||
-		s.name == "settings-sandbox-engine" ||
-		s.name == "settings-amd64-builder" ||
-		s.name == "settings-amd64-requirements"
+		s.name == "labs-sandbox-engine" ||
+		s.name == "labs-amd64-builder" ||
+		s.name == "labs-amd64-requirements"
 }
 
 func renderAll(tmp, out, lang string) error {
@@ -264,20 +264,22 @@ func renderAll(tmp, out, lang string) error {
 		{"docker", func(m *ui.Model) { m.Page.Set(ui.PageDocker) }},
 		{"kubernetes", func(m *ui.Model) { m.Page.Set(ui.PageKubernetes); m.Forwards.Set(demoForwards()) }},
 		{"settings", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
+		// What is still experimental, under its own item above Settings.
+		{"labs-whole", func(m *ui.Model) { m.Page.Set(ui.PageLabs) }},
 		// The Docker Engine's daemon.json, as it starts when there is none.
 		{"settings-daemon-json", func(m *ui.Model) { m.Page.Set(ui.PageSettings); m.OpenDockerConfig() }},
 		// The whole page, down to the recipes' settings.
 		{"settings-whole", func(m *ui.Model) { m.Page.Set(ui.PageSettings) }},
 		// The engine shares no folder.
 		{"settings-unshared-whole", func(m *ui.Model) { m.SetSharedFolders(nil); m.Page.Set(ui.PageSettings) }},
-		// Experimental sandbox engine switch on, with the Docker section in view.
-		{"settings-sandbox-engine", func(m *ui.Model) {
+		// Labs with the sandbox engine on.
+		{"labs-sandbox-engine", func(m *ui.Model) {
 			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = true })
 			m.BuildxStatus.Set(ui.BuildxStatus{Checked: true, Ready: true, Selected: true})
-			m.Page.Set(ui.PageSettings)
+			m.Page.Set(ui.PageLabs)
 		}},
 		// Experimental amd64 builder switch on, with VM status, disk size and buildx node.
-		{"settings-amd64-builder", func(m *ui.Model) {
+		{"labs-amd64-builder", func(m *ui.Model) {
 			m.UpdateSettings(func(s *store.Settings) {
 				s.SandboxEngine = true
 				s.Amd64Builds = true
@@ -289,10 +291,10 @@ func renderAll(tmp, out, lang string) error {
 				Assets:    "1",
 				DiskBytes: 1_420_000_000,
 			})
-			m.Page.Set(ui.PageSettings)
+			m.Page.Set(ui.PageLabs)
 		}},
 		// Experimental amd64 builder with Rosetta missing and Install Rosetta offered.
-		{"settings-amd64-requirements", func(m *ui.Model) {
+		{"labs-amd64-requirements", func(m *ui.Model) {
 			m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = true })
 			m.BuildxStatus.Set(ui.BuildxStatus{Checked: true, Ready: true, Selected: true})
 			m.Amd64Check.Set(ui.Amd64CheckState{
@@ -304,7 +306,7 @@ func renderAll(tmp, out, lang string) error {
 					Rosetta:        vmhelper.RosettaNotInstalled,
 				},
 			})
-			m.Page.Set(ui.PageSettings)
+			m.Page.Set(ui.PageLabs)
 		}},
 		{"settings-source", func(m *ui.Model) {
 			m.UpdateSettings(func(s *store.Settings) {

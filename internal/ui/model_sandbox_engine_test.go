@@ -806,11 +806,14 @@ func TestSandboxEngineUIAndGating(t *testing.T) {
 	if !shows("How docker reaches GVX Desktop's sandbox engine") {
 		t.Errorf("on: Settings missing sandbox-engine Engine API caption:\n%s", p.Semantics())
 	}
+	// Labs has the switch, and the note on the engine still running.
+	m.Go(PageLabs)
+	p.Frame()
 	if !shows("Run containers as sandboxes, without a Docker Engine") {
-		t.Errorf("Settings page missing experimental switch:\n%s", p.Semantics())
+		t.Errorf("Labs page missing experimental switch:\n%s", p.Semantics())
 	}
 	if !shows("Your Docker Engine sandbox is still running") {
-		t.Errorf("Settings page missing running Docker Engine note:\n%s", p.Semantics())
+		t.Errorf("Labs page missing running Docker Engine note:\n%s", p.Semantics())
 	}
 
 	// Containers page opens, shows containers, and Terminal tab shows the
@@ -851,9 +854,9 @@ func TestSandboxEngineUIAndGating(t *testing.T) {
 		t.Errorf("Explorer Files tab missing unsupported message:\n%s", p.Semantics())
 	}
 
-	// Settings shows builder state (idle / running) and gvx-desktop builder status line.
+	// Labs shows builder state (idle / running) and gvx-desktop builder status line.
 	m.ExploreOpen.Set(false)
-	m.Go(PageSettings)
+	m.Go(PageLabs)
 	m.BuilderState.Set(engine.BuilderState{Status: engine.BuilderIdle})
 	m.BuildxStatus.Set(BuildxStatus{Checked: true, Ready: true, Selected: true})
 	p.Frame()

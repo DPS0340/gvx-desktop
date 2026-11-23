@@ -140,13 +140,9 @@ func TestTheContainersItemFollowsTheEngine(t *testing.T) {
 		m.States.Set(map[string]sandbox.State{docker.ID: {Status: s}})
 		p.Frame()
 	}
-	item := func() ggui.SemNode {
-		t.Helper()
-		n, ok := p.Semantics().Find(ggui.RoleTab, "Containers")
-		if !ok {
-			t.Fatalf("no Containers item:\n%s", p.Semantics())
-		}
-		return n
+	listed := func() bool {
+		_, ok := p.Semantics().Find(ggui.RoleTab, "Containers")
+		return ok
 	}
 	shows := func(text string) bool {
 		for _, n := range p.Semantics().All() {
@@ -159,8 +155,8 @@ func TestTheContainersItemFollowsTheEngine(t *testing.T) {
 
 	for _, s := range []sandbox.Status{sandbox.Stopped, sandbox.Starting, sandbox.Stopping, sandbox.Exited, sandbox.Failed} {
 		status(s)
-		if !item().Disabled {
-			t.Errorf("%v: the item is enabled", s)
+		if listed() {
+			t.Errorf("%v: the sidebar lists Containers", s)
 		}
 		m.Go(PageContainers)
 		if ggui.Peek(m.Page) == PageContainers {
@@ -169,22 +165,9 @@ func TestTheContainersItemFollowsTheEngine(t *testing.T) {
 		}
 	}
 
-	// Stopped, its tip tells why.
-	status(sandbox.Stopped)
-	why := ContainersStopped.Reason()
-	n := item()
-	p.Move(ggui.Pt(n.Rect.Origin.X+n.Rect.Size.W-12, n.Rect.Origin.Y+n.Rect.Size.H/2))
-	for range 30 {
-		p.Frame()
-	}
-	if !shows(why) {
-		t.Errorf("no tip saying %q over the item's mark:\n%s", why, p.Semantics())
-	}
-	p.Move(ggui.Pt(600, 400))
-
 	status(sandbox.Running)
-	if item().Disabled {
-		t.Fatal("running: the item is disabled")
+	if !listed() {
+		t.Fatalf("running: the sidebar does not list Containers:\n%s", p.Semantics())
 	}
 	m.DockerContainers.Set(Listing[dockerapi.Container]{Loaded: true, Items: []dockerapi.Container{
 		{ID: "3f2a9c1b7d4e5f60", Names: []string{"/web"}, Image: "nginx:alpine", State: "running"},

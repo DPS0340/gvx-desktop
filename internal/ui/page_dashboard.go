@@ -6,6 +6,7 @@ import (
 
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/icons/lucide"
+	"github.com/ironpark/ggui/icons/tabler"
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/ui/icons"
 	"github.com/ironpark/ggui/widget"
@@ -340,8 +341,12 @@ func recipeIcon(key string) *icons.Glyph {
 	case recipes.Registry:
 		return lucide.Warehouse
 	}
-	return lucide.Container
+	return dockerIcon
 }
+
+// dockerIcon is Docker's whale, for the Docker Engine and what is its;
+// lucide.Container stands for containers themselves.
+var dockerIcon = tabler.BrandDocker
 
 // recipeTitle is a recipe's name, in the app's words where it has some.
 func recipeTitle(r recipes.Recipe) string {

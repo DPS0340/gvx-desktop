@@ -54,7 +54,7 @@ func TestAmd64BuilderSwitchGatingAndRequirementsUI(t *testing.T) {
 		return n.Disabled
 	}
 
-	m.Go(PageSettings)
+	m.Go(PageLabs)
 	m.Amd64Check.Set(Amd64CheckState{
 		Checked: true,
 		Result: vmhelper.CheckResult{

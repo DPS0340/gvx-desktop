@@ -61,7 +61,7 @@ func imagesPage(m *Model) ggui.Widget {
 		ui.Tab(tr("GVX Sandboxes"), widget.Padding(gvxImagesView(m), 12, 0, 0, 0)).
 			Header(tabHeader(lucide.Box, tr("GVX Sandboxes"))),
 		ui.Tab("Docker Engine", widget.Padding(dockerImagesView(m), 12, 0, 0, 0)).
-			Header(tabHeader(lucide.Container, "Docker Engine")),
+			Header(tabHeader(dockerIcon, "Docker Engine")),
 	).Name(tr("Image sources"))
 	return page(header, tabs)
 }

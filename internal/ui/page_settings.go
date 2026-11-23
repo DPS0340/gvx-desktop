@@ -401,7 +401,7 @@ func dockerSettings(m *Model) ggui.Widget {
 		).Gap(8).Align(widget.AlignStart)
 	})
 
-	return settingsGroup(lucide.Container, "Docker",
+	return settingsGroup(dockerIcon, "Docker",
 		widget.Column(
 			settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Row(
 				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, Homebrew, Docker Desktop)")).Name(tr("docker path")).OnCommit(setPath)),
@@ -433,7 +433,6 @@ func dockerSettings(m *Model) ggui.Widget {
 		).Gap(6).Stretch(),
 		sharedFoldersField(m),
 		dockerConfigField(m),
-		sandboxEngineSettings(m),
 	)
 }
 
@@ -477,7 +476,7 @@ func dockerConfigDialog(m *Model) ggui.Widget {
 	)
 }
 
-// sandboxEngineSettings is the Experimental subsection under Settings → Docker.
+// sandboxEngineSettings is the sandbox engine's switch and notes, in Labs.
 func sandboxEngineSettings(m *Model) ggui.Widget {
 	enabled := ggui.Bind(func() bool { return m.Settings.Get().SandboxEngine }, m.SetSandboxEngine)
 	dockerRunning := ggui.Combine(m.Settings, m.Rows, func(s storeSettings, rows []Row) bool {
@@ -532,23 +531,16 @@ func sandboxEngineSettings(m *Model) ggui.Widget {
 		return widget.Box(widget.Column(rows...).Gap(6).Stretch()).Pad(10, 12).Radius(8).Fill(colorSurfaceInset).Border(1, colorBorder)
 	})
 	return widget.Column(
-		widget.Row(
-			glyph(lucide.FlaskConical, 14).Color(colorAmber),
-			widget.Text(tr("Experimental")).Size(14).Weight(ggui.WeightMedium),
-		).Gap(6).Align(widget.AlignCenter),
 		settingRow(tr("Run containers as sandboxes, without a Docker Engine"),
 			tr("GVX Desktop answers the Docker API directly and runs each container as its own gvx sandbox. Takes effect immediately; turning it off stops those containers."),
 			ui.Switch(enabled, "")),
 		notes,
 		builderStatus,
 		runningNote,
-		widget.Padding(ui.Divider(), 6, 0),
-		amd64BuilderSettings(m),
 	).Gap(8).Stretch()
 }
 
-// amd64BuilderSettings is the "amd64 builds with Rosetta" subsection under
-// Settings → Docker → Experimental.
+// amd64BuilderSettings is the "amd64 builds with Rosetta" switch, in Labs.
 func amd64BuilderSettings(m *Model) ggui.Widget {
 	enabled := ggui.Bind(func() bool { return m.Settings.Get().Amd64Builds }, m.SetAmd64Builds)
 	disabled := ggui.Combine(m.Settings, m.Amd64Check, func(s storeSettings, c Amd64CheckState) bool {

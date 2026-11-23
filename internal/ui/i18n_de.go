@@ -14,6 +14,11 @@ import (
 var german = &i18n.Catalog{
 	Lang: "de",
 	Messages: map[string]string{
+		"Labs":           "Labor",
+		"Open Labs":      "Labor öffnen",
+		"Sandbox engine": "Sandbox-Engine",
+		"Experimental features to try before they are done.":                                                                        "Experimentelle Funktionen zum Ausprobieren, bevor sie fertig sind.",
+		"These features are still being built. They may change or go away in an update, and turning one off undoes what it set up.": "Diese Funktionen sind noch in Arbeit. Sie können sich mit einem Update ändern oder wegfallen, und das Ausschalten macht rückgängig, was sie eingerichtet haben.",
 		"New sandbox":   "Neue Sandbox",
 		"Edit %s":       "%s bearbeiten",
 		"Cached images": "Zwischengespeicherte Images",
@@ -246,7 +251,6 @@ var german = &i18n.Catalog{
 		"Limits that come from running dockerd in a user-space kernel.": "Einschränkungen, die sich daraus ergeben, dass dockerd in einem Userspace-Kernel läuft.",
 		"Paths in docker run -v": "Pfade in docker run -v",
 		"A -v path names a path in the sandbox, not on the host. Add a bind mount to the sandbox first (Edit → Storage), then use its guest path.": "Ein -v-Pfad bezeichnet einen Pfad in der Sandbox, nicht auf dem Host. Fügen Sie der Sandbox zuerst einen Bind-Mount hinzu (Bearbeiten → Speicher) und verwenden Sie dann dessen Gast-Pfad.",
-		"Host ports are fixed when the sandbox starts. Add more to the range in the sandbox settings and restart.":                                 "Host-Ports stehen fest, sobald die Sandbox startet. Erweitern Sie den Bereich in den Sandbox-Einstellungen und starten Sie neu.",
 		"Architecture": "Architektur",
 		"The engine runs images for this CPU (linux/%s) natively.": "Die Engine führt Images für diese CPU (linux/%s) nativ aus.",
 		"Limits": "Limits",
@@ -1018,7 +1022,6 @@ var german = &i18n.Catalog{
 		"Images shared with gvx's image cache.":                                                                  "Images aus dem gemeinsamen Image-Cache von gvx.",
 		"%d images · %s. Shared with gvx's image cache.":                                                         "%d Images · %s. Wird mit dem Image-Cache von gvx geteilt.",
 		"Loading images…": "Images werden geladen…",
-		"Experimental":    "Experimentell",
 		"Run containers as sandboxes, without a Docker Engine": "Container als Sandboxes ohne Docker Engine ausführen",
 		"GVX Desktop answers the Docker API directly and runs each container as its own gvx sandbox. Takes effect immediately; turning it off stops those containers.":                                                          "GVX Desktop beantwortet die Docker-API direkt und führt jeden Container als eigene gvx-Sandbox aus. Wirkt sofort; beim Ausschalten werden diese Container gestoppt.",
 		"Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.": "Funktioniert: docker run (-d, -i, -t, --rm), build (BuildKit und Compose), ps, logs, stop, start, rm, Ports auf 127.0.0.1, Volumes, Bind-Mounts, pull/images, Netzwerke zwischen Containern und Compose mit mehreren Diensten.",

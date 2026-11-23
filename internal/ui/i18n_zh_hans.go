@@ -10,6 +10,11 @@ import (
 var simplifiedChinese = &i18n.Catalog{
 	Lang: "zh-Hans",
 	Messages: map[string]string{
+		"Labs":           "实验室",
+		"Open Labs":      "打开实验室",
+		"Sandbox engine": "沙盒引擎",
+		"Experimental features to try before they are done.":                                                                        "可在完成前抢先试用的实验性功能。",
+		"These features are still being built. They may change or go away in an update, and turning one off undoes what it set up.": "这些功能仍在开发中，可能会在更新中变更或移除；关闭某项功能会撤销它所做的设置。",
 		"New sandbox":   "新建沙盒",
 		"Edit %s":       "编辑 %s",
 		"Cached images": "缓存的镜像",
@@ -242,7 +247,6 @@ var simplifiedChinese = &i18n.Catalog{
 		"Limits that come from running dockerd in a user-space kernel.": "在用户空间内核中运行 dockerd 所带来的限制。",
 		"Paths in docker run -v": "docker run -v 中的路径",
 		"A -v path names a path in the sandbox, not on the host. Add a bind mount to the sandbox first (Edit → Storage), then use its guest path.": "-v 路径指的是沙盒内的路径，而不是主机上的路径。请先为沙盒添加绑定挂载（编辑 → 存储），再使用其客户机路径。",
-		"Host ports are fixed when the sandbox starts. Add more to the range in the sandbox settings and restart.":                                 "主机端口在沙盒启动时固定。请在沙盒设置中扩大范围，然后重启。",
 		"Architecture": "架构",
 		"The engine runs images for this CPU (linux/%s) natively.": "引擎以原生方式运行适用于此 CPU（linux/%s）的镜像。",
 		"Limits": "限制",
@@ -1018,7 +1022,6 @@ var simplifiedChinese = &i18n.Catalog{
 		"Images shared with gvx's image cache.":                                                                  "与 gvx 镜像缓存共享的镜像。",
 		"%d images · %s. Shared with gvx's image cache.":                                                         "%d 个镜像 · %s。与 gvx 的镜像缓存共享。",
 		"Loading images…": "正在加载镜像…",
-		"Experimental":    "实验性功能",
 		"Run containers as sandboxes, without a Docker Engine": "无需 Docker Engine，直接将容器作为沙盒运行",
 		"GVX Desktop answers the Docker API directly and runs each container as its own gvx sandbox. Takes effect immediately; turning it off stops those containers.":                                                          "GVX Desktop 直接响应 Docker API，并将每个容器作为独立的 gvx 沙盒运行。更改立即生效；关闭后会停止这些容器。",
 		"Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.": "已支持：docker run（-d、-i、-t、--rm）、build（BuildKit 与 Compose）、ps、logs、stop、start、rm、127.0.0.1 端口映射、卷、绑定挂载、pull/images、容器间网络以及多服务 Compose。",

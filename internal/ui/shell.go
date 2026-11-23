@@ -67,6 +67,8 @@ func build(m *Model) ggui.Widget {
 			return kubernetesPage(m)
 		case PageSettings:
 			return settingsPage(m)
+		case PageLabs:
+			return labsPage(m)
 		}
 		return dashboardPage(m)
 	})
@@ -122,9 +124,9 @@ func dragRegion(child ggui.Widget) ggui.Widget {
 	})
 }
 
-// sidebar is built again when the Containers or Pods item is enabled or
-// disabled, which a sidebar entry takes only as it is made; the sidebar
-// carries its highlight, hover and collapse across.
+// sidebar is built again when the Containers and Pods items come or go,
+// which a sidebar's entries are only as it is made; the sidebar carries its
+// highlight, hover and collapse across.
 func sidebar(m *Model) ggui.Widget {
 	access := ggui.Combine(m.ContainersAccess, m.PodsAccess, func(c ContainersAccess, p PodsAccess) [2]string {
 		return [2]string{c.Reason(), p.Reason()}
@@ -132,8 +134,9 @@ func sidebar(m *Model) ggui.Widget {
 	return ggui.View(access, func(why [2]string) ggui.Widget { return sidebarFor(m, why[0], why[1]) })
 }
 
-// sidebarFor is the sidebar with the Containers and Pods items greyed out
-// for the reasons given, or not for none.
+// sidebarFor is the sidebar without the Containers (and Networks) and Pods
+// items while there is a reason they cannot open: their engine is not
+// running.
 func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 	// The image registry has no page of its own: its entry opens its
 	// sandbox, or offers to set it up.
@@ -147,13 +150,31 @@ func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 	item := func(key, label string, g *icons.Glyph) ui.SidebarEntry {
 		return ui.SidebarItem(key, label).Leading(glyph(g, 16)).Tooltip(label)
 	}
-	// Containers and Pods lead into the recipes' engines, and are greyed
-	// out while those are not running.
-	containers := gatedItem(item(PageContainers, tr("Containers"), lucide.Boxes), noContainers, m.RunningContainers,
-		func(n int) string { return trn(n, "%d container running", "%d containers running") })
-	networks := gatedItem(item(PageNetworks, tr("Networks"), lucide.Network), noContainers, nil, nil)
-	pods := gatedItem(item(PagePods, tr("Pods"), lucide.Hexagon), noPods, m.RunningPods,
-		func(n int) string { return trn(n, "%d pod running", "%d pods running") })
+	// Containers, Networks and Pods lead into the recipes' engines, and are
+	// there only while those run.
+	entries := []ui.SidebarEntry{
+		item(PageDashboard, tr("Dashboard"), lucide.LayoutDashboard),
+		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(runningBadge(m.Running, func(n int) string { return trn(n, "%d sandbox running", "%d sandboxes running") })),
+	}
+	if noContainers == "" {
+		entries = append(entries,
+			item(PageContainers, tr("Containers"), lucide.Container).Action(runningBadge(m.RunningContainers,
+				func(n int) string { return trn(n, "%d container running", "%d containers running") })),
+			item(PageNetworks, tr("Networks"), lucide.Network))
+	}
+	if noPods == "" {
+		entries = append(entries, item(PagePods, tr("Pods"), lucide.Hexagon).Action(runningBadge(m.RunningPods,
+			func(n int) string { return trn(n, "%d pod running", "%d pods running") })))
+	}
+	entries = append(entries,
+		item(PageImages, tr("Images"), lucide.Layers),
+		item(PageVolumes, tr("Volumes"), lucide.HardDrive),
+		item(PageSnapshots, tr("Snapshots"), lucide.Camera),
+		ui.SidebarSection(tr("Recipes")),
+		item(PageDocker, "Docker Engine", dockerIcon),
+		item(PageKubernetes, "Kubernetes", lucide.ShipWheel),
+		item(navRegistry, tr("Image registry"), recipeIcon(recipes.Registry)),
+	)
 	brandTop := 4.0
 	if TitlebarHidden {
 		brandTop = 40 // room for the traffic lights
@@ -166,21 +187,11 @@ func sidebarFor(m *Model, noContainers, noPods string) ggui.Widget {
 		).Gap(1),
 	).Gap(10), brandTop, 12, 8, 12))
 
-	return ui.Sidebar(nav,
-		item(PageDashboard, tr("Dashboard"), lucide.LayoutDashboard),
-		item(PageSandboxes, tr("Sandboxes"), lucide.Box).Action(runningBadge(m.Running, func(n int) string { return trn(n, "%d sandbox running", "%d sandboxes running") })),
-		containers,
-		networks,
-		pods,
-		item(PageImages, tr("Images"), lucide.Layers),
-		item(PageVolumes, tr("Volumes"), lucide.HardDrive),
-		item(PageSnapshots, tr("Snapshots"), lucide.Camera),
-		ui.SidebarSection(tr("Recipes")),
-		item(PageDocker, "Docker Engine", lucide.Container),
-		item(PageKubernetes, "Kubernetes", lucide.ShipWheel),
-		item(navRegistry, tr("Image registry"), recipeIcon(recipes.Registry)),
-	).Header(brand).
-		FooterItems(item(PageSettings, tr("Settings"), lucide.Settings)).
+	return ui.Sidebar(nav, entries...).Header(brand).
+		FooterItems(
+			item(PageLabs, tr("Labs"), lucide.FlaskConical),
+			item(PageSettings, tr("Settings"), lucide.Settings),
+		).
 		Width(232).
 		Collapsible(ui.SidebarCollapseOffcanvas).BindCollapsed(m.SidebarNarrow).
 		Shortcut("cmd+b").Name(tr("Navigation")).
@@ -656,27 +667,28 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Icon(ic(lucide.Square)).Group(tr("Sandboxes")),
 			ui.CommandItem(tr("Pull image"), close(func() { m.OpenPull("") })).Icon(ic(lucide.Download)).Group(tr("Images")).Shortcut("cmd+shift+p").Keywords("download"),
 			ui.CommandItem(tr("Prune images"), close(m.AskPruneImages)).Icon(ic(lucide.Eraser)).Group(tr("Images")).Keywords("clean unused"),
-			ui.CommandItem(tr("Start Docker Engine"), close(func() { m.CreateFromRecipe(recipes.Docker); m.Go(PageDocker) })).Icon(ic(lucide.Container)).Group(tr("Recipes")).Keywords("dind dockerd"),
+			ui.CommandItem(tr("Start Docker Engine"), close(func() { m.CreateFromRecipe(recipes.Docker); m.Go(PageDocker) })).Icon(ic(dockerIcon)).Group(tr("Recipes")).Keywords("dind dockerd"),
 			ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Icon(ic(lucide.ShipWheel)).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
 			ui.CommandItem(tr("Start the image registry"), close(func() { m.CreateFromRecipe(recipes.Registry); m.OpenRecipe(recipes.Registry) })).Icon(ic(recipeIcon(recipes.Registry))).Group(tr("Recipes")).Keywords("registry push images cluster"),
 			ui.CommandItem(tr("Create volume"), close(func() { m.VolumeOpen.Set(true) })).Icon(ic(lucide.HardDrive)).Group(tr("Volumes")),
 			ui.CommandItem(tr("Prune volumes"), close(m.AskPruneVolumes)).Icon(ic(lucide.Eraser)).Group(tr("Volumes")).Keywords("clean unused"),
 			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Icon(ic(lucide.LayoutDashboard)).Group(tr("Go to")).Shortcut("cmd+1"),
 			ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Icon(ic(lucide.Box)).Group(tr("Go to")).Shortcut("cmd+2"),
-			ui.CommandItem(tr("Containers"), close(func() { m.Go(PageContainers) })).Icon(ic(lucide.Boxes)).Group(tr("Go to")).Shortcut("cmd+3").Keywords("docker ps").Disabled(!st.containers),
+			ui.CommandItem(tr("Containers"), close(func() { m.Go(PageContainers) })).Icon(ic(lucide.Container)).Group(tr("Go to")).Shortcut("cmd+3").Keywords("docker ps").Disabled(!st.containers),
 			ui.CommandItem(tr("Networks"), close(func() { m.Go(PageNetworks) })).Icon(ic(lucide.Network)).Group(tr("Go to")).Keywords("docker network ls").Disabled(!st.containers),
 			ui.CommandItem(tr("Remove unused networks"), close(m.AskPruneNetworks)).Icon(ic(lucide.Eraser)).Group(tr("Networks")).Keywords("docker network prune clean").Disabled(!st.containers),
 			ui.CommandItem(tr("Pods"), close(func() { m.GoKube(KubePods) })).Icon(ic(lucide.Hexagon)).Group(tr("Go to")).Shortcut("cmd+4").Keywords("kubectl get pods k8s").Disabled(!st.pods),
 			ui.CommandItem(tr("Workloads"), close(func() { m.GoKube(KubeWorkloads) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Keywords("k8s deployments statefulsets daemonsets jobs").Disabled(!st.pods),
 			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Icon(ic(lucide.Network)).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!st.pods),
 			ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Shortcut("cmd+5"),
-			ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Icon(ic(lucide.Container)).Group(tr("Go to")).Keywords("docker images rmi pull"),
+			ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Keywords("docker images rmi pull"),
 			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Icon(ic(lucide.HardDrive)).Group(tr("Go to")).Shortcut("cmd+6"),
 			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Icon(ic(lucide.Camera)).Group(tr("Go to")).Shortcut("cmd+7"),
-			ui.CommandItem("Docker Engine", close(func() { m.Go(PageDocker) })).Icon(ic(lucide.Container)).Group(tr("Go to")).Shortcut("cmd+8").Keywords("dockerd"),
+			ui.CommandItem("Docker Engine", close(func() { m.Go(PageDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Shortcut("cmd+8").Keywords("dockerd"),
 			ui.CommandItem("Kubernetes", close(func() { m.Go(PageKubernetes) })).Icon(ic(lucide.ShipWheel)).Group(tr("Go to")).Shortcut("cmd+9").Keywords("k3s k8s"),
 			ui.CommandItem(tr("Image registry"), close(m.OpenRegistry)).Icon(ic(recipeIcon(recipes.Registry))).Group(tr("Go to")).Keywords("registry"),
 			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Icon(ic(lucide.Settings)).Group(tr("Go to")).Shortcut("cmd+,"),
+			ui.CommandItem(tr("Labs"), close(func() { m.Go(PageLabs) })).Icon(ic(lucide.FlaskConical)).Group(tr("Go to")),
 			ui.CommandItem(tr("Refresh"), close(m.RefreshAll)).Icon(ic(lucide.RefreshCw)).Group(tr("App")).Shortcut("cmd+r"),
 			ui.CommandItem(tr("Toggle sidebar"), close(func() { m.SidebarNarrow.Set(!ggui.Peek(m.SidebarNarrow)) })).Icon(ic(lucide.PanelLeft)).Group(tr("App")).Shortcut("cmd+b").Keywords("navigation panel"),
 			ui.CommandItem(tr("Check for updates"), close(func() { m.CheckAppUpdate(false) })).Icon(ic(lucide.CircleFadingArrowUp)).Group(tr("App")).Keywords("update version release"),
@@ -732,7 +744,7 @@ func (m *Model) RefreshAll() {
 		m.LoadDockerNetworks()
 	case PagePods:
 		m.LoadPodLogs()
-	case PageSettings:
+	case PageLabs:
 		m.CheckAmd64()
 		m.refreshAmd64State()
 	}

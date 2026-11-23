@@ -209,13 +209,9 @@ func TestThePodsItemFollowsTheCluster(t *testing.T) {
 		m.States.Set(map[string]sandbox.State{k3s.ID: {Status: s}})
 		p.Frame()
 	}
-	item := func() ggui.SemNode {
-		t.Helper()
-		n, ok := p.Semantics().Find(ggui.RoleTab, "Pods")
-		if !ok {
-			t.Fatalf("no Pods item:\n%s", p.Semantics())
-		}
-		return n
+	listed := func() bool {
+		_, ok := p.Semantics().Find(ggui.RoleTab, "Pods")
+		return ok
 	}
 	shows := func(text string) bool {
 		for _, n := range p.Semantics().All() {
@@ -228,8 +224,8 @@ func TestThePodsItemFollowsTheCluster(t *testing.T) {
 
 	for _, s := range []sandbox.Status{sandbox.Stopped, sandbox.Starting, sandbox.Stopping, sandbox.Exited, sandbox.Failed} {
 		status(s)
-		if !item().Disabled {
-			t.Errorf("%v: the item is enabled", s)
+		if listed() {
+			t.Errorf("%v: the sidebar lists Pods", s)
 		}
 		m.Go(PagePods)
 		if ggui.Peek(m.Page) == PagePods {
@@ -238,21 +234,9 @@ func TestThePodsItemFollowsTheCluster(t *testing.T) {
 		}
 	}
 
-	// Starting, its tip tells why.
-	status(sandbox.Starting)
-	n := item()
-	p.Move(ggui.Pt(n.Rect.Origin.X+n.Rect.Size.W-12, n.Rect.Origin.Y+n.Rect.Size.H/2))
-	for range 30 {
-		p.Frame()
-	}
-	if why := PodsStarting.Reason(); !shows(why) {
-		t.Errorf("no tip saying %q over the item's mark:\n%s", why, p.Semantics())
-	}
-	p.Move(ggui.Pt(600, 400))
-
 	status(sandbox.Running)
-	if item().Disabled {
-		t.Fatal("running: the item is disabled")
+	if !listed() {
+		t.Fatalf("running: the sidebar does not list Pods:\n%s", p.Semantics())
 	}
 	// k3s has yet to answer.
 	m.PodsWaiting.Set(true)

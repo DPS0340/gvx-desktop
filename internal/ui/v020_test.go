@@ -692,8 +692,8 @@ func TestV020UIScreensAndGating(t *testing.T) {
 	m.EditorOpen.Set(false)
 	p.Frame()
 
-	// 3. Settings -> Docker -> Experimental notes for v0.20 vs v0.19.
-	m.Go(PageSettings)
+	// 3. Labs: the sandbox engine's notes for v0.20 vs v0.19.
+	m.Go(PageLabs)
 	p.Frame()
 	if !shows("Not yet supported: commit, export and diff.") {
 		t.Errorf("Settings v0.20 notes missing:\n%s", p.Semantics())

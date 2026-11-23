@@ -99,7 +99,7 @@ func dockerPage(m *Model) ggui.Widget {
 		return noticeBanner(lucide.FlaskConical, 0x3b82f6, false,
 			tr("Experimental sandbox engine is on"),
 			tr("Containers run directly as gvx sandboxes. The Docker Engine sandbox is not used while this mode is on."),
-			ui.Button(tr("Open Settings"), func() { m.Go(PageSettings) }).Outline(),
+			ui.Button(tr("Open Labs"), func() { m.Go(PageLabs) }).Outline(),
 		)
 	})
 
@@ -110,7 +110,7 @@ func dockerPage(m *Model) ggui.Widget {
 		sandboxBanner,
 		recipeHero(m, recipes.Docker, row, "docker:dind",
 			tr("An unmodified dockerd in one sandbox. Images and containers persist in the gvx-docker volume; the API is published on %s.", displayDockerHost(m.DockerHost())),
-			lucide.Container),
+			dockerIcon),
 		widget.Column(
 			sectionTitle(tr("Containers"), publishedPortsNote(m)),
 			containersSummary(m),
@@ -204,7 +204,7 @@ func containersSummary(m *Model) ggui.Widget {
 		return widget.Column(col...).Gap(2)
 	})
 	return ui.Card(widget.Row(
-		glyph(lucide.Boxes, 20).Color(colorGray),
+		glyph(lucide.Container, 20).Color(colorGray),
 		widget.Expanded(text),
 		ui.Button(tr("Open Containers"), func() { m.Go(PageContainers) }).Outline().Size(ui.ButtonSmall).
 			Icon(glyph(lucide.ArrowRight, 14)).BindDisabled(ggui.Not(m.ContainersOpen)),

@@ -67,7 +67,7 @@ func containersPage(m *Model) ggui.Widget {
 	})
 	body := ggui.View(state, func(s int) ggui.Widget {
 		empty := func(title, text string) *ui.EmptyWidget {
-			return ui.Empty(title, text).Media(glyph(lucide.Boxes, 32).Color(colorGray)).Outline()
+			return ui.Empty(title, text).Media(glyph(lucide.Container, 32).Color(colorGray)).Outline()
 		}
 		se := ggui.Peek(m.Settings).SandboxEngine
 		switch s {
@@ -101,7 +101,7 @@ func containersPage(m *Model) ggui.Widget {
 				m.LoadDocker()
 				m.LoadContainerLogs()
 			}).BindDisabled(ggui.Not(m.ContainersOpen)), tr("Refresh")),
-			ui.Button("Docker Engine", func() { m.Go(PageDocker) }).Outline().Icon(glyph(lucide.Container, 16)),
+			ui.Button("Docker Engine", func() { m.Go(PageDocker) }).Outline().Icon(glyph(dockerIcon, 16)),
 		),
 		body,
 	)
@@ -110,7 +110,7 @@ func containersPage(m *Model) ggui.Widget {
 // dockerGate words the Containers page while the engine does not run.
 func dockerGate() gateWords {
 	return gateWords{
-		recipe: recipes.Docker, page: PageDocker, icon: lucide.Boxes,
+		recipe: recipes.Docker, page: PageDocker, icon: lucide.Container,
 		openPage: tr("Open Docker page"),
 		notSetUp: [2]string{tr("The Docker Engine is not set up"),
 			tr("Set it up to run containers with the docker CLI on this machine. They show here while it runs.")},

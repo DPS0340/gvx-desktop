@@ -12,6 +12,11 @@ import "github.com/ironpark/ggui/i18n"
 var korean = &i18n.Catalog{
 	Lang: "ko",
 	Messages: map[string]string{
+		"Labs":           "실험실",
+		"Open Labs":      "실험실 열기",
+		"Sandbox engine": "샌드박스 엔진",
+		"Experimental features to try before they are done.":                                                                        "완성되기 전에 미리 써 볼 수 있는 실험적 기능입니다.",
+		"These features are still being built. They may change or go away in an update, and turning one off undoes what it set up.": "아직 만들고 있는 기능입니다. 업데이트에서 바뀌거나 없어질 수 있으며, 끄면 그 기능이 설정한 것을 되돌립니다.",
 		"New sandbox":   "새 샌드박스",
 		"Edit %s":       "%s 편집",
 		"Cached images": "캐시된 이미지",
@@ -244,7 +249,6 @@ var korean = &i18n.Catalog{
 		"Limits that come from running dockerd in a user-space kernel.": "사용자 공간 커널에서 dockerd를 실행하기 때문에 생기는 제약입니다.",
 		"Paths in docker run -v": "docker run -v의 경로",
 		"A -v path names a path in the sandbox, not on the host. Add a bind mount to the sandbox first (Edit → Storage), then use its guest path.": "-v 경로는 호스트가 아니라 샌드박스 안의 경로를 가리킵니다. 먼저 샌드박스에 바인드 마운트를 추가한 뒤(편집 → 저장소) 그 게스트 경로를 쓰세요.",
-		"Host ports are fixed when the sandbox starts. Add more to the range in the sandbox settings and restart.":                                 "호스트 포트는 샌드박스가 시작될 때 고정됩니다. 샌드박스 설정에서 범위를 넓히고 다시 시작하세요.",
 		"Architecture": "아키텍처",
 		"The engine runs images for this CPU (linux/%s) natively.": "엔진은 이 CPU(linux/%s)용 이미지를 네이티브로 실행합니다.",
 		"Limits": "제한",
@@ -1020,7 +1024,6 @@ var korean = &i18n.Catalog{
 		"Images shared with gvx's image cache.":                                                                  "gvx 이미지 캐시와 공유되는 이미지입니다.",
 		"%d images · %s. Shared with gvx's image cache.":                                                         "이미지 %d개 · %s. gvx 이미지 캐시와 공유됩니다.",
 		"Loading images…": "이미지를 불러오는 중…",
-		"Experimental":    "실험적 기능",
 		"Run containers as sandboxes, without a Docker Engine": "Docker Engine 없이 컨테이너를 샌드박스로 실행",
 		"GVX Desktop answers the Docker API directly and runs each container as its own gvx sandbox. Takes effect immediately; turning it off stops those containers.":                                                          "GVX Desktop이 Docker API에 직접 응답하고 각 컨테이너를 별도의 gvx 샌드박스로 실행합니다. 즉시 적용되며, 끄면 해당 컨테이너가 중지됩니다.",
 		"Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.": "지원됨: docker run(-d, -i, -t, --rm), build(BuildKit 및 Compose), ps, logs, stop, start, rm, 127.0.0.1 포트 게시, 볼륨, 바인드 마운트, pull/images, 컨테이너 간 네트워킹, 여러 서비스 Compose.",

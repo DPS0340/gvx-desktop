@@ -7,6 +7,7 @@ require (
 	github.com/ironpark/ggfx v0.0.0-20261122131222-c9829636a084
 	github.com/ironpark/ggui v0.7.0
 	github.com/ironpark/ggui/icons/lucide v0.0.0-20261123053605-264d84d8fdda
+	github.com/ironpark/ggui/icons/tabler v0.0.0-20261123053605-264d84d8fdda
 	github.com/ironpark/ggwd v0.0.0-20261120121552-0b5175d66b9d
 	github.com/ironpark/gostty v0.0.0-20261108124048-de82fbcca291
 	github.com/ironpark/gvx-desktop-vm v0.1.1

@@ -43,6 +43,9 @@ const (
 	PageDocker     = "docker"
 	PageKubernetes = "kubernetes"
 	PageSettings   = "settings"
+	// PageLabs holds what is still experimental, above Settings in the
+	// sidebar.
+	PageLabs = "labs"
 )
 
 // Engine is what the app knows of the rungv binary.
@@ -763,6 +766,7 @@ func (m *Model) Go(page string) {
 		m.LoadDisk()
 	case PageSettings:
 		m.LoadDisk()
+	case PageLabs:
 		m.CheckAmd64()
 		m.refreshAmd64State()
 	case PageDocker:

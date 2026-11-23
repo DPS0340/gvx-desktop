@@ -10,6 +10,11 @@ import (
 var hindi = &i18n.Catalog{
 	Lang: "hi",
 	Messages: map[string]string{
+		"Labs":           "लैब्स",
+		"Open Labs":      "लैब्स खोलें",
+		"Sandbox engine": "सैंडबॉक्स इंजन",
+		"Experimental features to try before they are done.":                                                                        "पूरी तरह तैयार होने से पहले आज़माने के लिए प्रायोगिक सुविधाएँ।",
+		"These features are still being built. They may change or go away in an update, and turning one off undoes what it set up.": "ये सुविधाएँ अभी बन रही हैं। किसी अपडेट में ये बदल सकती हैं या हट सकती हैं, और किसी को बंद करने पर उसके द्वारा किए गए बदलाव वापस हो जाते हैं।",
 		"New sandbox":   "नया सैंडबॉक्स",
 		"Edit %s":       "%s संपादित करें",
 		"Cached images": "कैश की गई इमेज",
@@ -242,7 +247,6 @@ var hindi = &i18n.Catalog{
 		"Limits that come from running dockerd in a user-space kernel.": "dockerd को यूज़र-स्पेस कर्नेल में चलाने से आने वाली सीमाएँ।",
 		"Paths in docker run -v": "docker run -v में पथ",
 		"A -v path names a path in the sandbox, not on the host. Add a bind mount to the sandbox first (Edit → Storage), then use its guest path.": "-v का पथ सैंडबॉक्स के अंदर का पथ बताता है, होस्ट का नहीं। पहले सैंडबॉक्स में बाइंड माउंट जोड़ें (संपादित करें → स्टोरेज), फिर उसका गेस्ट पथ उपयोग करें।",
-		"Host ports are fixed when the sandbox starts. Add more to the range in the sandbox settings and restart.":                                 "होस्ट पोर्ट सैंडबॉक्स शुरू होते समय तय हो जाते हैं। सैंडबॉक्स की सेटिंग्स में रेंज बढ़ाएँ और रीस्टार्ट करें।",
 		"Architecture": "आर्किटेक्चर",
 		"The engine runs images for this CPU (linux/%s) natively.": "इंजन इस CPU (linux/%s) की इमेज नेटिव रूप से चलाता है।",
 		"Limits": "सीमाएँ",
@@ -1012,7 +1016,6 @@ var hindi = &i18n.Catalog{
 		"Images shared with gvx's image cache.":                                                                  "gvx के इमेज कैश के साथ साझा की गई इमेज।",
 		"%d images · %s. Shared with gvx's image cache.":                                                         "%d इमेज · %s। gvx के इमेज कैश के साथ साझा किया गया।",
 		"Loading images…": "इमेज लोड हो रही हैं…",
-		"Experimental":    "प्रयोगात्मक",
 		"Run containers as sandboxes, without a Docker Engine": "Docker Engine के बिना कंटेनर को सैंडबॉक्स के रूप में चलाएँ",
 		"GVX Desktop answers the Docker API directly and runs each container as its own gvx sandbox. Takes effect immediately; turning it off stops those containers.":                                                          "GVX Desktop सीधे Docker API का उत्तर देता है और हर कंटेनर को उसके अपने gvx सैंडबॉक्स के रूप में चलाता है। यह तुरंत लागू होता है; बंद करने पर वे कंटेनर रुक जाते हैं।",
 		"Works: docker run (-d, -i, -t, --rm), build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.": "समर्थित: docker run (-d, -i, -t, --rm), build (BuildKit और Compose), ps, logs, stop, start, rm, 127.0.0.1 पर पोर्ट, वॉल्यूम, बाइंड माउंट, pull/images, कंटेनरों के बीच नेटवर्क और कई सर्विस वाला Compose।",

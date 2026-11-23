@@ -9,7 +9,7 @@ require (
 	github.com/ironpark/ggui/icons/lucide v0.0.0-20261122131439-63f16af0e037
 	github.com/ironpark/ggwd v0.0.0-20261120121552-0b5175d66b9d
 	github.com/ironpark/gostty v0.0.0-20261108124048-de82fbcca291
-	github.com/ironpark/gvx-desktop-vm v0.1.0
+	github.com/ironpark/gvx-desktop-vm v0.1.1
 	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0
 	golang.zx2c4.com/wireguard v0.0.0-20261024220952-b3bc704ef0ee

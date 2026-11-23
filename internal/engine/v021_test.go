@@ -446,6 +446,16 @@ func TestContainerUnixSocketBindMounts(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = lnCustom.Close() })
 
+	symlinkSock := filepath.Join(sockDir, "link.sock")
+	if err := os.Symlink(customSock, symlinkSock); err != nil {
+		t.Fatal(err)
+	}
+
+	regularFile := filepath.Join(sockDir, "not-a-socket")
+	if err := os.WriteFile(regularFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	hostDir := filepath.Join(sockDir, "data")
 	if err := os.MkdirAll(hostDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -483,6 +493,7 @@ func TestContainerUnixSocketBindMounts(t *testing.T) {
 				"Binds": []string{
 					"/var/run/docker.sock:/var/run/docker.sock",
 					customSock + ":/run/custom.sock",
+					symlinkSock + ":/run/link.sock",
 					hostDir + ":/data:ro",
 				},
 			},
@@ -505,6 +516,7 @@ func TestContainerUnixSocketBindMounts(t *testing.T) {
 		wantUF := []string{
 			"/var/run/docker.sock=" + dockerSock,
 			"/run/custom.sock=" + customSock,
+			"/run/link.sock=" + symlinkSock,
 		}
 		if !slices.Equal(spec.UnixForwards, wantUF) {
 			t.Errorf("spec.UnixForwards = %v, want %v", spec.UnixForwards, wantUF)
@@ -514,7 +526,7 @@ func TestContainerUnixSocketBindMounts(t *testing.T) {
 			t.Errorf("spec.Mounts = %+v, want only /data bind", spec.Mounts)
 		}
 
-		// docker inspect still reports all 3 binds in Mounts.
+		// docker inspect still reports all 4 binds in Mounts.
 		stIns, bIns := te.do(t, http.MethodGet, "/v1.52/containers/"+created.ID+"/json", nil)
 		if stIns != http.StatusOK {
 			t.Fatalf("inspect = %d %s", stIns, bIns)
@@ -523,8 +535,8 @@ func TestContainerUnixSocketBindMounts(t *testing.T) {
 			Mounts []MountPoint `json:"Mounts"`
 		}
 		_ = json.Unmarshal(bIns, &ins)
-		if len(ins.Mounts) != 3 {
-			t.Fatalf("inspect Mounts = %+v, want 3 entries", ins.Mounts)
+		if len(ins.Mounts) != 4 {
+			t.Fatalf("inspect Mounts = %+v, want 4 entries", ins.Mounts)
 		}
 		if ins.Mounts[0].Type != "bind" || ins.Mounts[0].Source != "/var/run/docker.sock" || ins.Mounts[0].Destination != "/var/run/docker.sock" {
 			t.Errorf("inspect Mounts[0] = %+v", ins.Mounts[0])
@@ -566,18 +578,73 @@ func TestContainerUnixSocketBindMounts(t *testing.T) {
 			t.Errorf("Container.Mounts = %+v, want 2 entries", c.Mounts)
 		}
 
-		// Missing DockerSocket path causes HostConfig.Mounts bind to return 400.
-		teMissing := newEnv(true, filepath.Join(sockDir, "does-not-exist.sock"))
-		stBad, bBad := teMissing.do(t, http.MethodPost, "/v1.52/containers/create?name=uf-missing", map[string]any{
-			"Image": "alpine:3.20",
-			"HostConfig": map[string]any{
-				"Mounts": []map[string]any{
-					{"Type": "bind", "Source": "/var/run/docker.sock", "Target": "/var/run/docker.sock"},
-				},
-			},
-		})
-		if stBad != http.StatusBadRequest {
-			t.Errorf("missing DockerSocket Mounts bind = %d %s, want 400", stBad, bBad)
+		// Missing DockerSocket (e.g. Docker API configured on TCP) and non-socket
+		// DockerSocket must NOT rewrite /var/run/docker.sock to DockerSocket.
+		for _, badCase := range []struct {
+			name string
+			path string
+		}{
+			{"missing", filepath.Join(sockDir, "does-not-exist.sock")},
+			{"regular_file", regularFile},
+		} {
+			t.Run("tcp_or_nonsocket_"+badCase.name, func(t *testing.T) {
+				teBad := newEnv(true, badCase.path)
+
+				// HostConfig.Binds: must never emit UnixForwards pointing at badCase.path.
+				stB, bB := teBad.do(t, http.MethodPost, "/v1.52/containers/create?name=uf-bad-bind", map[string]any{
+					"Image": "alpine:3.20",
+					"HostConfig": map[string]any{
+						"Binds": []string{"/var/run/docker.sock:/var/run/docker.sock"},
+					},
+				})
+				if stB != http.StatusCreated {
+					t.Fatalf("create Binds = %d %s", stB, bB)
+				}
+				var cB struct{ ID string }
+				_ = json.Unmarshal(bB, &cB)
+				rec, err := teBad.lookup(cB.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, uf := range rec.Spec.UnixForwards {
+					if strings.Contains(uf, badCase.path) {
+						t.Errorf("Binds forwarded to non-socket/missing DockerSocket: %v", rec.Spec.UnixForwards)
+					}
+				}
+				if !isUnixSocket("/var/run/docker.sock") {
+					if len(rec.Spec.UnixForwards) != 0 {
+						t.Errorf("Binds UnixForwards = %v, want empty when neither DockerSocket nor /var/run/docker.sock is a socket", rec.Spec.UnixForwards)
+					}
+					if len(rec.Spec.Mounts) != 1 || rec.Spec.Mounts[0].Type != sandbox.MountBind {
+						t.Errorf("Binds Mounts = %+v, want fallback MountBind", rec.Spec.Mounts)
+					}
+				}
+
+				// HostConfig.Mounts type=bind: falls back to statting /var/run/docker.sock
+				// (400 when absent on host; never rewrites to badCase.path).
+				stM, bM := teBad.do(t, http.MethodPost, "/v1.52/containers/create?name=uf-bad-mount", map[string]any{
+					"Image": "alpine:3.20",
+					"HostConfig": map[string]any{
+						"Mounts": []map[string]any{
+							{"Type": "bind", "Source": "/var/run/docker.sock", "Target": "/var/run/docker.sock"},
+						},
+					},
+				})
+				if _, err := os.Stat("/var/run/docker.sock"); err != nil {
+					if stM != http.StatusBadRequest {
+						t.Errorf("Mounts bind without host /var/run/docker.sock = %d %s, want 400", stM, bM)
+					}
+				} else if stM == http.StatusCreated {
+					var cM struct{ ID string }
+					_ = json.Unmarshal(bM, &cM)
+					recM, _ := teBad.lookup(cM.ID)
+					for _, uf := range recM.Spec.UnixForwards {
+						if strings.Contains(uf, badCase.path) {
+							t.Errorf("Mounts forwarded to non-socket/missing DockerSocket: %v", recM.Spec.UnixForwards)
+						}
+					}
+				}
+			})
 		}
 	})
 

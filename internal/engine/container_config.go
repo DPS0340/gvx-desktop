@@ -477,20 +477,38 @@ type mountPlanOptions struct {
 	dockerSocket string
 }
 
+func isUnixSocket(p string) bool {
+	if p == "" {
+		return false
+	}
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode()&os.ModeSocket != 0
+}
+
+// effectiveDockerSocket returns the expanded host Docker API Unix socket path
+// when src targets /var/run/docker.sock, UnixForward is enabled, and the
+// configured DockerSocket currently exists as a Unix socket (not e.g. TCP mode).
+func effectiveDockerSocket(src string, opts mountPlanOptions) string {
+	if !opts.unixForward || !strings.HasPrefix(src, "/") || path.Clean(src) != "/var/run/docker.sock" {
+		return ""
+	}
+	ds := rungv.ExpandHome(strings.TrimSpace(opts.dockerSocket))
+	if isUnixSocket(ds) {
+		return ds
+	}
+	return ""
+}
+
 // resolveUnixForwardBind reports whether a host bind mount src -> dst should be
 // routed through rungv --unix-forward instead of a hostfs MountBind.
 func resolveUnixForwardBind(src, dst string, opts mountPlanOptions) (string, bool) {
 	if !opts.unixForward {
 		return "", false
 	}
-	if strings.HasPrefix(src, "/") && path.Clean(src) == "/var/run/docker.sock" {
-		if ds := rungv.ExpandHome(strings.TrimSpace(opts.dockerSocket)); ds != "" {
-			if fi, err := os.Lstat(ds); err != nil || !fi.IsDir() {
-				return dst + "=" + ds, true
-			}
-		}
+	if ds := effectiveDockerSocket(src, opts); ds != "" {
+		return dst + "=" + ds, true
 	}
-	if fi, err := os.Lstat(src); err == nil && fi.Mode()&os.ModeSocket != 0 {
+	if isUnixSocket(src) {
 		return dst + "=" + src, true
 	}
 	return "", false
@@ -609,10 +627,8 @@ func planMountsWithOptions(hc HostConfig, cfg ContainerConfig, opts mountPlanOpt
 				return nil, errInvalid("invalid mount config for type \"bind\": field Source must not be empty")
 			}
 			statPath := m.Source
-			if opts.unixForward && strings.HasPrefix(m.Source, "/") && path.Clean(m.Source) == "/var/run/docker.sock" {
-				if ds := rungv.ExpandHome(strings.TrimSpace(opts.dockerSocket)); ds != "" {
-					statPath = ds
-				}
+			if ds := effectiveDockerSocket(m.Source, opts); ds != "" {
+				statPath = ds
 			}
 			if _, err := os.Stat(statPath); err != nil {
 				if errors.Is(err, os.ErrNotExist) {

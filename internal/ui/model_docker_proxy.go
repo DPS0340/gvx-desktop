@@ -120,6 +120,7 @@ func (m *Model) initDockerProxy(dataDir string) {
 		Changed:          m.dockerProxy.NotifyChanged,
 		KeepImages:       m.sandboxKeepImages,
 		BuilderSocketDir: recipes.EngineSocketDir(),
+		DockerSocket:     recipes.DockerSocket(),
 	})
 	ggui.OnCleanup(m.CloseDockerProxy)
 }

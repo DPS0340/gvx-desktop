@@ -225,16 +225,30 @@ files; methods on `*fakeRunner`/`*fakeProc` may be declared there too.
 
 ### 6.2 Ports
 
-- For each `HostConfig.PortBindings["80/tcp"]` entry, the host IP is `""`, `0.0.0.0`,
-  `::` or `127.0.0.1` → 127.0.0.1, silently; containers are reachable from this
-  computer only. Any other IP → 127.0.0.1 plus the Warning `Port 80/tcp is published on
-  127.0.0.1 only, not on <ip>`. An empty HostPort → a free port, found by listening on
-  `127.0.0.1:0` and closing, chosen **at each start** (as docker does). A host
-  port range in one binding is expanded.
-- `PublishAllPorts`: every ExposedPort without a binding gets a free port.
-- Before `runner.Start`, B checks each fixed host port by listening on it. A busy one
-  makes start fail with 500 `Bind for 127.0.0.1:<p> failed: port is already
-  allocated`. Specs go as `-p 127.0.0.1:<host>:<guest>/<proto>`.
+- By default (`Config.AllowLANPorts` nil or returning `false`), containers are
+  reachable from this computer only: for each `HostConfig.PortBindings["80/tcp"]`
+  entry, the host IP `""`, `0.0.0.0`, `::` or `127.0.0.1` becomes `127.0.0.1`
+  silently, and any other IP becomes `127.0.0.1` plus the Warning `Port 80/tcp is
+  published on 127.0.0.1 only, not on <ip>`.
+- When `Config.AllowLANPorts` is set and returns `true` (opt-in LAN port
+  publishing), non-loopback host IPs are honored without warning:
+  - an empty `HostIP` (such as `docker run -p 8080:80`) and `PublishAllPorts`
+    publish on `0.0.0.0`;
+  - explicit `0.0.0.0`, `::`, or a host LAN IPv4/IPv6 literal is kept as
+    requested;
+  - explicit `127.0.0.1` and `::1` remain loopback;
+  - invalid IP literals or zoned addresses return a 400 error.
+  Turning `AllowLANPorts` back off forces subsequent starts back to `127.0.0.1`.
+- An empty HostPort → a free port, found by listening on `<hostIP>:0` and
+  closing, chosen **at each start** (as docker does). A host port range in one
+  binding is expanded.
+- `PublishAllPorts`: every ExposedPort without a binding gets a free port (on
+  `127.0.0.1` by default, or `0.0.0.0` when `AllowLANPorts()` is true).
+- Before `runner.Start`, B checks each fixed host port against running
+  containers (respecting IPv4/IPv6 wildcard overlap) and by listening on
+  `<hostIP>:<port>`. A busy one makes start fail with 500 `Bind for <addr>
+  failed: port is already allocated`. Specs go as `-p <hostIP>:<host>:<guest>/<proto>`
+  (with IPv6 addresses bracketed as `[<ip>]:<host>:<guest>/<proto>`).
 - `Container.Ports` (inspect `NetworkSettings.Ports`, list `Ports`) come from what was
   passed. They may be confirmed against `State.Ports` (rungv's "publishing" lines).
 - `NetworkMode: host` is treated like bridge (NAT) with a Warning. `none` → `-net none`, and
@@ -249,6 +263,19 @@ files; methods on `*fakeRunner`/`*fakeProc` may be declared there too.
   **No shared-folder check and no Windows path rewrite**: those are dind
   concerns, and rungv mounts host paths directly. rungv creates missing bind
   directories.
+- **Reverse Unix socket forwarding (`rungv` v0.21+ `--unix-forward`)**: when
+  `Features.UnixForward` is true, host bind mounts (in `HostConfig.Binds` or
+  `HostConfig.Mounts` type `bind`) targeting a live host Unix socket (following
+  symlinks via `os.Stat`) are routed to `Spec.UnixForwards` (`<dst>=<hostSock>`)
+  instead of a hostfs `MountBind`. Two virtual Docker Desktop socket paths are
+  resolved automatically:
+  - `/var/run/docker.sock` → `Config.DockerSocket` when it is a live Unix socket.
+  - `/run/host-services/ssh-auth.sock` → `Config.SSHAuthSock()` (falling back to
+    `os.Getenv("SSH_AUTH_SOCK")` when `Config.SSHAuthSock` is nil; returning `""`
+    disables forwarding) when it is a live Unix socket.
+  When `Features.UnixForward` is false or the resolved host socket is absent or
+  not a Unix socket, normal bind-mount behavior is preserved (`MountBind`
+  fallback for `HostConfig.Binds`; 400 missing source for `HostConfig.Mounts`).
 - `Mounts`: `bind` (a Source that does not exist is a 400 `invalid mount config for
   type "bind": bind source path does not exist: <src>`, as docker does), `volume`
   (an empty Source → an anonymous volume), and `tmpfs` (`TmpfsOptions.SizeBytes` →
@@ -942,8 +969,10 @@ beyond `engine.New/Config/Open/Close/Handler/NewRunner/RunningCount/StopRunning/
 
 1. API version advertised: **1.52** (min 1.24). The CLI 29.10 (client 1.57) and compose 5.8
    negotiate down to it.
-2. Wildcard host IPs (`0.0.0.0`, `::`, empty) publish on **127.0.0.1 only**, with no
-   warning. Containers are not reachable from the LAN. Explicit other IPs get a warning.
+2. By default, wildcard host IPs (`0.0.0.0`, `::`, empty) publish on **127.0.0.1
+   only**, with no warning, and explicit other IPs get a warning so containers are
+   not reachable from the LAN. Setting `Config.AllowLANPorts` to return `true`
+   opts in to non-loopback port publishing (§6.2).
 3. The engine's volume listing shows **only volumes it made**. The user's sandbox
    volumes in the same rungv cache are mountable by name but not listed, removable or
    prunable. `image prune -a` keeps the images of the user's sandboxes

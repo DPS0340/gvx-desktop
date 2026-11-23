@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/netip"
 	"os"
 	"path"
 	"slices"
@@ -241,9 +242,40 @@ func parsePortRange(raw string) (lo, hi int, err error) {
 	return lo, hi, nil
 }
 
+// normalizeHostIP resolves the host bind IP for one PortBinding entry.
+// When allowLAN is false, every IP is rewritten to 127.0.0.1 and non-wildcard,
+// non-loopback IPs set warn=true. When allowLAN is true, empty defaults to
+// 0.0.0.0, explicit loopback and LAN/wildcard IPv4/IPv6 literals are honored
+// without warning, and invalid IP strings fail with a 400 error.
+func normalizeHostIP(raw string, allowLAN bool) (hostIP string, warn bool, err error) {
+	ip := strings.TrimSpace(raw)
+	if !allowLAN {
+		switch ip {
+		case "", "0.0.0.0", "::", "127.0.0.1":
+			return "127.0.0.1", false, nil
+		default:
+			return "127.0.0.1", true, nil
+		}
+	}
+	if ip == "" {
+		return "0.0.0.0", false, nil
+	}
+	hadBrackets := strings.HasPrefix(ip, "[") && strings.HasSuffix(ip, "]")
+	unbracketed := ip
+	if hadBrackets {
+		unbracketed = ip[1 : len(ip)-1]
+	}
+	addr, perr := netip.ParseAddr(unbracketed)
+	if perr != nil || addr.Zone() != "" || (hadBrackets && !addr.Is6()) {
+		return "", false, errInvalid("invalid host IP %q", ip)
+	}
+	return addr.String(), false, nil
+}
+
 // validatePortBindings validates HostConfig.PortBindings, normalizes its keys,
-// expands host port ranges, and collects warnings for non-loopback host IPs.
-func validatePortBindings(hc *HostConfig) ([]string, error) {
+// expands host port ranges, and collects warnings for non-loopback host IPs
+// when allowLAN is false.
+func validatePortBindings(hc *HostConfig, allowLAN bool) ([]string, error) {
 	if hc.NetworkMode == "none" && (len(hc.PortBindings) > 0 || hc.PublishAllPorts) {
 		return nil, errInvalid("published ports are incompatible with network mode \"none\"")
 	}
@@ -262,22 +294,23 @@ func validatePortBindings(hc *HostConfig) ([]string, error) {
 			bindings = []PortBinding{{}}
 		}
 		for _, b := range bindings {
-			ip := strings.TrimSpace(b.HostIP)
-			switch ip {
-			case "", "0.0.0.0", "::", "127.0.0.1":
-			default:
-				warnings = append(warnings, fmt.Sprintf("Port %s is published on 127.0.0.1 only, not on %s", key, ip))
+			hostIP, warn, err := normalizeHostIP(b.HostIP, allowLAN)
+			if err != nil {
+				return nil, err
+			}
+			if warn {
+				warnings = append(warnings, fmt.Sprintf("Port %s is published on 127.0.0.1 only, not on %s", key, strings.TrimSpace(b.HostIP)))
 			}
 			lo, hi, err := parsePortRange(b.HostPort)
 			if err != nil {
 				return nil, err
 			}
 			if lo == 0 {
-				normalized[key] = append(normalized[key], PortBinding{HostIP: "127.0.0.1", HostPort: ""})
+				normalized[key] = append(normalized[key], PortBinding{HostIP: hostIP, HostPort: ""})
 				continue
 			}
 			for p := lo; p <= hi; p++ {
-				normalized[key] = append(normalized[key], PortBinding{HostIP: "127.0.0.1", HostPort: strconv.Itoa(p)})
+				normalized[key] = append(normalized[key], PortBinding{HostIP: hostIP, HostPort: strconv.Itoa(p)})
 			}
 		}
 	}
@@ -285,40 +318,93 @@ func validatePortBindings(hc *HostConfig) ([]string, error) {
 	return warnings, nil
 }
 
-// allocateFreePort finds an available port on 127.0.0.1 for proto ("tcp" or
-// "udp") not in used.
-func allocateFreePort(proto string, used map[string]bool) (int, error) {
+type hostPortBind struct {
+	ip    netip.Addr
+	port  int
+	proto string
+}
+
+func (a hostPortBind) conflicts(b hostPortBind) bool {
+	if a.port != b.port || a.proto != b.proto {
+		return false
+	}
+	if a.ip == b.ip {
+		return true
+	}
+	// IPv6 wildcard (::) listens dual-stack under net.Listen("tcp", "[::]:port")
+	// on macOS/Linux, overlapping IPv4 addresses on the same port as well.
+	if (a.ip.Is6() && a.ip.IsUnspecified()) || (b.ip.Is6() && b.ip.IsUnspecified()) {
+		return true
+	}
+	if a.ip.Is4() == b.ip.Is4() && (a.ip.IsUnspecified() || b.ip.IsUnspecified()) {
+		return true
+	}
+	return false
+}
+
+func hasPortConflict(used []hostPortBind, cand hostPortBind) bool {
+	for _, u := range used {
+		if u.conflicts(cand) {
+			return true
+		}
+	}
+	return false
+}
+
+func formatSpecPort(hostIP string, hostPort int, normContainerPort string) string {
+	return net.JoinHostPort(hostIP, strconv.Itoa(hostPort)) + ":" + normContainerPort
+}
+
+func isCannotAssignAddr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "assign requested address") ||
+		strings.Contains(msg, "requested address is not valid")
+}
+
+// allocateFreePort finds an available port on hostIP for proto ("tcp" or
+// "udp") not conflicting with used.
+func allocateFreePort(hostIP, proto string, used []hostPortBind) (int, error) {
+	ipAddr, err := netip.ParseAddr(hostIP)
+	if err != nil {
+		return 0, fmt.Errorf("invalid host IP %q: %w", hostIP, err)
+	}
+	listenAddr := net.JoinHostPort(hostIP, "0")
 	for range 32 {
 		var port int
 		if proto == "udp" {
-			pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+			pc, err := net.ListenPacket("udp", listenAddr)
 			if err != nil {
 				return 0, err
 			}
 			port = pc.LocalAddr().(*net.UDPAddr).Port
 			_ = pc.Close()
 		} else {
-			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			ln, err := net.Listen("tcp", listenAddr)
 			if err != nil {
 				return 0, err
 			}
 			port = ln.Addr().(*net.TCPAddr).Port
 			_ = ln.Close()
 		}
-		k := fmt.Sprintf("%d/%s", port, proto)
-		if !used[k] {
+		if !hasPortConflict(used, hostPortBind{ip: ipAddr, port: port, proto: proto}) {
 			return port, nil
 		}
 	}
-	return 0, errors.New("could not allocate a free host port on 127.0.0.1")
+	return 0, fmt.Errorf("could not allocate a free host port on %s", hostIP)
 }
 
-// checkPortAvailable verifies that 127.0.0.1:port/proto is not already bound.
-func checkPortAvailable(port int, proto string) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+// checkPortAvailable verifies that hostIP:port/proto is not already bound.
+func checkPortAvailable(hostIP string, port int, proto string) error {
+	addr := net.JoinHostPort(hostIP, strconv.Itoa(port))
 	if proto == "udp" {
 		pc, err := net.ListenPacket("udp", addr)
 		if err != nil {
+			if isCannotAssignAddr(err) {
+				return fmt.Errorf("Bind for %s failed: %v", addr, err)
+			}
 			return fmt.Errorf("Bind for %s failed: port is already allocated", addr)
 		}
 		_ = pc.Close()
@@ -326,6 +412,9 @@ func checkPortAvailable(port int, proto string) error {
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		if isCannotAssignAddr(err) {
+			return fmt.Errorf("Bind for %s failed: %v", addr, err)
+		}
 		return fmt.Errorf("Bind for %s failed: port is already allocated", addr)
 	}
 	_ = ln.Close()
@@ -333,18 +422,20 @@ func checkPortAvailable(port int, proto string) error {
 }
 
 // resolveStartPorts computes the concrete host ports and rungv -p specs for
-// one start of c. usedByOthers lists host ports ("8080/tcp") already held by
-// other running containers in this engine.
-func resolveStartPorts(c *Container, usedByOthers map[string]bool) (map[string][]PortBinding, []string, error) {
+// one start of c. usedByOthers lists host ports already held by other running
+// containers in this engine.
+func resolveStartPorts(c *Container, usedByOthers []hostPortBind, allowLAN bool) (map[string][]PortBinding, []string, error) {
 	if c.HostConfig.NetworkMode == "none" {
 		return nil, nil, nil
 	}
-	used := maps.Clone(usedByOthers)
-	if used == nil {
-		used = map[string]bool{}
-	}
+	used := slices.Clone(usedByOthers)
 	resolved := map[string][]PortBinding{}
 	var specPorts []string
+
+	defaultHostIP := "127.0.0.1"
+	if allowLAN {
+		defaultHostIP = "0.0.0.0"
+	}
 
 	for _, key := range slices.Sorted(maps.Keys(c.HostConfig.PortBindings)) {
 		normKey, err := normalizeContainerPort(key)
@@ -357,9 +448,17 @@ func resolveStartPorts(c *Container, usedByOthers map[string]bool) (map[string][
 			bindings = []PortBinding{{}}
 		}
 		for _, b := range bindings {
+			hostIP := "127.0.0.1"
+			if allowLAN {
+				hostIP, _, err = normalizeHostIP(b.HostIP, true)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+			ipAddr := netip.MustParseAddr(hostIP)
 			var port int
 			if b.HostPort == "" || b.HostPort == "0" {
-				port, err = allocateFreePort(proto, used)
+				port, err = allocateFreePort(hostIP, proto, used)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -369,27 +468,27 @@ func resolveStartPorts(c *Container, usedByOthers map[string]bool) (map[string][
 					return nil, nil, err
 				}
 				for p := lo; p <= hi; p++ {
-					pk := fmt.Sprintf("%d/%s", p, proto)
-					if used[pk] {
-						return nil, nil, fmt.Errorf("Bind for 127.0.0.1:%d failed: port is already allocated", p)
+					cand := hostPortBind{ip: ipAddr, port: p, proto: proto}
+					if hasPortConflict(used, cand) {
+						return nil, nil, fmt.Errorf("Bind for %s failed: port is already allocated", net.JoinHostPort(hostIP, strconv.Itoa(p)))
 					}
-					if err := checkPortAvailable(p, proto); err != nil {
+					if err := checkPortAvailable(hostIP, p, proto); err != nil {
 						return nil, nil, err
 					}
-					used[pk] = true
-					resolved[normKey] = append(resolved[normKey], PortBinding{HostIP: "127.0.0.1", HostPort: strconv.Itoa(p)})
-					specPorts = append(specPorts, fmt.Sprintf("127.0.0.1:%d:%s", p, normKey))
+					used = append(used, cand)
+					resolved[normKey] = append(resolved[normKey], PortBinding{HostIP: hostIP, HostPort: strconv.Itoa(p)})
+					specPorts = append(specPorts, formatSpecPort(hostIP, p, normKey))
 				}
 				continue
 			}
-			pk := fmt.Sprintf("%d/%s", port, proto)
-			used[pk] = true
-			resolved[normKey] = append(resolved[normKey], PortBinding{HostIP: "127.0.0.1", HostPort: strconv.Itoa(port)})
-			specPorts = append(specPorts, fmt.Sprintf("127.0.0.1:%d:%s", port, normKey))
+			used = append(used, hostPortBind{ip: ipAddr, port: port, proto: proto})
+			resolved[normKey] = append(resolved[normKey], PortBinding{HostIP: hostIP, HostPort: strconv.Itoa(port)})
+			specPorts = append(specPorts, formatSpecPort(hostIP, port, normKey))
 		}
 	}
 
 	if c.HostConfig.PublishAllPorts {
+		defaultAddr := netip.MustParseAddr(defaultHostIP)
 		for _, rawKey := range slices.Sorted(maps.Keys(c.Config.ExposedPorts)) {
 			normKey, err := normalizeContainerPort(rawKey)
 			if err != nil {
@@ -399,14 +498,13 @@ func resolveStartPorts(c *Container, usedByOthers map[string]bool) (map[string][
 				continue
 			}
 			_, proto, _ := strings.Cut(normKey, "/")
-			port, err := allocateFreePort(proto, used)
+			port, err := allocateFreePort(defaultHostIP, proto, used)
 			if err != nil {
 				return nil, nil, err
 			}
-			pk := fmt.Sprintf("%d/%s", port, proto)
-			used[pk] = true
-			resolved[normKey] = append(resolved[normKey], PortBinding{HostIP: "127.0.0.1", HostPort: strconv.Itoa(port)})
-			specPorts = append(specPorts, fmt.Sprintf("127.0.0.1:%d:%s", port, normKey))
+			used = append(used, hostPortBind{ip: defaultAddr, port: port, proto: proto})
+			resolved[normKey] = append(resolved[normKey], PortBinding{HostIP: defaultHostIP, HostPort: strconv.Itoa(port)})
+			specPorts = append(specPorts, formatSpecPort(defaultHostIP, port, normKey))
 		}
 	}
 
@@ -472,9 +570,15 @@ type plannedMount struct {
 	anonymous   bool
 }
 
+const (
+	dockerSocketGuestSource = "/var/run/docker.sock"
+	sshAuthSocketSource     = "/run/host-services/ssh-auth.sock"
+)
+
 type mountPlanOptions struct {
 	unixForward  bool
 	dockerSocket string
+	sshAuthSock  string
 }
 
 func isUnixSocket(p string) bool {
@@ -489,12 +593,26 @@ func isUnixSocket(p string) bool {
 // when src targets /var/run/docker.sock, UnixForward is enabled, and the
 // configured DockerSocket currently exists as a Unix socket (not e.g. TCP mode).
 func effectiveDockerSocket(src string, opts mountPlanOptions) string {
-	if !opts.unixForward || !strings.HasPrefix(src, "/") || path.Clean(src) != "/var/run/docker.sock" {
+	if !opts.unixForward || !strings.HasPrefix(src, "/") || path.Clean(src) != dockerSocketGuestSource {
 		return ""
 	}
 	ds := rungv.ExpandHome(strings.TrimSpace(opts.dockerSocket))
 	if isUnixSocket(ds) {
 		return ds
+	}
+	return ""
+}
+
+// effectiveSSHAuthSocket returns the expanded host SSH agent Unix socket path
+// when src targets /run/host-services/ssh-auth.sock, UnixForward is enabled,
+// and the configured SSHAuthSock currently exists as a Unix socket.
+func effectiveSSHAuthSocket(src string, opts mountPlanOptions) string {
+	if !opts.unixForward || !strings.HasPrefix(src, "/") || path.Clean(src) != sshAuthSocketSource {
+		return ""
+	}
+	ss := rungv.ExpandHome(strings.TrimSpace(opts.sshAuthSock))
+	if isUnixSocket(ss) {
+		return ss
 	}
 	return ""
 }
@@ -507,6 +625,9 @@ func resolveUnixForwardBind(src, dst string, opts mountPlanOptions) (string, boo
 	}
 	if ds := effectiveDockerSocket(src, opts); ds != "" {
 		return dst + "=" + ds, true
+	}
+	if ss := effectiveSSHAuthSocket(src, opts); ss != "" {
+		return dst + "=" + ss, true
 	}
 	if isUnixSocket(src) {
 		return dst + "=" + src, true
@@ -629,6 +750,8 @@ func planMountsWithOptions(hc HostConfig, cfg ContainerConfig, opts mountPlanOpt
 			statPath := m.Source
 			if ds := effectiveDockerSocket(m.Source, opts); ds != "" {
 				statPath = ds
+			} else if ss := effectiveSSHAuthSocket(m.Source, opts); ss != "" {
+				statPath = ss
 			}
 			if _, err := os.Stat(statPath); err != nil {
 				if errors.Is(err, os.ErrNotExist) {

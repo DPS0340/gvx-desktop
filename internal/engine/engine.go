@@ -13,6 +13,7 @@ package engine
 import (
 	"context"
 	"net/http"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -66,6 +67,16 @@ type Config struct {
 	// (--unix-forward), container bind mounts of /var/run/docker.sock are
 	// forwarded to this host socket.
 	DockerSocket string
+	// SSHAuthSock, when set, returns the host SSH agent Unix socket path to
+	// forward when a container bind-mounts /run/host-services/ssh-auth.sock
+	// with rungv v0.21+ (--unix-forward). Returning "" disables forwarding.
+	// When nil, the engine falls back to os.Getenv("SSH_AUTH_SOCK").
+	SSHAuthSock func() string
+	// AllowLANPorts, when set and returning true, allows published container
+	// ports to bind non-loopback host addresses (such as 0.0.0.0, ::, or an
+	// explicit host LAN IP). When nil or returning false, all published ports
+	// bind 127.0.0.1 only.
+	AllowLANPorts func() bool
 	// Logf, when set, traces every request and what the engine does.
 	Logf func(format string, args ...any)
 }
@@ -321,6 +332,17 @@ func (e *Engine) logf(format string, args ...any) {
 	if e.cfg.Logf != nil {
 		e.cfg.Logf(format, args...)
 	}
+}
+
+func (e *Engine) allowLANPorts() bool {
+	return e.cfg.AllowLANPorts != nil && e.cfg.AllowLANPorts()
+}
+
+func (e *Engine) sshAuthSock() string {
+	if e.cfg.SSHAuthSock != nil {
+		return e.cfg.SSHAuthSock()
+	}
+	return os.Getenv("SSH_AUTH_SOCK")
 }
 
 // onRunnerEvent receives the runner's events: internal builder events are

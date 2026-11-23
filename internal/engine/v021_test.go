@@ -7,15 +7,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -737,4 +741,715 @@ func TestStreamStatsBlkioBytesAndOps(t *testing.T) {
 		!strings.Contains(string(procRaw), `"io_serviced_recursive":[]`) {
 		t.Errorf("procstat blkio_stats missing empty arrays: %s", procRaw)
 	}
+}
+
+func TestAllowLANPortsDefaultAndOptIn(t *testing.T) {
+	newPortEnv := func(allowFn func() bool) *testEngine {
+		dir := t.TempDir()
+		fake := newFakeRunner()
+		fake.addImage("nginx:alpine", ImageConfig{
+			Cmd:          []string{"nginx"},
+			ExposedPorts: map[string]struct{}{"80/tcp": {}, "443/tcp": {}},
+		})
+		eng := New(Config{
+			Dir:           dir,
+			Runner:        fake,
+			Version:       "0.0.0-test",
+			AllowLANPorts: allowFn,
+		})
+		if err := eng.Open(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(eng.Handler())
+		te := &testEngine{Engine: eng, fake: fake, srv: srv, dir: dir}
+		t.Cleanup(func() {
+			srv.Close()
+			_ = eng.Close(time.Second)
+		})
+		return te
+	}
+
+	// 1. Default (nil callback and false callback) forces 127.0.0.1 and keeps the
+	// exact warning for explicit non-wildcard, non-loopback IPs.
+	for _, tc := range []struct {
+		name string
+		fn   func() bool
+	}{
+		{"nil_callback", nil},
+		{"false_callback", func() bool { return false }},
+	} {
+		t.Run("default_"+tc.name, func(t *testing.T) {
+			te := newPortEnv(tc.fn)
+			st, created, raw := createTestContainer(t, te, "lan-off", map[string]any{
+				"Image": "nginx:alpine",
+				"HostConfig": map[string]any{
+					"PortBindings": map[string][]PortBinding{
+						"80/tcp":   {{HostIP: "192.168.1.5", HostPort: ""}},
+						"443/tcp":  {{HostIP: "0.0.0.0", HostPort: ""}},
+						"8080/tcp": {{HostIP: "", HostPort: ""}},
+						"8443/tcp": {{HostIP: "::", HostPort: ""}},
+					},
+				},
+			})
+			if st != http.StatusCreated {
+				t.Fatalf("create = %d %s", st, raw)
+			}
+			if len(created.Warnings) != 1 || created.Warnings[0] != "Port 80/tcp is published on 127.0.0.1 only, not on 192.168.1.5" {
+				t.Fatalf("warnings = %v, want single 127.0.0.1 warning for 192.168.1.5", created.Warnings)
+			}
+			if stStart, bStart := te.do(t, http.MethodPost, "/v1.52/containers/"+created.ID+"/start", nil); stStart != http.StatusNoContent {
+				t.Fatalf("start = %d %s", stStart, bStart)
+			}
+			started := te.fake.Started()
+			if len(started) != 1 || len(started[0].Ports) != 4 {
+				t.Fatalf("started specs = %+v", started)
+			}
+			for _, sp := range started[0].Ports {
+				if err := sandbox.ValidatePort(sp); err != nil {
+					t.Errorf("ValidatePort(%q): %v", sp, err)
+				}
+				if !strings.HasPrefix(sp, "127.0.0.1:") {
+					t.Errorf("spec port %q should be forced to 127.0.0.1", sp)
+				}
+			}
+			rec, _ := te.lookup(created.ID)
+			for _, key := range []string{"80/tcp", "443/tcp", "8080/tcp", "8443/tcp"} {
+				if len(rec.Ports[key]) != 1 || rec.Ports[key][0].HostIP != "127.0.0.1" {
+					t.Errorf("Ports[%s] = %+v, want 127.0.0.1", key, rec.Ports[key])
+				}
+			}
+		})
+	}
+
+	// 2. AllowLANPorts=true honors empty -> 0.0.0.0, explicit 0.0.0.0, LAN IP,
+	// IPv6 :: / ::1, and keeps explicit 127.0.0.1 loopback with no false warning.
+	t.Run("opt_in_enabled", func(t *testing.T) {
+		var allowLAN atomic.Bool
+		allowLAN.Store(true)
+		te := newPortEnv(allowLAN.Load)
+
+		// ValidatePortBindings preserves LAN IP, 0.0.0.0, ::, ::1, 127.0.0.1,
+		// and maps empty HostIP to 0.0.0.0 with zero warnings.
+		st, cVal, raw := createTestContainer(t, te, "lan-validate", map[string]any{
+			"Image": "nginx:alpine",
+			"HostConfig": map[string]any{
+				"PortBindings": map[string][]PortBinding{
+					"80/tcp": {{HostIP: "", HostPort: "18090"}},
+					"81/tcp": {{HostIP: "0.0.0.0", HostPort: "18091"}},
+					"82/tcp": {{HostIP: "127.0.0.1", HostPort: "18092"}},
+					"83/tcp": {{HostIP: "192.168.1.5", HostPort: "18093-18094"}},
+					"84/tcp": {{HostIP: "[::]", HostPort: ""}},
+					"85/tcp": {{HostIP: "::1", HostPort: ""}},
+				},
+			},
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("create lan-validate = %d %s", st, raw)
+		}
+		if len(cVal.Warnings) != 0 {
+			t.Fatalf("lan-validate warnings = %v, want none", cVal.Warnings)
+		}
+		recVal, err := te.lookup(cVal.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantHC := map[string][]PortBinding{
+			"80/tcp": {{HostIP: "0.0.0.0", HostPort: "18090"}},
+			"81/tcp": {{HostIP: "0.0.0.0", HostPort: "18091"}},
+			"82/tcp": {{HostIP: "127.0.0.1", HostPort: "18092"}},
+			"83/tcp": {{HostIP: "192.168.1.5", HostPort: "18093"}, {HostIP: "192.168.1.5", HostPort: "18094"}},
+			"84/tcp": {{HostIP: "::", HostPort: ""}},
+			"85/tcp": {{HostIP: "::1", HostPort: ""}},
+		}
+		for k, want := range wantHC {
+			if !slices.Equal(recVal.HostConfig.PortBindings[k], want) {
+				t.Errorf("HostConfig.PortBindings[%s] = %+v, want %+v", k, recVal.HostConfig.PortBindings[k], want)
+			}
+		}
+
+		// Invalid HostIP literals return 400 when AllowLANPorts is enabled.
+		for _, badIP := range []string{"not-an-ip", "fe80::1%en0", "[127.0.0.1]"} {
+			stBad, _, bBad := createTestContainer(t, te, "", map[string]any{
+				"Image": "nginx:alpine",
+				"HostConfig": map[string]any{
+					"PortBindings": map[string][]PortBinding{
+						"80/tcp": {{HostIP: badIP, HostPort: ""}},
+					},
+				},
+			})
+			if stBad != http.StatusBadRequest {
+				t.Errorf("bad HostIP %q status = %d %s, want 400", badIP, stBad, bBad)
+			}
+		}
+
+		// Start with "", "0.0.0.0", and explicit "127.0.0.1" (fixed + dynamic)
+		// and verify Spec.Ports, NetworkSettings.Ports, and GET /containers/json.
+		lnProbe, err := net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixedPort := strconv.Itoa(lnProbe.Addr().(*net.TCPAddr).Port)
+		_ = lnProbe.Close()
+
+		st, cRun, raw := createTestContainer(t, te, "lan-run", map[string]any{
+			"Image": "nginx:alpine",
+			"HostConfig": map[string]any{
+				"PortBindings": map[string][]PortBinding{
+					"80/tcp":  {{HostIP: "", HostPort: fixedPort}},
+					"81/tcp":  {{HostIP: "0.0.0.0", HostPort: ""}},
+					"443/tcp": {{HostIP: "127.0.0.1", HostPort: ""}},
+				},
+			},
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("create lan-run = %d %s", st, raw)
+		}
+		if len(cRun.Warnings) != 0 {
+			t.Fatalf("lan-run warnings = %v, want none", cRun.Warnings)
+		}
+		if stStart, bStart := te.do(t, http.MethodPost, "/v1.52/containers/"+cRun.ID+"/start", nil); stStart != http.StatusNoContent {
+			t.Fatalf("start lan-run = %d %s", stStart, bStart)
+		}
+		started := te.fake.Started()
+		spec := started[len(started)-1]
+		for _, sp := range spec.Ports {
+			if err := sandbox.ValidatePort(sp); err != nil {
+				t.Errorf("ValidatePort(%q): %v", sp, err)
+			}
+		}
+
+		// Inspect NetworkSettings.Ports.
+		stIns, bIns := te.do(t, http.MethodGet, "/v1.52/containers/"+cRun.ID+"/json", nil)
+		if stIns != http.StatusOK {
+			t.Fatalf("inspect = %d %s", stIns, bIns)
+		}
+		var ins containerInspectResponse
+		if err := json.Unmarshal(bIns, &ins); err != nil {
+			t.Fatal(err)
+		}
+		if got := ins.NetworkSettings.Ports["80/tcp"]; len(got) != 1 || got[0].HostIP != "0.0.0.0" || got[0].HostPort != fixedPort {
+			t.Errorf("inspect 80/tcp = %+v, want 0.0.0.0:%s", got, fixedPort)
+		}
+		if got := ins.NetworkSettings.Ports["81/tcp"]; len(got) != 1 || got[0].HostIP != "0.0.0.0" || got[0].HostPort == "" {
+			t.Errorf("inspect 81/tcp = %+v, want 0.0.0.0:<ephemeral>", got)
+		}
+		if got := ins.NetworkSettings.Ports["443/tcp"]; len(got) != 1 || got[0].HostIP != "127.0.0.1" || got[0].HostPort == "" {
+			t.Errorf("inspect 443/tcp = %+v, want 127.0.0.1:<ephemeral>", got)
+		}
+		wantSpecPorts := []string{
+			"127.0.0.1:" + ins.NetworkSettings.Ports["443/tcp"][0].HostPort + ":443/tcp",
+			"0.0.0.0:" + fixedPort + ":80/tcp",
+			"0.0.0.0:" + ins.NetworkSettings.Ports["81/tcp"][0].HostPort + ":81/tcp",
+		}
+		if !slices.Equal(spec.Ports, wantSpecPorts) {
+			t.Errorf("spec.Ports = %v, want %v", spec.Ports, wantSpecPorts)
+		}
+
+		// GET /containers/json reports exact HostIP values.
+		stList, bList := te.do(t, http.MethodGet, "/v1.52/containers/json", nil)
+		if stList != http.StatusOK {
+			t.Fatalf("list = %d %s", stList, bList)
+		}
+		var rows []containerListItem
+		_ = json.Unmarshal(bList, &rows)
+		if len(rows) != 1 || len(rows[0].Ports) != 3 {
+			t.Fatalf("list rows = %+v", rows)
+		}
+		ipByPriv := map[uint16]string{}
+		for _, p := range rows[0].Ports {
+			ipByPriv[p.PrivatePort] = p.IP
+		}
+		if ipByPriv[80] != "0.0.0.0" || ipByPriv[81] != "0.0.0.0" || ipByPriv[443] != "127.0.0.1" {
+			t.Errorf("list Ports IPs = %v, want 80->0.0.0.0 81->0.0.0.0 443->127.0.0.1", ipByPriv)
+		}
+
+		// Conflict: another container trying to bind 127.0.0.1:<fixedPort> while
+		// lan-run holds 0.0.0.0:<fixedPort> fails cleanly with 500.
+		_, cConflict, _ := createTestContainer(t, te, "lan-conflict", map[string]any{
+			"Image": "nginx:alpine",
+			"HostConfig": map[string]any{
+				"PortBindings": map[string][]PortBinding{
+					"80/tcp": {{HostIP: "127.0.0.1", HostPort: fixedPort}},
+				},
+			},
+		})
+		stConf, bConf := te.do(t, http.MethodPost, "/v1.52/containers/"+cConflict.ID+"/start", nil)
+		wantConf := fmt.Sprintf("Bind for 127.0.0.1:%s failed: port is already allocated", fixedPort)
+		if stConf != http.StatusInternalServerError || !strings.Contains(string(bConf), wantConf) {
+			t.Errorf("conflict start = %d %s, want 500 containing %q", stConf, bConf, wantConf)
+		}
+
+		// PublishAllPorts binds 0.0.0.0 when AllowLANPorts is true.
+		stAll, cAll, bAll := createTestContainer(t, te, "lan-allports", map[string]any{
+			"Image":      "nginx:alpine",
+			"HostConfig": map[string]any{"PublishAllPorts": true},
+		})
+		if stAll != http.StatusCreated {
+			t.Fatalf("create PublishAllPorts = %d %s", stAll, bAll)
+		}
+		if stStart, bStart := te.do(t, http.MethodPost, "/v1.52/containers/"+cAll.ID+"/start", nil); stStart != http.StatusNoContent {
+			t.Fatalf("start PublishAllPorts = %d %s", stStart, bStart)
+		}
+		recAll, _ := te.lookup(cAll.ID)
+		for _, key := range []string{"80/tcp", "443/tcp"} {
+			if len(recAll.Ports[key]) != 1 || recAll.Ports[key][0].HostIP != "0.0.0.0" {
+				t.Errorf("PublishAllPorts Ports[%s] = %+v, want 0.0.0.0", key, recAll.Ports[key])
+			}
+		}
+
+		// Non-local IP literal fails start with bind error mentioning that IP (never 127.0.0.1).
+		_, cBadAddr, _ := createTestContainer(t, te, "lan-unassigned", map[string]any{
+			"Image": "nginx:alpine",
+			"HostConfig": map[string]any{
+				"PortBindings": map[string][]PortBinding{
+					"80/tcp": {{HostIP: "198.51.100.1", HostPort: "18099"}},
+				},
+			},
+		})
+		stUn, bUn := te.do(t, http.MethodPost, "/v1.52/containers/"+cBadAddr.ID+"/start", nil)
+		if stUn != http.StatusInternalServerError || !strings.Contains(string(bUn), "198.51.100.1:18099") {
+			t.Errorf("unassigned IP start = %d %s, want 500 mentioning 198.51.100.1:18099", stUn, bUn)
+		}
+
+		// Turning AllowLANPorts back off before restarting lan-run forces it back
+		// to 127.0.0.1 (fail-closed).
+		if stStop, bStop := te.do(t, http.MethodPost, "/v1.52/containers/"+cRun.ID+"/stop?t=1", nil); stStop != http.StatusNoContent {
+			t.Fatalf("stop lan-run = %d %s", stStop, bStop)
+		}
+		allowLAN.Store(false)
+		if stStart, bStart := te.do(t, http.MethodPost, "/v1.52/containers/"+cRun.ID+"/start", nil); stStart != http.StatusNoContent {
+			t.Fatalf("restart lan-run with LAN off = %d %s", stStart, bStart)
+		}
+		recOff, _ := te.lookup(cRun.ID)
+		for _, key := range []string{"80/tcp", "81/tcp", "443/tcp"} {
+			if len(recOff.Ports[key]) != 1 || recOff.Ports[key][0].HostIP != "127.0.0.1" {
+				t.Errorf("after toggling AllowLANPorts off, Ports[%s] = %+v, want 127.0.0.1", key, recOff.Ports[key])
+			}
+		}
+		allowLAN.Store(true)
+
+		// IPv6 wildcard (::) and loopback (::1) produce bracketed rungv -p specs
+		// when IPv6 sockets are available on this host.
+		if ln6, err := net.Listen("tcp", "[::1]:0"); err == nil {
+			_ = ln6.Close()
+			_, cV6, rawV6 := createTestContainer(t, te, "lan-ipv6", map[string]any{
+				"Image": "nginx:alpine",
+				"HostConfig": map[string]any{
+					"PortBindings": map[string][]PortBinding{
+						"80/tcp":  {{HostIP: "::", HostPort: ""}},
+						"443/tcp": {{HostIP: "::1", HostPort: ""}},
+					},
+				},
+			})
+			if stV6, bV6 := te.do(t, http.MethodPost, "/v1.52/containers/"+cV6.ID+"/start", nil); stV6 != http.StatusNoContent {
+				t.Fatalf("start ipv6 = %d %s (create=%s)", stV6, bV6, rawV6)
+			}
+			sp6 := te.fake.Started()[len(te.fake.Started())-1]
+			rec6, _ := te.lookup(cV6.ID)
+			if got := rec6.Ports["80/tcp"]; len(got) != 1 || got[0].HostIP != "::" {
+				t.Errorf("ipv6 80/tcp = %+v, want ::", got)
+			}
+			if got := rec6.Ports["443/tcp"]; len(got) != 1 || got[0].HostIP != "::1" {
+				t.Errorf("ipv6 443/tcp = %+v, want ::1", got)
+			}
+			want6 := []string{
+				"[::1]:" + rec6.Ports["443/tcp"][0].HostPort + ":443/tcp",
+				"[::]:" + rec6.Ports["80/tcp"][0].HostPort + ":80/tcp",
+			}
+			if !slices.Equal(sp6.Ports, want6) {
+				t.Errorf("ipv6 spec.Ports = %v, want %v", sp6.Ports, want6)
+			}
+			for _, p := range sp6.Ports {
+				if err := sandbox.ValidatePort(p); err != nil {
+					t.Errorf("ValidatePort(%q): %v", p, err)
+				}
+			}
+		}
+
+		// Real local non-loopback IPv4 (if the host has one) binds and formats cleanly.
+		if lanIP := findLocalNonLoopbackIPv4(); lanIP != "" {
+			stLAN, cLAN, bLAN := createTestContainer(t, te, "lan-host-ip", map[string]any{
+				"Image": "nginx:alpine",
+				"HostConfig": map[string]any{
+					"PortBindings": map[string][]PortBinding{
+						"80/tcp": {{HostIP: lanIP, HostPort: ""}},
+					},
+				},
+			})
+			if stLAN != http.StatusCreated {
+				t.Fatalf("create lan-host-ip = %d %s", stLAN, bLAN)
+			}
+			if len(cLAN.Warnings) != 0 {
+				t.Errorf("lan-host-ip warnings = %v, want none", cLAN.Warnings)
+			}
+			if stStart, bStart := te.do(t, http.MethodPost, "/v1.52/containers/"+cLAN.ID+"/start", nil); stStart != http.StatusNoContent {
+				t.Fatalf("start lan-host-ip (%s) = %d %s", lanIP, stStart, bStart)
+			}
+			recLAN, _ := te.lookup(cLAN.ID)
+			spLAN := te.fake.Started()[len(te.fake.Started())-1]
+			if got := recLAN.Ports["80/tcp"]; len(got) != 1 || got[0].HostIP != lanIP || got[0].HostPort == "" {
+				t.Errorf("lan-host-ip Ports = %+v, want %s:<port>", got, lanIP)
+			} else {
+				wantSpec := lanIP + ":" + got[0].HostPort + ":80/tcp"
+				if !slices.Equal(spLAN.Ports, []string{wantSpec}) {
+					t.Errorf("lan-host-ip spec.Ports = %v, want [%s]", spLAN.Ports, wantSpec)
+				}
+				if err := sandbox.ValidatePort(wantSpec); err != nil {
+					t.Errorf("ValidatePort(%q): %v", wantSpec, err)
+				}
+			}
+		}
+	})
+
+	// 3. Port overlap matrix across IPv4/IPv6 unicast and wildcard bindings.
+	t.Run("port_conflict_matrix", func(t *testing.T) {
+		bind := func(ip string, port int, proto string) hostPortBind {
+			return hostPortBind{ip: netip.MustParseAddr(ip), port: port, proto: proto}
+		}
+		cases := []struct {
+			name string
+			a, b hostPortBind
+			want bool
+		}{
+			{"same_loopback", bind("127.0.0.1", 8080, "tcp"), bind("127.0.0.1", 8080, "tcp"), true},
+			{"wildcard4_vs_loopback4", bind("0.0.0.0", 8080, "tcp"), bind("127.0.0.1", 8080, "tcp"), true},
+			{"wildcard4_vs_lan4", bind("0.0.0.0", 8080, "tcp"), bind("192.168.1.5", 8080, "tcp"), true},
+			{"distinct_unicast4", bind("127.0.0.1", 8080, "tcp"), bind("192.168.1.5", 8080, "tcp"), false},
+			{"loopback4_vs_loopback6", bind("127.0.0.1", 8080, "tcp"), bind("::1", 8080, "tcp"), false},
+			{"wildcard6_vs_loopback6", bind("::", 8080, "tcp"), bind("::1", 8080, "tcp"), true},
+			{"wildcard6_vs_wildcard4", bind("::", 8080, "tcp"), bind("0.0.0.0", 8080, "tcp"), true},
+			{"wildcard4_vs_loopback6", bind("0.0.0.0", 8080, "tcp"), bind("::1", 8080, "tcp"), false},
+			{"tcp_vs_udp", bind("0.0.0.0", 8080, "tcp"), bind("0.0.0.0", 8080, "udp"), false},
+			{"diff_port", bind("0.0.0.0", 8080, "tcp"), bind("0.0.0.0", 8081, "tcp"), false},
+		}
+		for _, tc := range cases {
+			if got := tc.a.conflicts(tc.b); got != tc.want {
+				t.Errorf("%s: (%v).conflicts(%v) = %v, want %v", tc.name, tc.a, tc.b, got, tc.want)
+			}
+			if got := tc.b.conflicts(tc.a); got != tc.want {
+				t.Errorf("%s (sym): (%v).conflicts(%v) = %v, want %v", tc.name, tc.b, tc.a, got, tc.want)
+			}
+		}
+	})
+}
+
+func findLocalNonLoopbackIPv4() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, a := range addrs {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		v4 := ipNet.IP.To4()
+		if v4 == nil || v4.IsLoopback() || v4.IsLinkLocalUnicast() || v4.IsUnspecified() {
+			continue
+		}
+		ln, err := net.Listen("tcp", net.JoinHostPort(v4.String(), "0"))
+		if err == nil {
+			_ = ln.Close()
+			return v4.String()
+		}
+	}
+	return ""
+}
+
+func TestSSHAuthSocketForwarding(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix domain socket mode check is POSIX-specific")
+	}
+	sockDir, err := os.MkdirTemp("", "gvxd-ssh-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+
+	sshSock := filepath.Join(sockDir, "agent.sock")
+	lnSSH, err := net.Listen("unix", sshSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lnSSH.Close() })
+
+	symlinkSSH := filepath.Join(sockDir, "link.sock")
+	if err := os.Symlink(sshSock, symlinkSSH); err != nil {
+		t.Fatal(err)
+	}
+
+	regularFile := filepath.Join(sockDir, "not-a-socket")
+	if err := os.WriteFile(regularFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	newEnv := func(unixForward bool, sshFn func() string) *testEngine {
+		dir := t.TempDir()
+		fake := newFakeRunner()
+		fake.features = rungv.Features{UnixForward: unixForward}
+		fake.addImage("alpine:3.20", ImageConfig{Cmd: []string{"/bin/sh"}})
+		eng := New(Config{
+			Dir:         dir,
+			Runner:      fake,
+			Version:     "0.0.0-test",
+			SSHAuthSock: sshFn,
+		})
+		if err := eng.Open(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(eng.Handler())
+		te := &testEngine{Engine: eng, fake: fake, srv: srv, dir: dir}
+		t.Cleanup(func() {
+			srv.Close()
+			_ = eng.Close(time.Second)
+		})
+		return te
+	}
+
+	// 1. Real Unix socket via HostConfig.Binds and HostConfig.Mounts (including
+	// redundant slashes and canonical Docker Desktop target path).
+	t.Run("v021_real_socket", func(t *testing.T) {
+		te := newEnv(true, func() string { return sshSock })
+
+		stB, bB := te.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-bind", map[string]any{
+			"Image": "alpine:3.20",
+			"HostConfig": map[string]any{
+				"Binds": []string{
+					"/run/host-services/ssh-auth.sock:/ssh-agent",
+					"/run//host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock",
+				},
+			},
+		})
+		if stB != http.StatusCreated {
+			t.Fatalf("create Binds = %d %s", stB, bB)
+		}
+		var cB struct{ ID string }
+		_ = json.Unmarshal(bB, &cB)
+		if stStart, bStart := te.do(t, http.MethodPost, "/v1.52/containers/"+cB.ID+"/start", nil); stStart != http.StatusNoContent {
+			t.Fatalf("start Binds = %d %s", stStart, bStart)
+		}
+		spB := te.fake.Started()[len(te.fake.Started())-1]
+		wantUF := []string{
+			"/ssh-agent=" + sshSock,
+			"/run/host-services/ssh-auth.sock=" + sshSock,
+		}
+		if !slices.Equal(spB.UnixForwards, wantUF) {
+			t.Errorf("Binds UnixForwards = %v, want %v", spB.UnixForwards, wantUF)
+		}
+		if len(spB.Mounts) != 0 {
+			t.Errorf("Binds Spec.Mounts = %+v, want empty", spB.Mounts)
+		}
+		recB, _ := te.lookup(cB.ID)
+		if len(recB.Mounts) != 2 || recB.Mounts[0].Source != "/run/host-services/ssh-auth.sock" || recB.Mounts[0].Destination != "/ssh-agent" {
+			t.Errorf("Binds inspect Mounts = %+v", recB.Mounts)
+		}
+
+		// HostConfig.Mounts type=bind stats the resolved SSH agent socket instead of
+		// failing on the non-existent virtual /run/host-services/ssh-auth.sock path.
+		stM, bM := te.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-mount", map[string]any{
+			"Image": "alpine:3.20",
+			"HostConfig": map[string]any{
+				"Mounts": []map[string]any{
+					{"Type": "bind", "Source": "/run/host-services/ssh-auth.sock", "Target": "/ssh-agent"},
+				},
+			},
+		})
+		if stM != http.StatusCreated {
+			t.Fatalf("create Mounts = %d %s", stM, bM)
+		}
+		var cM struct{ ID string }
+		_ = json.Unmarshal(bM, &cM)
+		recM, err := te.lookup(cM.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(recM.Spec.UnixForwards, []string{"/ssh-agent=" + sshSock}) {
+			t.Errorf("Mounts UnixForwards = %v, want [/ssh-agent=%s]", recM.Spec.UnixForwards, sshSock)
+		}
+		if len(recM.Spec.Mounts) != 0 {
+			t.Errorf("Mounts Spec.Mounts = %+v, want empty", recM.Spec.Mounts)
+		}
+		if len(recM.Mounts) != 1 || recM.Mounts[0].Source != "/run/host-services/ssh-auth.sock" || recM.Mounts[0].Destination != "/ssh-agent" {
+			t.Errorf("Mounts Container.Mounts = %+v", recM.Mounts)
+		}
+	})
+
+	// 2. Symlinked SSH agent socket follows symlinks via os.Stat for both Binds and Mounts.
+	t.Run("v021_symlink_socket", func(t *testing.T) {
+		te := newEnv(true, func() string { return symlinkSSH })
+
+		stB, bB := te.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-sym-bind", map[string]any{
+			"Image": "alpine:3.20",
+			"HostConfig": map[string]any{
+				"Binds": []string{"/run/host-services/ssh-auth.sock:/ssh-agent"},
+			},
+		})
+		if stB != http.StatusCreated {
+			t.Fatalf("create symlink Binds = %d %s", stB, bB)
+		}
+		var cB struct{ ID string }
+		_ = json.Unmarshal(bB, &cB)
+		recB, _ := te.lookup(cB.ID)
+		if !slices.Equal(recB.Spec.UnixForwards, []string{"/ssh-agent=" + symlinkSSH}) {
+			t.Errorf("symlink Binds UnixForwards = %v, want [/ssh-agent=%s]", recB.Spec.UnixForwards, symlinkSSH)
+		}
+
+		stM, bM := te.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-sym-mount", map[string]any{
+			"Image": "alpine:3.20",
+			"HostConfig": map[string]any{
+				"Mounts": []map[string]any{
+					{"Type": "bind", "Source": "/run/host-services/ssh-auth.sock", "Target": "/ssh-agent"},
+				},
+			},
+		})
+		if stM != http.StatusCreated {
+			t.Fatalf("create symlink Mounts = %d %s", stM, bM)
+		}
+		var cM struct{ ID string }
+		_ = json.Unmarshal(bM, &cM)
+		recM, _ := te.lookup(cM.ID)
+		if !slices.Equal(recM.Spec.UnixForwards, []string{"/ssh-agent=" + symlinkSSH}) {
+			t.Errorf("symlink Mounts UnixForwards = %v, want [/ssh-agent=%s]", recM.Spec.UnixForwards, symlinkSSH)
+		}
+	})
+
+	// 3. Nil SSHAuthSock callback falls back to os.Getenv("SSH_AUTH_SOCK");
+	// explicit callback returning "" overrides env and disables forwarding.
+	t.Run("v021_env_fallback_and_disable_override", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", sshSock)
+
+		teEnv := newEnv(true, nil)
+		stE, bE := teEnv.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-env", map[string]any{
+			"Image": "alpine:3.20",
+			"HostConfig": map[string]any{
+				"Mounts": []map[string]any{
+					{"Type": "bind", "Source": "/run/host-services/ssh-auth.sock", "Target": "/ssh-agent"},
+				},
+			},
+		})
+		if stE != http.StatusCreated {
+			t.Fatalf("create env fallback = %d %s", stE, bE)
+		}
+		var cE struct{ ID string }
+		_ = json.Unmarshal(bE, &cE)
+		recE, _ := teEnv.lookup(cE.ID)
+		if !slices.Equal(recE.Spec.UnixForwards, []string{"/ssh-agent=" + sshSock}) {
+			t.Errorf("env fallback UnixForwards = %v, want [/ssh-agent=%s]", recE.Spec.UnixForwards, sshSock)
+		}
+
+		// Callback returning "" disables forwarding even when SSH_AUTH_SOCK is set in env.
+		teDis := newEnv(true, func() string { return "" })
+		stDB, bDB := teDis.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-dis-bind", map[string]any{
+			"Image": "alpine:3.20",
+			"HostConfig": map[string]any{
+				"Binds": []string{"/run/host-services/ssh-auth.sock:/ssh-agent"},
+			},
+		})
+		if stDB != http.StatusCreated {
+			t.Fatalf("create disabled Binds = %d %s", stDB, bDB)
+		}
+		var cDB struct{ ID string }
+		_ = json.Unmarshal(bDB, &cDB)
+		recDB, _ := teDis.lookup(cDB.ID)
+		for _, uf := range recDB.Spec.UnixForwards {
+			if strings.Contains(uf, sshSock) {
+				t.Errorf("disabled callback still forwarded to env SSH_AUTH_SOCK: %v", recDB.Spec.UnixForwards)
+			}
+		}
+		if !isUnixSocket(sshAuthSocketSource) {
+			if len(recDB.Spec.UnixForwards) != 0 {
+				t.Errorf("disabled Binds UnixForwards = %v, want empty", recDB.Spec.UnixForwards)
+			}
+			if len(recDB.Spec.Mounts) != 1 || recDB.Spec.Mounts[0].Type != sandbox.MountBind {
+				t.Errorf("disabled Binds Spec.Mounts = %+v, want fallback MountBind", recDB.Spec.Mounts)
+			}
+		}
+	})
+
+	// 4. Missing, empty, or non-socket SSHAuthSock does not forward and preserves clean fallback/400.
+	for _, bad := range []struct {
+		name string
+		path string
+	}{
+		{"empty", ""},
+		{"missing", filepath.Join(sockDir, "does-not-exist.sock")},
+		{"regular_file", regularFile},
+	} {
+		t.Run("v021_bad_"+bad.name, func(t *testing.T) {
+			te := newEnv(true, func() string { return bad.path })
+
+			stB, bB := te.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-bad-bind", map[string]any{
+				"Image": "alpine:3.20",
+				"HostConfig": map[string]any{
+					"Binds": []string{"/run/host-services/ssh-auth.sock:/ssh-agent"},
+				},
+			})
+			if stB != http.StatusCreated {
+				t.Fatalf("create Binds = %d %s", stB, bB)
+			}
+			var cB struct{ ID string }
+			_ = json.Unmarshal(bB, &cB)
+			recB, _ := te.lookup(cB.ID)
+			if !isUnixSocket(sshAuthSocketSource) {
+				if len(recB.Spec.UnixForwards) != 0 {
+					t.Errorf("Binds UnixForwards = %v, want empty", recB.Spec.UnixForwards)
+				}
+				if len(recB.Spec.Mounts) != 1 || recB.Spec.Mounts[0].Type != sandbox.MountBind {
+					t.Errorf("Binds Spec.Mounts = %+v, want MountBind fallback", recB.Spec.Mounts)
+				}
+			}
+
+			stM, bM := te.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-bad-mount", map[string]any{
+				"Image": "alpine:3.20",
+				"HostConfig": map[string]any{
+					"Mounts": []map[string]any{
+						{"Type": "bind", "Source": "/run/host-services/ssh-auth.sock", "Target": "/ssh-agent"},
+					},
+				},
+			})
+			if _, err := os.Stat(sshAuthSocketSource); err != nil {
+				if stM != http.StatusBadRequest {
+					t.Errorf("Mounts bind without host %s = %d %s, want 400", sshAuthSocketSource, stM, bM)
+				}
+			}
+		})
+	}
+
+	// 5. Features.UnixForward=false preserves normal non-forwarded path behavior.
+	t.Run("v020_unix_forward_false", func(t *testing.T) {
+		te := newEnv(false, func() string { return sshSock })
+
+		stB, bB := te.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-v20-bind", map[string]any{
+			"Image": "alpine:3.20",
+			"HostConfig": map[string]any{
+				"Binds": []string{"/run/host-services/ssh-auth.sock:/ssh-agent"},
+			},
+		})
+		if stB != http.StatusCreated {
+			t.Fatalf("v0.20 create Binds = %d %s", stB, bB)
+		}
+		var cB struct{ ID string }
+		_ = json.Unmarshal(bB, &cB)
+		recB, _ := te.lookup(cB.ID)
+		if len(recB.Spec.UnixForwards) != 0 {
+			t.Errorf("v0.20 Binds UnixForwards = %v, want empty", recB.Spec.UnixForwards)
+		}
+		if len(recB.Spec.Mounts) != 1 || recB.Spec.Mounts[0].Type != sandbox.MountBind || recB.Spec.Mounts[0].Source != "/run/host-services/ssh-auth.sock" {
+			t.Errorf("v0.20 Binds Spec.Mounts = %+v, want MountBind", recB.Spec.Mounts)
+		}
+
+		stM, bM := te.do(t, http.MethodPost, "/v1.52/containers/create?name=ssh-v20-mount", map[string]any{
+			"Image": "alpine:3.20",
+			"HostConfig": map[string]any{
+				"Mounts": []map[string]any{
+					{"Type": "bind", "Source": "/run/host-services/ssh-auth.sock", "Target": "/ssh-agent"},
+				},
+			},
+		})
+		if _, err := os.Stat(sshAuthSocketSource); err != nil {
+			if stM != http.StatusBadRequest {
+				t.Errorf("v0.20 Mounts bind = %d %s, want 400", stM, bM)
+			}
+		}
+	})
 }

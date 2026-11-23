@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/netip"
 	"os"
 	"regexp"
 	"slices"
@@ -526,10 +527,10 @@ func containerAttrs(c *Container) map[string]string {
 	return attrs
 }
 
-// usedPortsLocked returns all host ports ("8080/tcp") currently bound by
-// running containers other than skipID. Caller holds e.ctr.mu.
-func (e *Engine) usedPortsLocked(skipID string) map[string]bool {
-	used := map[string]bool{}
+// usedPortsLocked returns all host ports currently bound by running containers
+// other than skipID. Caller holds e.ctr.mu.
+func (e *Engine) usedPortsLocked(skipID string) []hostPortBind {
+	var used []hostPortBind
 	for id, c := range e.ctr.byID {
 		if id == skipID || c.State.Status != StatusRunning {
 			continue
@@ -540,9 +541,15 @@ func (e *Engine) usedPortsLocked(skipID string) map[string]bool {
 				proto = "tcp"
 			}
 			for _, b := range bindings {
-				if b.HostPort != "" {
-					used[b.HostPort+"/"+proto] = true
+				port, err := strconv.Atoi(b.HostPort)
+				if err != nil || port <= 0 {
+					continue
 				}
+				ip, err := netip.ParseAddr(strings.TrimSpace(b.HostIP))
+				if err != nil {
+					ip = netip.MustParseAddr("127.0.0.1")
+				}
+				used = append(used, hostPortBind{ip: ip, port: port, proto: proto})
 			}
 		}
 	}
@@ -552,6 +559,8 @@ func (e *Engine) usedPortsLocked(skipID string) map[string]bool {
 // startContainer resolves ports, starts the sandbox via runner.Start, updates
 // state and emits the start event.
 func (e *Engine) startContainer(id string) error {
+	allowLAN := e.allowLANPorts()
+
 	// Serialize port probing and reservation across concurrent starts so two
 	// containers cannot claim the same fixed or dynamic host port.
 	e.ctr.portMu.Lock()
@@ -587,7 +596,7 @@ func (e *Engine) startContainer(id string) error {
 	prevPorts := c.Ports
 	e.ctr.mu.Unlock()
 
-	resolvedPorts, specPorts, err := resolveStartPorts(&snapshot, usedByOthers)
+	resolvedPorts, specPorts, err := resolveStartPorts(&snapshot, usedByOthers, allowLAN)
 	if err != nil {
 		e.ctr.portMu.Unlock()
 		e.handleStartFailure(id, 0, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, err)
@@ -991,7 +1000,7 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate ports after normalizing NetworkMode.
-	portWarnings, err := validatePortBindings(&hc)
+	portWarnings, err := validatePortBindings(&hc, e.allowLANPorts())
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -1002,6 +1011,7 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 	planned, err := planMountsWithOptions(hc, cfg, mountPlanOptions{
 		unixForward:  e.runner.Features().UnixForward,
 		dockerSocket: e.cfg.DockerSocket,
+		sshAuthSock:  e.sshAuthSock(),
 	})
 	if err != nil {
 		writeError(w, r, err)
@@ -1361,7 +1371,10 @@ func formatContainerListItem(c Container, now time.Time) containerListItem {
 			if d := cmp.Compare(a.Type, b.Type); d != 0 {
 				return d
 			}
-			return cmp.Compare(a.PublicPort, b.PublicPort)
+			if d := cmp.Compare(a.PublicPort, b.PublicPort); d != 0 {
+				return d
+			}
+			return cmp.Compare(a.IP, b.IP)
 		})
 	}
 

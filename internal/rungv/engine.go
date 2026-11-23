@@ -255,6 +255,7 @@ func (c *Client) PushImage(ctx context.Context, opts PushOptions, line func(stri
 		return err
 	}
 	var wg sync.WaitGroup
+	var lineMu sync.Mutex
 	read := func(r io.Reader, keep bool) {
 		defer wg.Done()
 		sc := bufio.NewScanner(r)
@@ -264,7 +265,9 @@ func (c *Client) PushImage(ctx context.Context, opts PushOptions, line func(stri
 			if keep {
 				tail.add(text)
 			}
+			lineMu.Lock()
 			line(text)
+			lineMu.Unlock()
 		}
 	}
 	wg.Add(2)
@@ -370,6 +373,7 @@ func (c *Client) LoadImagesArch(ctx context.Context, arch string, archive io.Rea
 		return err
 	}
 	var wg sync.WaitGroup
+	var lineMu sync.Mutex
 	read := func(r io.Reader, keep bool) {
 		defer wg.Done()
 		sc := bufio.NewScanner(r)
@@ -379,7 +383,9 @@ func (c *Client) LoadImagesArch(ctx context.Context, arch string, archive io.Rea
 			if keep {
 				tail.add(text)
 			}
+			lineMu.Lock()
 			line(text)
+			lineMu.Unlock()
 		}
 	}
 	wg.Add(2)

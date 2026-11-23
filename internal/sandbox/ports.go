@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ironpark/gvx-desktop/internal/rungv"
@@ -126,13 +127,25 @@ func (s *Supervisor) syncPortsLocked(id string, p *proc) {
 	go s.syncPorts(id, p)
 }
 
-// syncPortsDelay gathers the lines of a burst of ports into one read.
-var syncPortsDelay = 250 * time.Millisecond
+// syncPortsDelayNS gathers the lines of a burst of ports into one read.
+var syncPortsDelayNS atomic.Int64
+
+func init() {
+	syncPortsDelayNS.Store(int64(250 * time.Millisecond))
+}
+
+func getSyncPortsDelay() time.Duration {
+	return time.Duration(syncPortsDelayNS.Load())
+}
+
+func setSyncPortsDelay(d time.Duration) time.Duration {
+	return time.Duration(syncPortsDelayNS.Swap(int64(d)))
+}
 
 func (s *Supervisor) syncPorts(id string, p *proc) {
 	changed := false
 	for again := true; again; {
-		time.Sleep(syncPortsDelay)
+		time.Sleep(getSyncPortsDelay())
 		s.mu.Lock()
 		p.portAgain = false // the read below sees what came before it
 		s.mu.Unlock()

@@ -421,9 +421,8 @@ exit 0
 		t.Fatal(err)
 	}
 
-	origDelay := syncPortsDelay
-	syncPortsDelay = 20 * time.Millisecond
-	t.Cleanup(func() { syncPortsDelay = origDelay })
+	origDelay := setSyncPortsDelay(20 * time.Millisecond)
+	t.Cleanup(func() { setSyncPortsDelay(origDelay) })
 
 	s, _ := newTestSupervisor(t, &rungv.Client{Path: binV21})
 	spec := Spec{

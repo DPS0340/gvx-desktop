@@ -241,6 +241,7 @@ func (c *Client) Stream(ctx context.Context, line func(string), args ...string) 
 		return err
 	}
 	var wg sync.WaitGroup
+	var lineMu sync.Mutex
 	read := func(r io.Reader, keep bool) {
 		defer wg.Done()
 		sc := bufio.NewScanner(r)
@@ -250,7 +251,9 @@ func (c *Client) Stream(ctx context.Context, line func(string), args ...string) 
 			if keep {
 				tail.add(text)
 			}
+			lineMu.Lock()
 			line(text)
+			lineMu.Unlock()
 		}
 	}
 	wg.Add(2)

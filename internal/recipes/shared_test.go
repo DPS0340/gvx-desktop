@@ -82,6 +82,50 @@ func TestSharedFolders(t *testing.T) {
 	}
 }
 
+func TestSharedFolderMountsAndDiff(t *testing.T) {
+	home := rungv.ExpandHome("~")
+	mounts := SharedFolderMounts([]string{"/opt/projects", "relative/ignored", "/Volumes/work"})
+	if len(mounts) != 2 || mounts[0].Target != "/opt/projects" || mounts[1].Target != "/Volumes/work" {
+		t.Fatalf("SharedFolderMounts = %+v", mounts)
+	}
+
+	active := DockerEngine()
+	// Add a non-shared bind mount that must be ignored by SharedFolderDiff.
+	active.Mounts = append(active.Mounts, sandbox.Mount{Type: sandbox.MountBind, Source: "/data", Target: "/srv/data"})
+	desired := WithSharedFolders(active, []string{home, "/opt/projects", "/Volumes/work"})
+
+	add, rm := SharedFolderDiff(active, desired)
+	if len(rm) != 0 {
+		t.Errorf("unexpected remove = %q", rm)
+	}
+	if len(add) != 2 || add[0].Target != "/opt/projects" || add[1].Target != "/Volumes/work" {
+		t.Errorf("add = %+v", add)
+	}
+
+	// Remove home and /opt/projects, add /srv/code.
+	desired2 := WithSharedFolders(desired, []string{"/Volumes/work", "/srv/code"})
+	add2, rm2 := SharedFolderDiff(desired, desired2)
+	gHome, _ := GuestPath(home)
+	if !slices.Equal(rm2, []string{gHome, "/opt/projects"}) {
+		t.Errorf("rm2 = %q, want [%q /opt/projects]", rm2, gHome)
+	}
+	if len(add2) != 1 || add2[0].Target != "/srv/code" {
+		t.Errorf("add2 = %+v", add2)
+	}
+
+	// Identical shared folders produce empty diff even if tilde vs expanded home is used.
+	withTilde := active.Clone()
+	for i, m := range withTilde.Mounts {
+		if m.Target == gHome {
+			withTilde.Mounts[i].Source = "~"
+		}
+	}
+	add3, rm3 := SharedFolderDiff(active, withTilde)
+	if len(add3) != 0 || len(rm3) != 0 {
+		t.Errorf("tilde equivalence diff: add=%+v rm=%q", add3, rm3)
+	}
+}
+
 func TestAddSharedFolder(t *testing.T) {
 	root := shareableDir(t)
 	src := filepath.Join(root, "src")

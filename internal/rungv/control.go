@@ -53,6 +53,21 @@ type Features struct {
 	// DynamicPorts: run takes --dynamic-ports, so `rungv port add` works
 	// on a locked-down sandbox started with it.
 	DynamicPorts bool
+	// KeepBlobs: run/pull/load take -keep-blobs; also gates v0.21 `rungv push`
+	// and offline `rungv save`.
+	KeepBlobs bool
+	// UnixForward: run/restore take --unix-forward.
+	UnixForward bool
+	// BindAttach: run/restore take --allow-bind-attach for live host bind mounts.
+	BindAttach bool
+	// DynamicPortAddrs: run/restore take --dynamic-ports-addr.
+	DynamicPortAddrs bool
+	// AutoPublishAddr: run/restore take --auto-publish-addr.
+	AutoPublishAddr bool
+	// NetQoS: run/restore/update take --net-tx-bps and --net-rx-bps.
+	NetQoS bool
+	// NATPolicy: run/restore take --nat-policy-file and `rungv net-policy` exists.
+	NATPolicy bool
 }
 
 // Features reports what this rungv binary can do. A zero Features (v0.19,
@@ -62,8 +77,15 @@ func (c *Client) Features(ctx context.Context) Features {
 		return Features{}
 	}
 	return Features{
-		Control:      c.HasRunFlag(ctx, "control-token-file"),
-		DynamicPorts: c.HasRunFlag(ctx, "dynamic-ports"),
+		Control:          c.HasRunFlag(ctx, "control-token-file"),
+		DynamicPorts:     c.HasRunFlag(ctx, "dynamic-ports"),
+		KeepBlobs:        c.HasRunFlag(ctx, "keep-blobs"),
+		UnixForward:      c.HasRunFlag(ctx, "unix-forward"),
+		BindAttach:       c.HasRunFlag(ctx, "allow-bind-attach"),
+		DynamicPortAddrs: c.HasRunFlag(ctx, "dynamic-ports-addr"),
+		AutoPublishAddr:  c.HasRunFlag(ctx, "auto-publish-addr"),
+		NetQoS:           c.HasRunFlag(ctx, "net-tx-bps"),
+		NATPolicy:        c.HasRunFlag(ctx, "nat-policy-file"),
 	}
 }
 
@@ -536,13 +558,15 @@ func (c *Client) Ping(ctx context.Context, t Target, wait time.Duration) (Ping, 
 
 // Resources is the resource snapshot rungv update and status report.
 type Resources struct {
-	MemoryBytes   int64 `json:"memory_bytes"`
-	CPUMillis     int64 `json:"cpu_millis"`
-	CPUQuotaUSec  int64 `json:"cpu_quota_usec"`
-	CPUPeriodUSec int64 `json:"cpu_period_usec"`
-	GuestCPUs     int   `json:"guest_cpus"`
-	PidsLimit     int64 `json:"pids_limit"`
-	IsolateLAN    bool  `json:"isolate_lan"`
+	MemoryBytes   int64  `json:"memory_bytes"`
+	CPUMillis     int64  `json:"cpu_millis"`
+	CPUQuotaUSec  int64  `json:"cpu_quota_usec"`
+	CPUPeriodUSec int64  `json:"cpu_period_usec"`
+	GuestCPUs     int    `json:"guest_cpus"`
+	PidsLimit     int64  `json:"pids_limit"`
+	IsolateLAN    bool   `json:"isolate_lan"`
+	NetTXBPS      uint64 `json:"net_tx_bps"`
+	NetRXBPS      uint64 `json:"net_rx_bps"`
 }
 
 // PortRule is one host port of the sandbox (rungv port ls / status).
@@ -567,6 +591,198 @@ func (c *Client) Ports(ctx context.Context, t Target) ([]PortRule, error) {
 		return nil, err
 	}
 	return decodeLines[PortRule](out)
+}
+
+// AddPorts dynamically publishes one or more host-to-guest port rules on a
+// running sandbox (rungv port add -S ... [--replace] -f json -- SPEC...).
+func (c *Client) AddPorts(ctx context.Context, t Target, specs []string, replace bool) ([]PortRule, error) {
+	if err := c.checkTarget(t); err != nil {
+		return nil, err
+	}
+	if len(specs) == 0 {
+		return nil, errors.New("rungv port add: no port specs specified")
+	}
+	cleaned := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		s := strings.TrimSpace(spec)
+		if s == "" {
+			return nil, errors.New("rungv port add: empty port spec")
+		}
+		if err := checkNoLeadingDash("port spec", s); err != nil {
+			return nil, err
+		}
+		cleaned = append(cleaned, s)
+	}
+	args := targetArgs("port add", t)
+	if replace {
+		args = append(args, "--replace")
+	}
+	args = append(args, "-f", "json", "--")
+	args = append(args, cleaned...)
+	out, err := c.output(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeLines[PortRule](out)
+}
+
+// RemovePorts closes one or more published port rules on a running sandbox
+// (rungv port rm -S ... [--force] -- SPEC...).
+func (c *Client) RemovePorts(ctx context.Context, t Target, specs []string, force bool) error {
+	if err := c.checkTarget(t); err != nil {
+		return err
+	}
+	if len(specs) == 0 {
+		return errors.New("rungv port rm: no port specs specified")
+	}
+	cleaned := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		s := strings.TrimSpace(spec)
+		if s == "" {
+			return errors.New("rungv port rm: empty port spec")
+		}
+		if err := checkNoLeadingDash("port spec", s); err != nil {
+			return err
+		}
+		cleaned = append(cleaned, s)
+	}
+	args := targetArgs("port rm", t)
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, "--")
+	args = append(args, cleaned...)
+	_, err := c.output(ctx, args...)
+	return err
+}
+
+// MountInfo is one active guest mount entry (rungv mount ls -f json).
+type MountInfo struct {
+	Target   string `json:"target"`
+	Type     string `json:"type"`   // tmpfs, hostfs, ext4lite, overlay, rpcfs, erofs
+	Source   string `json:"source"` // volume name, host path, or label
+	ReadOnly bool   `json:"read_only"`
+	Mutable  bool   `json:"mutable"` // whether host backing allows remount rw
+}
+
+// MountAddOptions are the flags of rungv mount add.
+type MountAddOptions struct {
+	Type     string // tmpfs, volume, or bind
+	Source   string // host path, named volume, or .ext4 image path
+	Target   string // guest mount destination path
+	ReadOnly bool   // --ro
+	Size     string // --size (for tmpfs, e.g. 64m)
+}
+
+// Mounts lists active mounts inside the running sandbox (rungv mount ls -f json).
+func (c *Client) Mounts(ctx context.Context, t Target) ([]MountInfo, error) {
+	if err := c.checkTarget(t); err != nil {
+		return nil, err
+	}
+	out, err := c.output(ctx, append(targetArgs("mount ls", t), "-f", "json")...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeLines[MountInfo](out)
+}
+
+// AddMount attaches a new filesystem inside a running sandbox (rungv mount add).
+func (c *Client) AddMount(ctx context.Context, t Target, o MountAddOptions) error {
+	if err := c.checkTarget(t); err != nil {
+		return err
+	}
+	kind := strings.ToLower(strings.TrimSpace(o.Type))
+	dst := strings.TrimSpace(o.Target)
+	src := strings.TrimSpace(o.Source)
+	size := strings.TrimSpace(o.Size)
+	if kind == "" {
+		return errors.New("rungv mount add: mount type is required")
+	}
+	if dst == "" {
+		return errors.New("rungv mount add: target path is required")
+	}
+	if err := checkNoLeadingDash("mount type", kind); err != nil {
+		return err
+	}
+	if err := checkNoLeadingDash("mount target", dst); err != nil {
+		return err
+	}
+	if src != "" {
+		if err := checkNoLeadingDash("mount source", src); err != nil {
+			return err
+		}
+	}
+	if size != "" {
+		if err := checkNoLeadingDash("mount size", size); err != nil {
+			return err
+		}
+	}
+	args := targetArgs("mount add", t)
+	args = append(args, "--type", kind)
+	if src != "" {
+		args = append(args, "--src", src)
+	}
+	args = append(args, "--dst", dst)
+	if o.ReadOnly {
+		args = append(args, "--ro")
+	}
+	if size != "" {
+		args = append(args, "--size", size)
+	}
+	if c.CacheDir != "" && kind == "volume" {
+		args = append(args, "-cache-dir", c.CacheDir)
+	}
+	_, err := c.output(ctx, args...)
+	return err
+}
+
+// RemoveMount unmounts target inside a running sandbox (rungv mount rm).
+// When lazy is true, --detach (MNT_DETACH) is passed.
+func (c *Client) RemoveMount(ctx context.Context, t Target, target string, lazy bool) error {
+	if err := c.checkTarget(t); err != nil {
+		return err
+	}
+	dst := strings.TrimSpace(target)
+	if dst == "" {
+		return errors.New("rungv mount rm: target path is required")
+	}
+	if err := checkNoLeadingDash("mount target", dst); err != nil {
+		return err
+	}
+	args := targetArgs("mount rm", t)
+	if lazy {
+		args = append(args, "--detach")
+	}
+	args = append(args, "--", dst)
+	_, err := c.output(ctx, args...)
+	return err
+}
+
+// NATPolicy reads the active host NAT firewall policy JSON of a running sandbox
+// (rungv net-policy get). Returns "null" when no policy is installed.
+func (c *Client) NATPolicy(ctx context.Context, t Target) ([]byte, error) {
+	if err := c.checkTarget(t); err != nil {
+		return nil, err
+	}
+	return c.output(ctx, targetArgs("net-policy get", t)...)
+}
+
+// ReplaceNATPolicy replaces the host NAT firewall policy of a running sandbox
+// from policyFile (.json, .yaml, or .yml) via rungv net-policy replace --file.
+func (c *Client) ReplaceNATPolicy(ctx context.Context, t Target, policyFile string) error {
+	if err := c.checkTarget(t); err != nil {
+		return err
+	}
+	f := strings.TrimSpace(policyFile)
+	if f == "" {
+		return errors.New("rungv net-policy replace: policy file is required")
+	}
+	if err := checkNoLeadingDash("policy file", f); err != nil {
+		return err
+	}
+	args := append(targetArgs("net-policy replace", t), "--file", f)
+	_, err := c.output(ctx, args...)
+	return err
 }
 
 // Status is the part of rungv status -f json the app reads.
@@ -748,19 +964,21 @@ func (c *Client) Top(ctx context.Context, t Target) ([]Process, error) {
 
 // Update is what rungv update changes; a zero field is left alone.
 type Update struct {
-	Memory      string // -m: 512m, 2g, or "0" for unlimited; rungv's units
-	ForceMemory bool   // --force-memory: allow going below current use
-	CPUs        string // --cpus: 1.5, or "0" for unlimited
-	CPUQuota    int64  // --cpu-quota USEC (-1 unlimited); with CPUPeriod, not with CPUs
-	CPUPeriod   int64  // --cpu-period USEC
-	PidsLimit   *int64 // --pids-limit (0 or -1 unlimited)
-	IsolateLAN  *bool  // --isolate-lan=<v>
+	Memory      string  // -m: 512m, 2g, or "0" for unlimited; rungv's units
+	ForceMemory bool    // --force-memory: allow going below current use
+	CPUs        string  // --cpus: 1.5, or "0" for unlimited
+	CPUQuota    int64   // --cpu-quota USEC (-1 unlimited); with CPUPeriod, not with CPUs
+	CPUPeriod   int64   // --cpu-period USEC
+	PidsLimit   *int64  // --pids-limit (0 or -1 unlimited)
+	IsolateLAN  *bool   // --isolate-lan=<v>
+	NetTXBPS    *uint64 // --net-tx-bps BPS (0 for unlimited)
+	NetRXBPS    *uint64 // --net-rx-bps BPS (0 for unlimited)
 }
 
 // IsZero reports whether u changes nothing.
 func (u Update) IsZero() bool {
 	return u.Memory == "" && u.CPUs == "" && u.CPUQuota == 0 && u.CPUPeriod == 0 &&
-		u.PidsLimit == nil && u.IsolateLAN == nil
+		u.PidsLimit == nil && u.IsolateLAN == nil && u.NetTXBPS == nil && u.NetRXBPS == nil
 }
 
 // Update applies u to the running sandbox and returns the resulting
@@ -793,6 +1011,12 @@ func (c *Client) Update(ctx context.Context, t Target, u Update) (Resources, err
 	}
 	if u.IsolateLAN != nil {
 		args = append(args, fmt.Sprintf("--isolate-lan=%t", *u.IsolateLAN))
+	}
+	if u.NetTXBPS != nil {
+		args = append(args, "--net-tx-bps", strconv.FormatUint(*u.NetTXBPS, 10))
+	}
+	if u.NetRXBPS != nil {
+		args = append(args, "--net-rx-bps", strconv.FormatUint(*u.NetRXBPS, 10))
 	}
 	args = append(args, "-f", "json")
 	out, err := c.output(ctx, args...)

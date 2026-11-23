@@ -97,6 +97,14 @@ type State struct {
 	// Paused reports a run whose guest Supervisor.Pause froze; Status
 	// stays Running. Owner: W1.
 	Paused bool
+	// DynamicPorts reports that the run started with --dynamic-ports (live port add/rm).
+	DynamicPorts bool
+	// BindAttach reports that the run started with --allow-bind-attach (live host bind mounts).
+	BindAttach bool
+	// NetQoS reports that the run supports live NAT bandwidth limits (--net-tx-bps/--net-rx-bps).
+	NetQoS bool
+	// NATPolicy reports that the run supports live NAT firewall policy inspection and replacement.
+	NATPolicy bool
 	// Busy are the host ports -auto-publish could not take, because
 	// something on this computer has them, until the guest lets the port
 	// go or it is published after all.
@@ -112,7 +120,9 @@ func (s State) Equal(o State) bool {
 		s.ReadyAt.Equal(o.ReadyAt) && s.ExitedAt.Equal(o.ExitedAt) && s.ExitCode == o.ExitCode &&
 		s.Error == o.Error && s.Advice == o.Advice && s.Platform == o.Platform &&
 		s.Restored == o.Restored && s.LogSeq == o.LogSeq && s.Signal == o.Signal &&
-		s.Control == o.Control && s.Paused == o.Paused
+		s.Control == o.Control && s.Paused == o.Paused &&
+		s.DynamicPorts == o.DynamicPorts && s.BindAttach == o.BindAttach &&
+		s.NetQoS == o.NetQoS && s.NATPolicy == o.NATPolicy
 }
 
 // Event is a change the supervisor reports.
@@ -180,7 +190,8 @@ type proc struct {
 	// it is to read the ports once more as it ends.
 	portSync, portAgain bool
 	// release is Launch's, called as the run ends.
-	release func()
+	release      func()
+	eventsCancel context.CancelFunc
 
 	stdinMu     sync.Mutex
 	stdinW      *os.File
@@ -418,6 +429,25 @@ func (s *Supervisor) Restore(spec Spec, dir string) error {
 	return s.launch(spec, dir)
 }
 
+func checkSpecFeatures(spec Spec, feat rungv.Features) error {
+	if len(spec.UnixForwards) > 0 && !feat.UnixForward {
+		return errors.New("Unix socket forwarding (--unix-forward) requires rungv v0.21 or later.")
+	}
+	if (spec.NetTXBPS > 0 || spec.NetRXBPS > 0) && !feat.NetQoS {
+		return errors.New("Network bandwidth limits (--net-tx-bps / --net-rx-bps) require rungv v0.21 or later.")
+	}
+	if strings.TrimSpace(spec.NATPolicyFile) != "" && !feat.NATPolicy {
+		return errors.New("NAT firewall policy (--nat-policy-file) requires rungv v0.21 or later.")
+	}
+	if len(spec.DynamicPortAddrs) > 0 && !feat.DynamicPortAddrs {
+		return errors.New("Dynamic port bind addresses (--dynamic-ports-addr) require rungv v0.21 or later.")
+	}
+	if strings.TrimSpace(spec.AutoPublishAddr) != "" && !feat.AutoPublishAddr {
+		return errors.New("Auto-publish bind address (--auto-publish-addr) requires rungv v0.21 or later.")
+	}
+	return nil
+}
+
 func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 	if err := spec.Validate(); err != nil {
 		return err
@@ -446,10 +476,16 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 		}
 	}
 	feat := client.Features(context.Background())
+	if err := checkSpecFeatures(spec, feat); err != nil {
+		return err
+	}
 	paths, err := s.pathsFor(spec, feat)
 	if err != nil {
 		return err
 	}
+	isNAT := spec.Network == "" || spec.Network == "nat"
+	paths.DynamicPorts = feat.DynamicPorts && spec.ContainerID == "" && isNAT
+	paths.AllowBindAttach = feat.BindAttach && runtime.GOOS != "windows" && spec.ContainerID == ""
 	if HasAutoPublish(spec) && !client.HasRunFlag(context.Background(), "auto-publish") {
 		// An older rungv would refuse the run: it starts without, and
 		// reaches this computer through the ports it publishes.
@@ -548,23 +584,34 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 	_ = stderrW.Close()
 	started = true
 
+	var eventsCtx context.Context
+	var eventsCancel context.CancelFunc
+	if paths.Control && paths.ControlSocket != "" {
+		eventsCtx, eventsCancel = context.WithCancel(context.Background())
+	}
+
 	p := &proc{
-		cmd:         cmd,
-		client:      client,
-		spec:        spec.Clone(),
-		paths:       paths,
-		socketIsTCP: paths.ControlSocket == "127.0.0.1:0",
-		done:        make(chan struct{}),
-		interactive: spec.Interactive,
-		release:     release,
-		stdinW:      stdinW,
-		term:        ptyTerm,
+		cmd:          cmd,
+		client:       client,
+		spec:         spec.Clone(),
+		paths:        paths,
+		socketIsTCP:  paths.ControlSocket == "127.0.0.1:0",
+		done:         make(chan struct{}),
+		interactive:  spec.Interactive,
+		release:      release,
+		eventsCancel: eventsCancel,
+		stdinW:       stdinW,
+		term:         ptyTerm,
 		state: State{
-			Status:    Starting,
-			PID:       cmd.Process.Pid,
-			StartedAt: time.Now(),
-			Restored:  restoreDir,
-			Control:   paths.Control,
+			Status:       Starting,
+			PID:          cmd.Process.Pid,
+			StartedAt:    time.Now(),
+			Restored:     restoreDir,
+			Control:      paths.Control,
+			DynamicPorts: paths.Control && paths.DynamicPorts,
+			BindAttach:   paths.Control && paths.AllowBindAttach,
+			NetQoS:       paths.Control && feat.NetQoS && isNAT,
+			NATPolicy:    paths.Control && feat.NATPolicy && isNAT,
 		},
 	}
 	if spec.ReadyPattern == "" {
@@ -578,6 +625,9 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 	s.procs[spec.ID] = p
 	s.mu.Unlock()
 	s.notify(Event{ID: spec.ID, Kind: EventChanged, State: s.State(spec.ID)})
+	if eventsCtx != nil {
+		go s.watchEvents(eventsCtx, spec.ID, p)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -683,6 +733,9 @@ func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sy
 }
 
 func (s *Supervisor) exited(id string, p *proc, err error) {
+	if p.eventsCancel != nil {
+		p.eventsCancel()
+	}
 	logs := s.Logs(id)
 	s.mu.Lock()
 	code := 0

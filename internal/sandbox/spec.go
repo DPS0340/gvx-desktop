@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -52,6 +54,9 @@ type Spec struct {
 
 	Env   []string `json:"env,omitempty"`   // KEY=VALUE, or KEY to copy from the host
 	Ports []string `json:"ports,omitempty"` // rungv -p specs
+	// UnixForwards forward guest Unix sockets to host Unix sockets (--unix-forward):
+	// GUEST_PATH=HOST_SOCKET[,uid=N,gid=N,mode=0600].
+	UnixForwards []string `json:"unixForwards,omitempty"`
 
 	Mounts       []Mount `json:"mounts,omitempty"`
 	Workspace    string  `json:"workspace,omitempty"`
@@ -64,7 +69,17 @@ type Spec struct {
 	Network    string `json:"network,omitempty"` // nat (default), none, wg
 	WGConf     string `json:"wgConf,omitempty"`
 	IsolateLAN bool   `json:"isolateLAN,omitempty"`
-	Backend    string `json:"backend,omitempty"` // auto (default), hvf, whpx, systrap
+	// NetTXBPS and NetRXBPS cap NAT bandwidth in bits per second (0 = unlimited).
+	NetTXBPS uint64 `json:"netTxBps,omitempty"`
+	NetRXBPS uint64 `json:"netRxBps,omitempty"`
+	// NATPolicyFile is a host .json/.yaml/.yml NAT firewall policy file (--nat-policy-file).
+	NATPolicyFile string `json:"natPolicyFile,omitempty"`
+	// DynamicPortAddrs are extra host IP literals allowed for runtime `rungv port add`
+	// under host lockdown (--dynamic-ports-addr).
+	DynamicPortAddrs []string `json:"dynamicPortAddrs,omitempty"`
+	// AutoPublishAddr is the host IP literal for --auto-publish (--auto-publish-addr).
+	AutoPublishAddr string `json:"autoPublishAddr,omitempty"`
+	Backend         string `json:"backend,omitempty"` // auto (default), hvf, whpx, systrap
 
 	Hostname string `json:"hostname,omitempty"`
 	User     string `json:"user,omitempty"`
@@ -160,6 +175,18 @@ func (s Spec) Validate() error {
 			return err
 		}
 	}
+	ufGuests := map[string]bool{}
+	for _, uf := range s.UnixForwards {
+		if err := ValidateUnixForward(uf); err != nil {
+			return err
+		}
+		gp, _, _ := strings.Cut(strings.TrimSpace(uf), "=")
+		gp = path.Clean(strings.TrimSpace(gp))
+		if ufGuests[gp] {
+			return fmt.Errorf("Two Unix forwards share the guest path %s.", gp)
+		}
+		ufGuests[gp] = true
+	}
 	targets := map[string]bool{}
 	if s.Workspace != "" {
 		targets["/workspace"] = true
@@ -196,8 +223,120 @@ func (s Spec) Validate() error {
 	if s.Network == "wg" && s.WGConf == "" {
 		return errors.New("The WireGuard network needs a configuration file.")
 	}
-	if (s.Network == "none" || s.Network == "wg") && len(s.Ports) > 0 {
+	isNAT := s.Network == "" || s.Network == "nat"
+	if !isNAT && len(s.Ports) > 0 {
 		return errors.New("Published ports need the NAT network.")
+	}
+	if !isNAT && (s.NetTXBPS > 0 || s.NetRXBPS > 0) {
+		return errors.New("Network bandwidth limits need the NAT network.")
+	}
+	if f := strings.TrimSpace(s.NATPolicyFile); f != "" {
+		if !isNAT {
+			return errors.New("NAT firewall policy needs the NAT network.")
+		}
+		switch strings.ToLower(filepath.Ext(f)) {
+		case ".json", ".yaml", ".yml":
+		default:
+			return fmt.Errorf("NAT policy file %q must end in .json, .yaml, or .yml.", f)
+		}
+	}
+	if len(s.DynamicPortAddrs) > 0 {
+		if !isNAT {
+			return errors.New("Dynamic port bind addresses need the NAT network.")
+		}
+		for _, raw := range s.DynamicPortAddrs {
+			if _, err := parseBareIPAddr(raw); err != nil {
+				return fmt.Errorf("Dynamic port bind address %q: must be a valid IP literal.", raw)
+			}
+		}
+	}
+	if a := strings.TrimSpace(s.AutoPublishAddr); a != "" {
+		if !isNAT {
+			return errors.New("Auto-publish address needs the NAT network.")
+		}
+		if !HasAutoPublish(s) {
+			return errors.New("Auto-publish address requires auto-publish to be enabled.")
+		}
+		if _, err := parseBareIPAddr(a); err != nil {
+			return fmt.Errorf("Auto-publish address %q: must be a valid IP literal.", a)
+		}
+	}
+	return nil
+}
+
+func parseBareIPAddr(raw string) (netip.Addr, error) {
+	s := strings.TrimSpace(raw)
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	if addr.Zone() != "" {
+		return netip.Addr{}, errors.New("IP address must not include a zone")
+	}
+	return addr, nil
+}
+
+const maxUnixSocketPathLen = 107
+
+// ValidateUnixForward checks a --unix-forward specification of the form
+// GUEST_PATH=HOST_SOCKET[,uid=N][,gid=N][,mode=0600].
+func ValidateUnixForward(spec string) error {
+	raw := strings.TrimSpace(spec)
+	guestPath, rhs, ok := strings.Cut(raw, "=")
+	if !ok {
+		return fmt.Errorf("Unix forward %q: write GUEST_PATH=HOST_SOCKET[,uid=N,gid=N,mode=0600].", spec)
+	}
+	guestPath = strings.TrimSpace(guestPath)
+	if !strings.HasPrefix(guestPath, "/") || guestPath == "/" {
+		return fmt.Errorf("Unix forward guest path %q must be an absolute path other than /.", guestPath)
+	}
+	if strings.ContainsRune(guestPath, 0) {
+		return fmt.Errorf("Unix forward guest path %q must not contain NUL bytes.", guestPath)
+	}
+	for seg := range strings.SplitSeq(guestPath, "/") {
+		if seg == ".." {
+			return fmt.Errorf("Unix forward guest path %q must not contain '..'.", guestPath)
+		}
+	}
+	if len(guestPath) > maxUnixSocketPathLen {
+		return fmt.Errorf("Unix forward guest path %q exceeds the %d-byte socket path limit.", guestPath, maxUnixSocketPathLen)
+	}
+	parts := strings.Split(rhs, ",")
+	hostSock := strings.TrimSpace(parts[0])
+	if hostSock == "" {
+		return fmt.Errorf("Unix forward %q: host socket path must not be empty.", spec)
+	}
+	if strings.ContainsRune(hostSock, 0) {
+		return fmt.Errorf("Unix forward %q: host socket path must not contain NUL bytes.", spec)
+	}
+	for _, opt := range parts[1:] {
+		opt = strings.TrimSpace(opt)
+		if opt == "" {
+			continue
+		}
+		k, v, hasEq := strings.Cut(opt, "=")
+		if !hasEq {
+			return fmt.Errorf("Unix forward %q: option %q must be key=value.", spec, opt)
+		}
+		k = strings.ToLower(strings.TrimSpace(k))
+		v = strings.TrimSpace(v)
+		switch k {
+		case "uid":
+			if _, err := strconv.ParseUint(v, 10, 32); err != nil {
+				return fmt.Errorf("Unix forward %q: invalid uid %q.", spec, v)
+			}
+		case "gid":
+			if _, err := strconv.ParseUint(v, 10, 32); err != nil {
+				return fmt.Errorf("Unix forward %q: invalid gid %q.", spec, v)
+			}
+		case "mode":
+			n, err := strconv.ParseUint(v, 8, 32)
+			if err != nil || n == 0 || n > 0o777 {
+				return fmt.Errorf("Unix forward %q: mode %q must be octal 0001..0777.", spec, v)
+			}
+		default:
+			return fmt.Errorf("Unix forward %q: unknown option %q (want uid, gid, or mode).", spec, k)
+		}
 	}
 	return nil
 }
@@ -303,6 +442,12 @@ type Paths struct {
 	// that starts it has Features.Control. Owner: W1.
 	Control       bool
 	CheckpointDir string // set when the spec has Checkpoint
+	// DynamicPorts passes --dynamic-ports on run and restore so `rungv port add`
+	// works under host lockdown.
+	DynamicPorts bool
+	// AllowBindAttach passes --allow-bind-attach on run and restore so POSIX
+	// SCM_RIGHTS `rungv mount add --type bind` works under host lockdown.
+	AllowBindAttach bool
 }
 
 // RunArgs is the argument vector of rungv run for the spec, without the
@@ -326,7 +471,10 @@ func (s Spec) RestoreArgs(dir string, p Paths) []string {
 	if p.TokenFile != "" {
 		args = append(args, "--control-token-file", p.TokenFile)
 	}
-	return append(args, s.flags(Paths{}, true)...)
+	return append(args, s.flags(Paths{
+		DynamicPorts:    p.DynamicPorts,
+		AllowBindAttach: p.AllowBindAttach,
+	}, true)...)
 }
 
 func (s Spec) flags(p Paths, restore bool) []string {
@@ -389,8 +537,38 @@ func (s Spec) flags(p Paths, restore bool) []string {
 	if s.IsolateLAN {
 		add("-isolate-lan")
 	}
+	isNAT := s.Network == "" || s.Network == "nat"
+	if isNAT {
+		if s.NetTXBPS > 0 {
+			add("--net-tx-bps", strconv.FormatUint(s.NetTXBPS, 10))
+		}
+		if s.NetRXBPS > 0 {
+			add("--net-rx-bps", strconv.FormatUint(s.NetRXBPS, 10))
+		}
+		if f := strings.TrimSpace(s.NATPolicyFile); f != "" {
+			add("--nat-policy-file", rungv.ExpandHome(f))
+		}
+		if !restore {
+			if a := strings.TrimSpace(s.AutoPublishAddr); a != "" && HasAutoPublish(s) {
+				add("--auto-publish-addr", a)
+			}
+		}
+		if p.DynamicPorts {
+			add("--dynamic-ports")
+		}
+		for _, addr := range s.DynamicPortAddrs {
+			if a := strings.TrimSpace(addr); a != "" {
+				add("--dynamic-ports-addr", a)
+			}
+		}
+	}
 	for _, port := range s.Ports {
 		add("-p", strings.TrimSpace(port))
+	}
+	for _, uf := range s.UnixForwards {
+		if u := strings.TrimSpace(uf); u != "" {
+			add("--unix-forward", u)
+		}
 	}
 	if s.Workspace != "" {
 		add("-workspace", rungv.ExpandHome(s.Workspace))
@@ -403,6 +581,9 @@ func (s Spec) flags(p Paths, restore bool) []string {
 	}
 	for _, m := range s.Mounts {
 		add(m.args()...)
+	}
+	if p.AllowBindAttach {
+		add("--allow-bind-attach")
 	}
 	if !restore && p.ControlSocket != "" {
 		add("-control-socket", p.ControlSocket)
@@ -519,6 +700,8 @@ func (s Spec) Clone() Spec {
 	c := s
 	c.Env = append([]string(nil), s.Env...)
 	c.Ports = append([]string(nil), s.Ports...)
+	c.UnixForwards = append([]string(nil), s.UnixForwards...)
+	c.DynamicPortAddrs = append([]string(nil), s.DynamicPortAddrs...)
 	c.Mounts = append([]Mount(nil), s.Mounts...)
 	return c
 }

@@ -131,7 +131,7 @@ func (e *Error) Unwrap() error { return e.Err }
 
 // cacheFlagCommands take -cache-dir.
 var cacheFlagCommands = map[string]bool{
-	"run": true, "restore": true, "pull": true, "images": true, "inspect": true,
+	"run": true, "restore": true, "pull": true, "push": true, "images": true, "inspect": true,
 	"rmi": true, "tag": true, "save": true, "load": true, "image": true,
 	"volume": true, "system": true, "info": true,
 }
@@ -454,7 +454,12 @@ func (c *Client) InspectImage(ctx context.Context, ref string) (string, error) {
 
 // Pull downloads ref, handing progress lines to line.
 func (c *Client) Pull(ctx context.Context, ref string, line func(string)) error {
-	return c.Stream(ctx, line, "pull", ref)
+	args := []string{"pull"}
+	if c.Features(ctx).KeepBlobs {
+		args = append(args, "-keep-blobs")
+	}
+	args = append(args, ref)
+	return c.Stream(ctx, line, args...)
 }
 
 // RemoveImage removes a tag or an image.

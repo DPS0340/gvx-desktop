@@ -22,6 +22,22 @@ func checkNoLeadingDash(label, val string) error {
 	return nil
 }
 
+func checkNoControlChars(label, val string) error {
+	for i := range len(val) {
+		if val[i] < 0x20 || val[i] == 0x7f {
+			return fmt.Errorf("invalid %s %q: contains control character", label, val)
+		}
+	}
+	return nil
+}
+
+func validateFlagValue(label, val string) error {
+	if err := checkNoLeadingDash(label, val); err != nil {
+		return err
+	}
+	return checkNoControlChars(label, val)
+}
+
 func validateArchFlag(arch string) error {
 	if arch == "" {
 		return nil
@@ -122,6 +138,8 @@ func (c *Client) InspectImagesRawArch(ctx context.Context, arch string, refs ...
 // PullPlatform downloads ref for platform ("" for the host's default), handing
 // each progress line to line. When platform names an architecture, -arch is
 // also passed so rungv stores the image in that architecture's namespace.
+// When rungv supports -keep-blobs (v0.21+), it is passed automatically so
+// cached images can be pushed and saved offline.
 func (c *Client) PullPlatform(ctx context.Context, ref, platform string, line func(string)) error {
 	if err := checkNoLeadingDash("image reference", ref); err != nil {
 		return err
@@ -141,8 +159,126 @@ func (c *Client) PullPlatform(ctx context.Context, ref, platform string, line fu
 	if platform != "" {
 		args = append(args, "-platform", platform)
 	}
+	if c.Features(ctx).KeepBlobs {
+		args = append(args, "-keep-blobs")
+	}
 	args = append(args, "--", ref)
 	return c.Stream(ctx, line, args...)
+}
+
+// PushOptions are the options for rungv push.
+type PushOptions struct {
+	Ref         string // cached image reference or ID (required)
+	Target      string // optional destination reference
+	Arch        string // optional architecture namespace (derived from Platform when empty)
+	Platform    string // optional image platform (e.g. linux/amd64)
+	RegistryURL string // optional OCI registry base URL override
+	// AuthPayload, when non-empty, is passed over stdin with --auth-stdin
+	// (Docker X-Registry-Auth JSON or base64 JSON). Leave empty to use the
+	// Docker config store.
+	AuthPayload string
+	Quiet       bool
+}
+
+// PushImage uploads a cached OCI image to a registry via rungv push, streaming
+// stdout and stderr lines to line.
+func (c *Client) PushImage(ctx context.Context, opts PushOptions, line func(string)) error {
+	if c == nil || c.Path == "" {
+		return ErrNotFound
+	}
+	if strings.TrimSpace(opts.Ref) == "" {
+		return errors.New("invalid image reference: must not be empty")
+	}
+	if err := validateFlagValue("image reference", opts.Ref); err != nil {
+		return err
+	}
+	if opts.Target != "" {
+		if err := validateFlagValue("target reference", opts.Target); err != nil {
+			return err
+		}
+	}
+	if err := validateArchFlag(opts.Arch); err != nil {
+		return err
+	}
+	if opts.Platform != "" {
+		if err := validateFlagValue("platform", opts.Platform); err != nil {
+			return err
+		}
+	}
+	if opts.RegistryURL != "" {
+		if err := validateFlagValue("registry URL", opts.RegistryURL); err != nil {
+			return err
+		}
+	}
+	if line == nil {
+		line = func(string) {}
+	}
+	arch := opts.Arch
+	if arch == "" && opts.Platform != "" {
+		arch = archFromPlatform(opts.Platform)
+	}
+	args := []string{"push"}
+	if arch != "" {
+		args = append(args, "-arch", arch)
+	}
+	if opts.Platform != "" {
+		args = append(args, "-platform", opts.Platform)
+	}
+	if opts.RegistryURL != "" {
+		args = append(args, "-registry-url", opts.RegistryURL)
+	}
+	if opts.Quiet {
+		args = append(args, "-q")
+	}
+	if opts.AuthPayload != "" {
+		args = append(args, "--auth-stdin")
+	}
+	args = append(args, "--", opts.Ref)
+	if opts.Target != "" {
+		args = append(args, opts.Target)
+	}
+
+	cmd := c.Command(ctx, args...)
+	if opts.AuthPayload != "" {
+		cmd.Stdin = strings.NewReader(opts.AuthPayload)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	var tail tailBuffer
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	read := func(r io.Reader, keep bool) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			text := sc.Text()
+			if keep {
+				tail.add(text)
+			}
+			line(text)
+		}
+	}
+	wg.Add(2)
+	go read(stdout, false)
+	go read(stderr, true)
+	wg.Wait()
+	if err := cmd.Wait(); err != nil {
+		e := &Error{Args: args, Stderr: tail.String(), Err: err}
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
+			e.Code = exit.ExitCode()
+		}
+		return e
+	}
+	return nil
 }
 
 // RemoveImageSafe removes a tag or image, terminating flags with "--" before ref.
@@ -215,6 +351,9 @@ func (c *Client) LoadImagesArch(ctx context.Context, arch string, archive io.Rea
 	args := []string{"load"}
 	if arch != "" {
 		args = append(args, "-arch", arch)
+	}
+	if c.Features(ctx).KeepBlobs {
+		args = append(args, "-keep-blobs")
 	}
 	cmd := c.Command(ctx, args...)
 	cmd.Stdin = archive

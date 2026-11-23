@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -265,23 +266,7 @@ func (s *Supervisor) Update(ctx context.Context, id string, u rungv.Update) (run
 		return rungv.Resources{}, err
 	}
 	s.mu.Lock()
-	if u.Memory != "" {
-		if u.Memory == "0" {
-			p.spec.Memory = ""
-		} else {
-			p.spec.Memory = u.Memory
-		}
-	}
-	if u.CPUs != "" {
-		if u.CPUs == "0" {
-			p.spec.CPUs = ""
-		} else {
-			p.spec.CPUs = u.CPUs
-		}
-	}
-	if u.IsolateLAN != nil {
-		p.spec.IsolateLAN = *u.IsolateLAN
-	}
+	applyUpdateToSpec(&p.spec, u)
 	s.mu.Unlock()
 
 	if summary := formatUpdateSummary(u); summary != "" {
@@ -289,6 +274,32 @@ func (s *Supervisor) Update(ctx context.Context, id string, u rungv.Update) (run
 	}
 	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
 	return res, nil
+}
+
+func applyUpdateToSpec(spec *Spec, u rungv.Update) {
+	if u.Memory != "" {
+		if u.Memory == "0" {
+			spec.Memory = ""
+		} else {
+			spec.Memory = u.Memory
+		}
+	}
+	if u.CPUs != "" {
+		if u.CPUs == "0" {
+			spec.CPUs = ""
+		} else {
+			spec.CPUs = u.CPUs
+		}
+	}
+	if u.IsolateLAN != nil {
+		spec.IsolateLAN = *u.IsolateLAN
+	}
+	if u.NetTXBPS != nil {
+		spec.NetTXBPS = *u.NetTXBPS
+	}
+	if u.NetRXBPS != nil {
+		spec.NetRXBPS = *u.NetRXBPS
+	}
 }
 
 func formatUpdateSummary(u rungv.Update) string {
@@ -310,6 +321,12 @@ func formatUpdateSummary(u rungv.Update) string {
 	}
 	if u.IsolateLAN != nil {
 		parts = append(parts, fmt.Sprintf("isolate-lan %t", *u.IsolateLAN))
+	}
+	if u.NetTXBPS != nil {
+		parts = append(parts, fmt.Sprintf("net-tx-bps %d", *u.NetTXBPS))
+	}
+	if u.NetRXBPS != nil {
+		parts = append(parts, fmt.Sprintf("net-rx-bps %d", *u.NetRXBPS))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -409,19 +426,23 @@ func (s *Supervisor) Shutdown(id string, signal string, timeout time.Duration) e
 
 // LiveUpdate compares the spec a sandbox runs with (running) and an edit
 // of it. live is true when every difference can be applied to the run with
-// Supervisor.Update: only Memory (not to ""), CPUs ("" becomes "0"), and
-// IsolateLAN differ, besides fields that never reach rungv (AutoStart).
-// u is then the update to apply; it is zero when nothing differs.
+// Supervisor.Update: only Memory (not to ""), CPUs ("" becomes "0"),
+// IsolateLAN, NetTXBPS, and NetRXBPS differ, besides fields that never reach
+// rungv (AutoStart). u is then the update to apply; it is zero when nothing
+// differs.
 func LiveUpdate(running, edited Spec) (u rungv.Update, live bool) {
 	a, b := running.Clone(), edited.Clone()
 	a.Memory, b.Memory = "", ""
 	a.CPUs, b.CPUs = "", ""
 	a.IsolateLAN, b.IsolateLAN = false, false
+	a.NetTXBPS, b.NetTXBPS = 0, 0
+	a.NetRXBPS, b.NetRXBPS = 0, 0
 	a.AutoStart, b.AutoStart = false, false
 	a.CreatedAt, b.CreatedAt = time.Time{}, time.Time{}
 	if !a.Equal(b) {
 		return rungv.Update{}, false
 	}
+	isNAT := running.Network == "" || running.Network == "nat"
 	if running.Memory != edited.Memory {
 		if edited.Memory == "" {
 			return rungv.Update{}, false
@@ -439,5 +460,564 @@ func LiveUpdate(running, edited Spec) (u rungv.Update, live bool) {
 		v := edited.IsolateLAN
 		u.IsolateLAN = &v
 	}
+	if running.NetTXBPS != edited.NetTXBPS {
+		if !isNAT {
+			return rungv.Update{}, false
+		}
+		v := edited.NetTXBPS
+		u.NetTXBPS = &v
+	}
+	if running.NetRXBPS != edited.NetRXBPS {
+		if !isNAT {
+			return rungv.Update{}, false
+		}
+		v := edited.NetRXBPS
+		u.NetRXBPS = &v
+	}
 	return u, true
+}
+
+// LiveDiff describes the changes between a running sandbox's active spec and
+// an edited spec that can be applied live without restarting the sandbox.
+type LiveDiff struct {
+	Update        rungv.Update
+	NATPolicyFile string
+	AddPorts      []string
+	RemovePorts   []string
+	AddMounts     []Mount
+	RemoveMounts  []string
+}
+
+// IsZero reports whether d carries no live changes.
+func (d LiveDiff) IsZero() bool {
+	return d.Update.IsZero() &&
+		d.NATPolicyFile == "" &&
+		len(d.AddPorts) == 0 &&
+		len(d.RemovePorts) == 0 &&
+		len(d.AddMounts) == 0 &&
+		len(d.RemoveMounts) == 0
+}
+
+// ComputeLiveDiff compares running and edited against the capabilities the
+// running sandbox actually started with (st). It returns (diff, true) when
+// every difference can be applied live via Supervisor.ApplyLive (with diff
+// zero when nothing runtime-visible changed), or (zero, false) when a restart
+// is required.
+func ComputeLiveDiff(running, edited Spec, st State) (LiveDiff, bool) {
+	a, b := running.Clone(), edited.Clone()
+	a.Memory, b.Memory = "", ""
+	a.CPUs, b.CPUs = "", ""
+	a.IsolateLAN, b.IsolateLAN = false, false
+	a.NetTXBPS, b.NetTXBPS = 0, 0
+	a.NetRXBPS, b.NetRXBPS = 0, 0
+	a.NATPolicyFile, b.NATPolicyFile = "", ""
+	a.Ports, b.Ports = nil, nil
+	a.Mounts, b.Mounts = nil, nil
+	a.AutoStart, b.AutoStart = false, false
+	a.CreatedAt, b.CreatedAt = time.Time{}, time.Time{}
+	if !a.Equal(b) {
+		return LiveDiff{}, false
+	}
+
+	var diff LiveDiff
+	isNAT := running.Network == "" || running.Network == "nat"
+
+	if running.Memory != edited.Memory {
+		if !st.Control || edited.Memory == "" {
+			return LiveDiff{}, false
+		}
+		diff.Update.Memory = edited.Memory
+	}
+	if running.CPUs != edited.CPUs {
+		if !st.Control {
+			return LiveDiff{}, false
+		}
+		if edited.CPUs == "" {
+			diff.Update.CPUs = "0"
+		} else {
+			diff.Update.CPUs = edited.CPUs
+		}
+	}
+	if running.IsolateLAN != edited.IsolateLAN {
+		if !st.Control || !isNAT {
+			return LiveDiff{}, false
+		}
+		v := edited.IsolateLAN
+		diff.Update.IsolateLAN = &v
+	}
+	if running.NetTXBPS != edited.NetTXBPS {
+		if !st.Control || !st.NetQoS || !isNAT {
+			return LiveDiff{}, false
+		}
+		v := edited.NetTXBPS
+		diff.Update.NetTXBPS = &v
+	}
+	if running.NetRXBPS != edited.NetRXBPS {
+		if !st.Control || !st.NetQoS || !isNAT {
+			return LiveDiff{}, false
+		}
+		v := edited.NetRXBPS
+		diff.Update.NetRXBPS = &v
+	}
+
+	runPol := strings.TrimSpace(running.NATPolicyFile)
+	edPol := strings.TrimSpace(edited.NATPolicyFile)
+	if runPol != edPol {
+		if edPol == "" || !st.Control || !st.NATPolicy || !isNAT {
+			return LiveDiff{}, false
+		}
+		diff.NATPolicyFile = edPol
+	}
+
+	addPorts, removePorts := diffStrings(running.Ports, edited.Ports)
+	if len(addPorts) > 0 || len(removePorts) > 0 {
+		if !st.Control || !st.DynamicPorts || !isNAT {
+			return LiveDiff{}, false
+		}
+		for _, p := range addPorts {
+			if !portSpecAllowedLive(p, running.DynamicPortAddrs) {
+				return LiveDiff{}, false
+			}
+		}
+		for _, p := range removePorts {
+			if !portSpecAllowedLive(p, running.DynamicPortAddrs) {
+				return LiveDiff{}, false
+			}
+		}
+		diff.AddPorts = addPorts
+		diff.RemovePorts = removePorts
+	}
+
+	runMounts := make(map[string]Mount, len(running.Mounts))
+	for _, m := range running.Mounts {
+		runMounts[m.Target] = m
+	}
+	edMounts := make(map[string]Mount, len(edited.Mounts))
+	for _, m := range edited.Mounts {
+		edMounts[m.Target] = m
+	}
+	mountAllowedLive := func(m Mount) bool {
+		switch m.Type {
+		case MountTmpfs:
+			return st.Control
+		case MountBind:
+			return st.Control && st.BindAttach
+		default:
+			return false
+		}
+	}
+	for _, m := range running.Mounts {
+		em, exists := edMounts[m.Target]
+		if !exists {
+			if !mountAllowedLive(m) {
+				return LiveDiff{}, false
+			}
+			diff.RemoveMounts = append(diff.RemoveMounts, m.Target)
+		} else if !mountsEqual(m, em) {
+			if !mountAllowedLive(m) || !mountAllowedLive(em) {
+				return LiveDiff{}, false
+			}
+			diff.RemoveMounts = append(diff.RemoveMounts, m.Target)
+			diff.AddMounts = append(diff.AddMounts, em)
+		}
+	}
+	for _, m := range edited.Mounts {
+		if _, exists := runMounts[m.Target]; !exists {
+			if !mountAllowedLive(m) {
+				return LiveDiff{}, false
+			}
+			diff.AddMounts = append(diff.AddMounts, m)
+		}
+	}
+
+	return diff, true
+}
+
+func mountsEqual(a, b Mount) bool {
+	if a.Type != b.Type || a.Target != b.Target || a.ReadOnly != b.ReadOnly || a.Size != b.Size {
+		return false
+	}
+	if a.Type == MountBind {
+		return rungv.ExpandHome(a.Source) == rungv.ExpandHome(b.Source)
+	}
+	return a.Source == b.Source
+}
+
+func diffStrings(before, after []string) (added, removed []string) {
+	beforeCounts := make(map[string]int, len(before))
+	for _, raw := range before {
+		if s := strings.TrimSpace(raw); s != "" {
+			beforeCounts[s]++
+		}
+	}
+	afterCounts := make(map[string]int, len(after))
+	for _, raw := range after {
+		if s := strings.TrimSpace(raw); s != "" {
+			afterCounts[s]++
+		}
+	}
+	seenRemoved := map[string]int{}
+	for _, raw := range before {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		if seenRemoved[s] < beforeCounts[s]-afterCounts[s] {
+			removed = append(removed, s)
+			seenRemoved[s]++
+		}
+	}
+	seenAdded := map[string]int{}
+	for _, raw := range after {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		if seenAdded[s] < afterCounts[s]-beforeCounts[s] {
+			added = append(added, s)
+			seenAdded[s]++
+		}
+	}
+	return added, removed
+}
+
+func portSpecAllowedLive(spec string, dynamicAddrs []string) bool {
+	p := strings.TrimSpace(spec)
+	if p == "" || strings.HasPrefix(p, "unix:") {
+		return false
+	}
+	m := portRe.FindStringSubmatch(p)
+	if m == nil {
+		return false
+	}
+	ipStr := m[1]
+	if ipStr == "" {
+		return true
+	}
+	addr, err := parseBareIPAddr(strings.Trim(ipStr, "[]"))
+	if err != nil {
+		return false
+	}
+	if addr.IsLoopback() {
+		return true
+	}
+	for _, raw := range dynamicAddrs {
+		if allowed, err := parseBareIPAddr(raw); err == nil && allowed == addr {
+			return true
+		}
+	}
+	return false
+}
+
+func mountAddOptions(m Mount) rungv.MountAddOptions {
+	src := m.Source
+	if m.Type == MountBind || (m.Type == MountVolume && strings.ContainsAny(m.Source, `/\`)) {
+		src = rungv.ExpandHome(m.Source)
+	}
+	return rungv.MountAddOptions{
+		Type:     string(m.Type),
+		Source:   src,
+		Target:   m.Target,
+		ReadOnly: m.ReadOnly,
+		Size:     m.Size,
+	}
+}
+
+func removePortsFromSpec(ports []string, remove []string) []string {
+	rmCounts := make(map[string]int, len(remove))
+	for _, r := range remove {
+		rmCounts[strings.TrimSpace(r)]++
+	}
+	out := make([]string, 0, len(ports))
+	for _, p := range ports {
+		trimmed := strings.TrimSpace(p)
+		if rmCounts[trimmed] > 0 {
+			rmCounts[trimmed]--
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func addPortsToSpec(ports []string, add []string) []string {
+	out := append([]string(nil), ports...)
+	for _, a := range add {
+		s := strings.TrimSpace(a)
+		if s == "" {
+			continue
+		}
+		if !slices.ContainsFunc(out, func(existing string) bool { return strings.TrimSpace(existing) == s }) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func upsertMountInSpec(mounts []Mount, m Mount) []Mount {
+	out := append([]Mount(nil), mounts...)
+	for i, existing := range out {
+		if existing.Target == m.Target {
+			out[i] = m
+			return out
+		}
+	}
+	return append(out, m)
+}
+
+func removeMountFromSpec(mounts []Mount, target string) []Mount {
+	return slices.DeleteFunc(append([]Mount(nil), mounts...), func(m Mount) bool {
+		return m.Target == target
+	})
+}
+
+// AddPorts dynamically publishes specs on the active run of id, updates
+// ActiveSpec, syncs published ports, and emits EventChanged.
+func (s *Supervisor) AddPorts(ctx context.Context, id string, specs []string, replace bool) ([]rungv.PortRule, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	p, client, target, err := s.controlTarget(id)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := client.AddPorts(ctx, target, specs, replace)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.procs[id] == p && p.state.Status.Active() {
+		p.spec.Ports = addPortsToSpec(p.spec.Ports, specs)
+		s.syncPortsLocked(id, p)
+	}
+	s.mu.Unlock()
+	s.Logs(id).Add(System, "── Updated: added ports "+strings.Join(specs, ", "))
+	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
+	return rules, nil
+}
+
+// RemovePorts closes published port specs on the active run of id, updates
+// ActiveSpec, syncs published ports, and emits EventChanged.
+func (s *Supervisor) RemovePorts(ctx context.Context, id string, specs []string, force bool) error {
+	if len(specs) == 0 {
+		return nil
+	}
+	p, client, target, err := s.controlTarget(id)
+	if err != nil {
+		return err
+	}
+	if err := client.RemovePorts(ctx, target, specs, force); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.procs[id] == p && p.state.Status.Active() {
+		p.spec.Ports = removePortsFromSpec(p.spec.Ports, specs)
+		s.syncPortsLocked(id, p)
+	}
+	s.mu.Unlock()
+	s.Logs(id).Add(System, "── Updated: removed ports "+strings.Join(specs, ", "))
+	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
+	return nil
+}
+
+// Mounts lists active mounts inside the running sandbox of id.
+func (s *Supervisor) Mounts(ctx context.Context, id string) ([]rungv.MountInfo, error) {
+	_, client, target, err := s.controlTarget(id)
+	if err != nil {
+		return nil, err
+	}
+	return client.Mounts(ctx, target)
+}
+
+// AddMount attaches m inside the active run of id, updates ActiveSpec, and
+// emits EventChanged.
+func (s *Supervisor) AddMount(ctx context.Context, id string, m Mount) error {
+	if err := m.validate(); err != nil {
+		return err
+	}
+	p, client, target, err := s.controlTarget(id)
+	if err != nil {
+		return err
+	}
+	if err := client.AddMount(ctx, target, mountAddOptions(m)); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.procs[id] == p && p.state.Status.Active() {
+		p.spec.Mounts = upsertMountInSpec(p.spec.Mounts, m)
+	}
+	s.mu.Unlock()
+	s.Logs(id).Add(System, "── Updated: mounted "+m.Target)
+	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
+	return nil
+}
+
+// RemoveMount unmounts guestTarget inside the active run of id, updates
+// ActiveSpec, and emits EventChanged.
+func (s *Supervisor) RemoveMount(ctx context.Context, id string, guestTarget string, lazy bool) error {
+	p, client, target, err := s.controlTarget(id)
+	if err != nil {
+		return err
+	}
+	if err := client.RemoveMount(ctx, target, guestTarget, lazy); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.procs[id] == p && p.state.Status.Active() {
+		p.spec.Mounts = removeMountFromSpec(p.spec.Mounts, guestTarget)
+	}
+	s.mu.Unlock()
+	s.Logs(id).Add(System, "── Updated: unmounted "+guestTarget)
+	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
+	return nil
+}
+
+// NATPolicy reads the active host NAT firewall policy JSON of id.
+func (s *Supervisor) NATPolicy(ctx context.Context, id string) ([]byte, error) {
+	_, client, target, err := s.controlTarget(id)
+	if err != nil {
+		return nil, err
+	}
+	return client.NATPolicy(ctx, target)
+}
+
+// ReplaceNATPolicy replaces the host NAT firewall policy of the active run of
+// id from policyFile, updates ActiveSpec, and emits EventChanged.
+func (s *Supervisor) ReplaceNATPolicy(ctx context.Context, id string, policyFile string) error {
+	p, client, target, err := s.controlTarget(id)
+	if err != nil {
+		return err
+	}
+	trimmed := strings.TrimSpace(policyFile)
+	if err := client.ReplaceNATPolicy(ctx, target, rungv.ExpandHome(trimmed)); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.procs[id] == p && p.state.Status.Active() {
+		p.spec.NATPolicyFile = trimmed
+	}
+	s.mu.Unlock()
+	s.Logs(id).Add(System, "── Updated: nat-policy "+trimmed)
+	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
+	return nil
+}
+
+// ApplyLive applies every change in diff to the active run of id without
+// holding s.mu across rungv calls. ActiveSpec is updated incrementally as each
+// step succeeds, ports are synced if any port changed, and a summary log line
+// plus EventChanged follow.
+func (s *Supervisor) ApplyLive(ctx context.Context, id string, diff LiveDiff) error {
+	if diff.IsZero() {
+		return nil
+	}
+	p, client, target, err := s.controlTarget(id)
+	if err != nil {
+		return err
+	}
+
+	var applied []string
+	portsChanged := false
+	finish := func() {
+		if portsChanged {
+			s.mu.Lock()
+			if s.procs[id] == p && p.state.Status.Active() {
+				s.syncPortsLocked(id, p)
+			}
+			s.mu.Unlock()
+		}
+		if len(applied) > 0 {
+			s.Logs(id).Add(System, "── Updated: "+strings.Join(applied, ", "))
+			s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
+		}
+	}
+
+	if !diff.Update.IsZero() {
+		if _, err := client.Update(ctx, target, diff.Update); err != nil {
+			finish()
+			return err
+		}
+		s.mu.Lock()
+		if s.procs[id] == p && p.state.Status.Active() {
+			applyUpdateToSpec(&p.spec, diff.Update)
+		}
+		s.mu.Unlock()
+		if summary := formatUpdateSummary(diff.Update); summary != "" {
+			applied = append(applied, summary)
+		}
+	}
+
+	if diff.NATPolicyFile != "" {
+		pol := strings.TrimSpace(diff.NATPolicyFile)
+		if err := client.ReplaceNATPolicy(ctx, target, rungv.ExpandHome(pol)); err != nil {
+			finish()
+			return err
+		}
+		s.mu.Lock()
+		if s.procs[id] == p && p.state.Status.Active() {
+			p.spec.NATPolicyFile = pol
+		}
+		s.mu.Unlock()
+		applied = append(applied, "nat-policy "+pol)
+	}
+
+	if len(diff.RemovePorts) > 0 {
+		if err := client.RemovePorts(ctx, target, diff.RemovePorts, true); err != nil {
+			finish()
+			return err
+		}
+		s.mu.Lock()
+		if s.procs[id] == p && p.state.Status.Active() {
+			p.spec.Ports = removePortsFromSpec(p.spec.Ports, diff.RemovePorts)
+		}
+		s.mu.Unlock()
+		portsChanged = true
+		applied = append(applied, "removed ports "+strings.Join(diff.RemovePorts, ", "))
+	}
+
+	if len(diff.AddPorts) > 0 {
+		if _, err := client.AddPorts(ctx, target, diff.AddPorts, false); err != nil {
+			finish()
+			return err
+		}
+		s.mu.Lock()
+		if s.procs[id] == p && p.state.Status.Active() {
+			p.spec.Ports = addPortsToSpec(p.spec.Ports, diff.AddPorts)
+		}
+		s.mu.Unlock()
+		portsChanged = true
+		applied = append(applied, "added ports "+strings.Join(diff.AddPorts, ", "))
+	}
+
+	for _, rmTarget := range diff.RemoveMounts {
+		if err := client.RemoveMount(ctx, target, rmTarget, false); err != nil {
+			finish()
+			return err
+		}
+		s.mu.Lock()
+		if s.procs[id] == p && p.state.Status.Active() {
+			p.spec.Mounts = removeMountFromSpec(p.spec.Mounts, rmTarget)
+		}
+		s.mu.Unlock()
+		applied = append(applied, "unmounted "+rmTarget)
+	}
+
+	for _, m := range diff.AddMounts {
+		if err := m.validate(); err != nil {
+			finish()
+			return err
+		}
+		if err := client.AddMount(ctx, target, mountAddOptions(m)); err != nil {
+			finish()
+			return err
+		}
+		s.mu.Lock()
+		if s.procs[id] == p && p.state.Status.Active() {
+			p.spec.Mounts = upsertMountInSpec(p.spec.Mounts, m)
+		}
+		s.mu.Unlock()
+		applied = append(applied, "mounted "+m.Target)
+	}
+
+	finish()
+	return nil
 }

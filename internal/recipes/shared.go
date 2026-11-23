@@ -109,17 +109,59 @@ func SharedGuestPaths(spec sandbox.Spec) []string {
 	return out
 }
 
+// SharedFolderMounts returns the writable bind mounts for folders, omitting
+// any folder that has no guest path.
+func SharedFolderMounts(folders []string) []sandbox.Mount {
+	var out []sandbox.Mount
+	for _, f := range folders {
+		if g, err := GuestPath(f); err == nil {
+			out = append(out, sandbox.Mount{Type: sandbox.MountBind, Source: f, Target: g})
+		}
+	}
+	return out
+}
+
+// SharedFolderDiff compares the shared-folder bind mounts of activeSpec and
+// desiredSpec, returning mounts to attach and guest targets to detach so a
+// running Docker Engine sandbox can update its shared folders live.
+func SharedFolderDiff(activeSpec, desiredSpec sandbox.Spec) (add []sandbox.Mount, remove []string) {
+	active := map[string]sandbox.Mount{}
+	for _, m := range activeSpec.Mounts {
+		if isShared(m) {
+			active[m.Target] = m
+		}
+	}
+	desired := map[string]sandbox.Mount{}
+	for _, m := range desiredSpec.Mounts {
+		if isShared(m) {
+			desired[m.Target] = m
+		}
+	}
+	for _, m := range activeSpec.Mounts {
+		if !isShared(m) {
+			continue
+		}
+		if dm, ok := desired[m.Target]; !ok || rungv.ExpandHome(dm.Source) != rungv.ExpandHome(m.Source) {
+			remove = append(remove, m.Target)
+		}
+	}
+	for _, m := range desiredSpec.Mounts {
+		if !isShared(m) {
+			continue
+		}
+		if am, ok := active[m.Target]; !ok || rungv.ExpandHome(am.Source) != rungv.ExpandHome(m.Source) {
+			add = append(add, m)
+		}
+	}
+	return add, remove
+}
+
 // WithSharedFolders returns the engine's sandbox sharing folders, its other
-// mounts untouched. A folder with no guest path is left out. The change
-// takes a restart: a sandbox's mounts are fixed when it starts.
+// mounts untouched. A folder with no guest path is left out.
 func WithSharedFolders(spec sandbox.Spec, folders []string) sandbox.Spec {
 	spec = spec.Clone()
 	spec.Mounts = slices.DeleteFunc(spec.Mounts, isShared)
-	for _, f := range folders {
-		if g, err := GuestPath(f); err == nil {
-			spec.Mounts = append(spec.Mounts, sandbox.Mount{Type: sandbox.MountBind, Source: f, Target: g})
-		}
-	}
+	spec.Mounts = append(spec.Mounts, SharedFolderMounts(folders)...)
 	return spec
 }
 

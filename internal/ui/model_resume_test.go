@@ -164,3 +164,26 @@ func TestResumeTheEngine(t *testing.T) {
 		t.Errorf("deleted: remembered %v", resumed(m))
 	}
 }
+
+// A quit asked again while the first one stops the sandboxes, as Homebrew
+// asks until the app is gone, stops nothing more: the first quit ends the app.
+func TestQuitAskedAgainWhileQuitting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	rungvPath, _ := fakeRungv(t)
+	m, p := launch(t, store.Store{Dir: t.TempDir()}, rungvPath)
+	m.CreateFromRecipe(recipes.Docker)
+	engine, _ := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
+	until(t, p, "the engine to be ready", func() bool { return m.sup.State(engine.Spec.ID).Status == sandbox.Running })
+
+	first, again := 0, 0
+	m.StopAllAndThen(func() { first++ })
+	m.StopAllAndThen(func() { again++ })
+	until(t, p, "the quit", func() bool { return first > 0 })
+	for deadline := time.Now().Add(300 * time.Millisecond); time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+		p.Frame()
+	}
+	if first != 1 || again != 0 {
+		t.Fatalf("the first quit ended %d times, the second %d times", first, again)
+	}
+}

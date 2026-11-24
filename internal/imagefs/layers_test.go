@@ -5,8 +5,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -249,5 +253,98 @@ func TestReadGVXImageHistoryAndWriteEntry(t *testing.T) {
 	})
 	if len(names) != 1 || ents["link"].hdr.Typeflag != tar.TypeSymlink || ents["link"].hdr.Linkname != "../etc/a.txt" {
 		t.Fatalf("WriteEntry(lib/link) = %v %+v", names, ents["link"].hdr)
+	}
+}
+
+func TestResolveGVXLayers(t *testing.T) {
+	absCache, err := filepath.Abs(fixtureCache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join(absCache, "36427c2cf5952cb8e051af94d2c8a104a12565d7f20b79287a2d8a2dc25b6d84.gvx-erofs-v3-b4096.erofs"),
+		filepath.Join(absCache, "688af45ba4817240ad535eda8600e73bd05274b29416d43aaf63793928b043aa.gvx-erofs-v3-b4096.erofs"),
+	}
+
+	got, err := ResolveGVXLayers(fixtureCache, fixtureID)
+	if err != nil {
+		t.Fatalf("ResolveGVXLayers(fixture): %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ResolveGVXLayers(fixture) =\n got %v\nwant %v", got, want)
+	}
+	for _, p := range got {
+		if !filepath.IsAbs(p) {
+			t.Errorf("layer path %q is not absolute", p)
+		}
+	}
+
+	// Prefix ID without sha256: prefix also resolves.
+	short := strings.TrimPrefix(fixtureID, "sha256:")[:12]
+	gotShort, err := ResolveGVXLayers(fixtureCache, short)
+	if err != nil || !slices.Equal(gotShort, want) {
+		t.Fatalf("ResolveGVXLayers(short) = %v, %v; want %v", gotShort, err, want)
+	}
+
+	// Synthetic amd64 cached image in a temp cache directory.
+	tmp := t.TempDir()
+	amdCfg := []byte(`{"architecture":"amd64","os":"linux","config":{"Cmd":["/bin/sh"]}}`)
+	cfgSum := sha256.Sum256(amdCfg)
+	amdID := "sha256:" + hex.EncodeToString(cfgSum[:])
+	l0Hex := strings.Repeat("a", 64)
+	l1Hex := strings.Repeat("b", 64)
+	l0Path := filepath.Join(tmp, l0Hex+".gvx-erofs-v3-b4096.erofs")
+	l1Path := filepath.Join(tmp, l1Hex+".gvx-erofs-v3-b4096.erofs")
+	if err := os.WriteFile(l0Path, []byte("erofs-l0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(l1Path, []byte("erofs-l1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"layers": []map[string]any{
+			{"digest": "sha256:" + l0Hex, "size": 8},
+			{"digest": "sha256:" + l1Hex, "size": 8},
+		},
+	})
+	rec, _ := json.Marshal(gvxImageRecord{
+		Version:      2,
+		Repository:   "library/alpine",
+		Digest:       "sha256:" + strings.Repeat("c", 64),
+		Architecture: "amd64",
+		Format:       "gvx-erofs-v3-b4096",
+		Manifests:    [][]byte{manifest},
+		Config:       amdCfg,
+	})
+	if err := os.WriteFile(filepath.Join(tmp, "image-amd64.json"), rec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gotAmd, err := ResolveGVXLayers(tmp, amdID)
+	if err != nil {
+		t.Fatalf("ResolveGVXLayers(amd64): %v", err)
+	}
+	wantAmd := []string{l0Path, l1Path}
+	if !slices.Equal(gotAmd, wantAmd) {
+		t.Fatalf("ResolveGVXLayers(amd64) = %v, want %v", gotAmd, wantAmd)
+	}
+
+	// Missing .erofs file returns error.
+	if err := os.Remove(l1Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveGVXLayers(tmp, amdID); err == nil {
+		t.Error("ResolveGVXLayers succeeded with missing .erofs file")
+	}
+
+	// Error cases.
+	if _, err := ResolveGVXLayers("", fixtureID); err == nil {
+		t.Error("ResolveGVXLayers with empty cacheDir succeeded")
+	}
+	if _, err := ResolveGVXLayers(fixtureCache, ""); err == nil {
+		t.Error("ResolveGVXLayers with empty imageID succeeded")
+	}
+	if _, err := ResolveGVXLayers(fixtureCache, "sha256:"+strings.Repeat("0", 64)); err == nil {
+		t.Error("ResolveGVXLayers with unknown imageID succeeded")
 	}
 }

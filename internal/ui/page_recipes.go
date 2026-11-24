@@ -189,6 +189,9 @@ func sandboxDockerBody(m *Model, dindRow ggui.Readable[Row]) ggui.Widget {
 			ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.Amd64Builds }), func() ggui.Widget {
 				return amd64BuilderStatus(m)
 			}),
+			ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.MicroVMContainers }), func() ggui.Widget {
+				return microVMStatus(m)
+			}),
 		).Gap(12).Stretch())
 	})
 

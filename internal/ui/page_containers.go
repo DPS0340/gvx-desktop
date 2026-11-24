@@ -14,6 +14,7 @@ import (
 	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
@@ -218,11 +219,18 @@ func containersTable(m *Model) ggui.Widget {
 					live:  liveMounts.Get(),
 				}
 			}).WithEqual(unsharedView.equal)
+			rtBadges := ggui.Derived(func() runtimeBadgeView {
+				if !m.Settings.Get().SandboxEngine {
+					return runtimeBadgeView{}
+				}
+				return containerRuntimeBadgeView(r.Get(), m.EngineContainerRuntimes.Get())
+			})
 			name := widget.Row(
 				widget.Flexible(widget.Column(
 					widget.TextOf(ggui.Map(r, dockerapi.Container.Name)).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
 					ui.CaptionOf(ggui.Map(r, dockerapi.Container.ShortID)).Size(11).NoWrap(),
 				).Gap(1)),
+				ggui.View(rtBadges, containerRuntimeBadges),
 				ggui.View(unshared, unsharedMark),
 			).Gap(6).Align(widget.AlignCenter)
 			if ggui.Peek(r).Project() == "" {
@@ -561,14 +569,19 @@ func containerDetail(m *Model) ggui.Widget {
 			se   bool
 			ctrl bool
 			busy bool
+			rt   runtimeBadgeView
 		}
 		hdr := ggui.Derived(func() hdrState {
 			c := m.Container.Get()
 			se := m.Settings.Get().SandboxEngine
 			ctrl := m.engineFeatures().Control
-			return hdrState{c: c, se: se, ctrl: ctrl, busy: m.BusyOps.Get()["ctr:"+c.ID]}
+			var rt runtimeBadgeView
+			if se {
+				rt = containerRuntimeBadgeView(c, m.EngineContainerRuntimes.Get())
+			}
+			return hdrState{c: c, se: se, ctrl: ctrl, busy: m.BusyOps.Get()["ctr:"+c.ID], rt: rt}
 		})
-		header := ggui.View(hdr, func(h hdrState) ggui.Widget { return containerHeader(m, h.c, h.se, h.busy) })
+		header := ggui.View(hdr, func(h hdrState) ggui.Widget { return containerHeader(m, h.c, h.se, h.busy, h.rt) })
 		type connState struct {
 			c      dockerapi.Container
 			se     bool
@@ -598,7 +611,38 @@ func containerDetail(m *Model) ggui.Widget {
 	})
 }
 
-func containerHeader(m *Model, c dockerapi.Container, se, busy bool) ggui.Widget {
+type runtimeBadgeView struct {
+	microVM bool
+	amd64   bool
+}
+
+func containerRuntimeBadgeView(c dockerapi.Container, runtimes map[string]engine.ContainerRuntimeInfo) runtimeBadgeView {
+	var v runtimeBadgeView
+	if info, ok := runtimes[c.ID]; ok {
+		v.microVM = info.Runtime == engine.RuntimeMicroVM
+		v.amd64 = info.Platform == "linux/amd64" || info.Platform == "amd64"
+	}
+	if !v.microVM && c.Labels["gvx.runtime"] == engine.RuntimeMicroVM {
+		v.microVM = true
+	}
+	return v
+}
+
+func containerRuntimeBadges(v runtimeBadgeView) ggui.Widget {
+	if !v.microVM && !v.amd64 {
+		return widget.Box()
+	}
+	var badges []ggui.Widget
+	if v.microVM {
+		badges = append(badges, tip(ui.Badge("micro-VM").Outline(), tr("Runs in an isolated Linux micro-VM.")))
+	}
+	if v.amd64 {
+		badges = append(badges, tip(ui.Badge("amd64").Outline(), tr("Runs linux/amd64 with Rosetta in a micro-VM.")))
+	}
+	return widget.Row(badges...).Gap(4).Align(widget.AlignCenter)
+}
+
+func containerHeader(m *Model, c dockerapi.Container, se, busy bool, rt runtimeBadgeView) ggui.Widget {
 	var actions []ggui.Widget
 	switch {
 	case c.State == "paused":
@@ -634,7 +678,12 @@ func containerHeader(m *Model, c dockerapi.Container, se, busy bool) ggui.Widget
 		u, ok := all[c.ID]
 		return usageOf(u, ok)
 	}))
-	state := widget.Row(containerStatusLabel(c), usage).Gap(16).Align(widget.AlignCenter)
+	stateParts := []ggui.Widget{containerStatusLabel(c)}
+	if rt.microVM || rt.amd64 {
+		stateParts = append(stateParts, containerRuntimeBadges(rt))
+	}
+	stateParts = append(stateParts, usage)
+	state := widget.Row(stateParts...).Gap(12).Align(widget.AlignCenter)
 	return detailHead(c.Name(), state, meta, actions...)
 }
 

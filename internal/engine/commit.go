@@ -389,11 +389,11 @@ type commitResponse struct {
 }
 
 func (e *Engine) commit(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	q := r.URL.Query()
+	if !e.hasControlFor(q.Get("container")) {
 		writeError(w, r, errNotSupported("Committing a container (it needs rungv 0.20)"))
 		return
 	}
-	q := r.URL.Query()
 	c, err := e.lookup(q.Get("container"))
 	if err != nil {
 		writeError(w, r, err)
@@ -453,7 +453,7 @@ func (e *Engine) commit(w http.ResponseWriter, r *http.Request) {
 	archive := tarPipe(func(tw *tar.Writer) error {
 		return commitArchive(tw, config, baseLayers, layer, size, diffID, target)
 	})
-	err = e.runner.LoadImages(r.Context(), archive, func(string) {})
+	err = e.loadImagesInArch(r.Context(), parsePlatformArch(c.Platform), archive, func(string) {})
 	archive.Close()
 	if err != nil {
 		writeError(w, r, err)

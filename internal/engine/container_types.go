@@ -41,6 +41,11 @@ type Container struct {
 	// container port ("80/tcp").
 	Ports map[string][]PortBinding `json:"ports,omitempty"`
 
+	// Platform is "linux/amd64" or "linux/arm64" (empty means host arch).
+	Platform string `json:"platform,omitempty"`
+	// Runtime is "gvx" (empty) or "microvm".
+	Runtime string `json:"runtime,omitempty"`
+
 	State        ContainerState `json:"state"` // relied on
 	RestartCount int            `json:"restartCount"`
 
@@ -222,6 +227,7 @@ type HostConfig struct {
 	CpuQuota        int64                    `json:"CpuQuota,omitempty"`
 	CpuPeriod       int64                    `json:"CpuPeriod,omitempty"`
 	PidsLimit       *int64                   `json:"PidsLimit,omitempty"`
+	Runtime         string                   `json:"Runtime,omitempty"`
 }
 
 func (h HostConfig) clone() HostConfig {

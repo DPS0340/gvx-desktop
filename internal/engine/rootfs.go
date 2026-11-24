@@ -171,13 +171,13 @@ func (e *Engine) withUpper(ctx context.Context, c Container, pause, headersOnly 
 	case c.HostConfig.ReadonlyRootfs:
 		return fn(emptyLayer())
 	case c.State.Running() || c.State.Status == StatusPaused:
-		ctl := e.runner.Control(c.ID)
+		ctl := e.ctrControl(c)
 		if ctl == nil {
 			return errConflict("Container %s was started without a control socket; restart it to %s", c.Name, what)
 		}
-		if pause && !e.runner.State(c.ID).Paused {
-			if err := e.runner.Pause(ctx, c.ID); err == nil {
-				defer func() { _ = e.runner.Unpause(context.WithoutCancel(ctx), c.ID) }()
+		if pause && !e.ctrState(c).Paused {
+			if err := e.ctrPause(ctx, c); err == nil {
+				defer func() { _ = e.ctrUnpause(context.WithoutCancel(ctx), c) }()
 			} else if controlCode(err) != rungv.CodeAlreadyPaused {
 				return err
 			}
@@ -187,6 +187,8 @@ func (e *Engine) withUpper(ctx context.Context, c Container, pause, headersOnly 
 			return err
 		}
 		raw = rc
+	case c.isMicroVM():
+		return errConflict("Container %s is a stopped micro-VM container; start it to %s", c.Name, what)
 	case e.ownsRootfs(c.ID, c.Spec.RootfsVolume):
 		v, err := ext4lite.Open(c.Spec.RootfsVolume)
 		switch {

@@ -62,6 +62,9 @@ type Config struct {
 	// Amd64, when set, turns on the amd64 builder from the start; the app
 	// changes it later with SetAmd64. See docs/design/amd64-builder.md.
 	Amd64 *Amd64Config
+	// MicroVM, when set, turns on the per-container micro-VM runtime from the
+	// start; the app changes it later with SetMicroVM. See docs/design/amd64-microvm.md.
+	MicroVM *MicroVMConfig
 	// DockerSocket is the host Docker API Unix socket path (for example
 	// ~/.gvx/docker.sock) when served on Unix. With rungv v0.21+
 	// (--unix-forward), container bind mounts of /var/run/docker.sock are
@@ -102,6 +105,7 @@ type Engine struct {
 	evt eventState     // workstream C: events.go
 	bld builderState   // builder.go
 	amd amd64State     // amd64.go (the amd64 builder, workstream C)
+	mvm microVMState   // microvm.go (per-container micro-VM runtime)
 	ovl overlayState   // overlay.go (networks between containers)
 	exc execState      // exec.go (rungv v0.20 exec instances)
 	hlt healthState    // healthcheck.go (container healthcheck monitors)
@@ -111,6 +115,7 @@ type Engine struct {
 func New(cfg Config) *Engine {
 	e := &Engine{cfg: cfg, runner: cfg.Runner, changeCh: make(chan struct{})}
 	e.amd.cfg = cfg.Amd64
+	e.mvm.cfg = cloneMicroVMConfig(cfg.MicroVM)
 	e.runner.SetHandlers(e.onRunnerEvent, e.handleRunnerOutput)
 	return e
 }
@@ -148,6 +153,7 @@ func (e *Engine) Open(ctx context.Context) error {
 		e.closeStreams()
 		return err
 	}
+	e.openMicroVM()
 	e.opened = true
 	e.resumeContainers(ctx)
 	e.notify()
@@ -169,6 +175,7 @@ func (e *Engine) Close(timeout time.Duration) error {
 	e.closeHealthMonitors()
 	e.closeExecs()
 	e.stopContainers(timeout)
+	e.closeMicroVM(timeout)
 	e.closeOverlay()
 	e.closeStreams()
 	e.notify()
@@ -195,7 +202,7 @@ func (e *Engine) CanControl(ref string) bool {
 	if err != nil || c.State.Status != StatusRunning {
 		return false
 	}
-	return e.runner.Control(c.ID) != nil
+	return e.ctrControl(c) != nil
 }
 
 // RunningCount is how many containers run or wait to restart while the

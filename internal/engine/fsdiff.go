@@ -113,7 +113,7 @@ func changesOf(upper io.Reader, exists func(name string) (bool, error)) ([]chang
 }
 
 func (e *Engine) containerChanges(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlFor(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("Listing the changes of a container (it needs rungv 0.20)"))
 		return
 	}
@@ -166,7 +166,7 @@ func mountSkip(c Container) func(name string) bool {
 }
 
 func (e *Engine) containerExport(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlFor(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("Exporting a container (it needs rungv 0.20)"))
 		return
 	}
@@ -198,7 +198,7 @@ func (e *Engine) containerExport(w http.ResponseWriter, r *http.Request) {
 // exportRunning streams a running container's file system, as rungv's
 // export reads it in the guest, without its mounts' contents.
 func (e *Engine) exportRunning(ctx context.Context, c Container, w io.Writer) error {
-	ctl := e.runner.Control(c.ID)
+	ctl := e.ctrControl(c)
 	if ctl == nil {
 		return errConflict("Container %s was started without a control socket; restart it to export it", c.Name)
 	}

@@ -287,16 +287,19 @@ func cachedImagesView(m *Model) ggui.Widget {
 				users   string
 				arch    string
 				foreign bool
+				microVM bool
 			}
 			return ggui.View(ggui.Derived(func() repoCell {
 				row := r.Get()
 				ctrs := m.DockerContainers.Get()
+				set := m.Settings.Get()
 				users := dockerImageAllUsers(ctrs.Items, m.Rows.Get(), true, row.docker)
 				return repoCell{
 					repo:    row.docker.Repository,
 					users:   strings.Join(users, ", "),
 					arch:    row.docker.Arch,
 					foreign: row.docker.ForeignArch(),
+					microVM: set.SandboxEngine && set.MicroVMContainers,
 				}
 			}), func(info repoCell) ggui.Widget {
 				parts := []ggui.Widget{
@@ -304,7 +307,11 @@ func cachedImagesView(m *Model) ggui.Widget {
 					widget.Flexible(widget.Text(info.repo).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
 				}
 				if info.foreign {
-					parts = append(parts, tip(ui.Badge(info.arch).Outline(), tr("Built for linux/%s; cannot be run in a sandbox yet.", info.arch)))
+					badgeTip := tr("Built for linux/%s; cannot be run in a sandbox yet.", info.arch)
+					if info.microVM && info.arch == "amd64" {
+						badgeTip = tr("Built for linux/amd64; runs in a Rosetta micro-VM.")
+					}
+					parts = append(parts, tip(ui.Badge(info.arch).Outline(), badgeTip))
 				}
 				if info.users != "" {
 					parts = append(parts, tip(ui.Badge(tr("In use")).Outline(), tr("Used by %s", info.users)))
@@ -335,15 +342,22 @@ func cachedImagesView(m *Model) ggui.Widget {
 				row            cachedImageRow
 				busy           bool
 				containersOpen bool
+				microVM        bool
 			}
 			return ggui.View(ggui.Derived(func() actState {
 				row := r.Get()
 				b := m.BusyOps.Get()
+				set := m.Settings.Get()
 				busy := b["dimg:"+row.docker.Key()]
 				if row.fromGVX {
 					busy = b["img:"+row.gvx.Key()]
 				}
-				return actState{row: row, busy: busy, containersOpen: m.ContainersOpen.Get()}
+				return actState{
+					row:            row,
+					busy:           busy,
+					containersOpen: m.ContainersOpen.Get(),
+					microVM:        set.SandboxEngine && set.MicroVMContainers,
+				}
 			}), func(st actState) ggui.Widget {
 				row := st.row
 				img := row.docker
@@ -370,6 +384,11 @@ func cachedImagesView(m *Model) ggui.Widget {
 				}
 				if !img.ForeignArch() {
 					entries = append(entries, ui.MenuItem(tr("Copy docker run command"), func() { m.Copy("docker run --rm -it "+ref, "docker run") }))
+					if st.microVM && img.EffectiveArch() == "arm64" {
+						entries = append(entries, ui.MenuItem(tr("Copy docker run (--runtime=microvm)"), func() { m.Copy("docker run --rm -it --runtime=microvm "+ref, "docker run") }))
+					}
+				} else if st.microVM && img.Arch == "amd64" {
+					entries = append(entries, ui.MenuItem(tr("Copy docker run command"), func() { m.Copy("docker run --rm -it --platform linux/amd64 "+ref, "docker run") }))
 				}
 				entries = append(entries,
 					ui.MenuDivider(),
@@ -584,16 +603,19 @@ func dockerImagesView(m *Model) ggui.Widget {
 				users   string
 				arch    string
 				foreign bool
+				microVM bool
 			}
 			return ggui.View(ggui.Derived(func() repoCell {
 				img := r.Get()
 				ctrs := m.DockerContainers.Get()
-				users := dockerImageAllUsers(ctrs.Items, m.Rows.Get(), m.Settings.Get().SandboxEngine, img)
+				set := m.Settings.Get()
+				users := dockerImageAllUsers(ctrs.Items, m.Rows.Get(), set.SandboxEngine, img)
 				return repoCell{
 					repo:    img.Repository,
 					users:   strings.Join(users, ", "),
 					arch:    img.Arch,
 					foreign: img.ForeignArch(),
+					microVM: set.SandboxEngine && set.MicroVMContainers,
 				}
 			}), func(info repoCell) ggui.Widget {
 				parts := []ggui.Widget{
@@ -601,7 +623,11 @@ func dockerImagesView(m *Model) ggui.Widget {
 					widget.Flexible(widget.Text(info.repo).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
 				}
 				if info.foreign {
-					parts = append(parts, tip(ui.Badge(info.arch).Outline(), tr("Built for linux/%s; cannot be run in a sandbox yet.", info.arch)))
+					badgeTip := tr("Built for linux/%s; cannot be run in a sandbox yet.", info.arch)
+					if info.microVM && info.arch == "amd64" {
+						badgeTip = tr("Built for linux/amd64; runs in a Rosetta micro-VM.")
+					}
+					parts = append(parts, tip(ui.Badge(info.arch).Outline(), badgeTip))
 				}
 				if info.users != "" {
 					parts = append(parts, tip(ui.Badge(tr("In use")).Outline(), tr("Used by %s", info.users)))
@@ -626,11 +652,19 @@ func dockerImagesView(m *Model) ggui.Widget {
 		ui.TextCol(tr("Size"), func(i DockerImageRow) string { return formatBytes(i.Size) }).W(96).Right(),
 		ui.Col("", func(r ggui.Readable[DockerImageRow]) ggui.Widget {
 			type dimgActState struct {
-				img  DockerImageRow
-				busy bool
+				img     DockerImageRow
+				busy    bool
+				microVM bool
 			}
-			return ggui.View(ggui.Combine(r, m.BusyOps, func(img DockerImageRow, b map[string]bool) dimgActState {
-				return dimgActState{img: img, busy: b["dimg:"+img.Key()]}
+			return ggui.View(ggui.Derived(func() dimgActState {
+				img := r.Get()
+				b := m.BusyOps.Get()
+				set := m.Settings.Get()
+				return dimgActState{
+					img:     img,
+					busy:    b["dimg:"+img.Key()],
+					microVM: set.SandboxEngine && set.MicroVMContainers,
+				}
 			}), func(st dimgActState) ggui.Widget {
 				img := st.img
 				ref := img.Ref()
@@ -645,6 +679,11 @@ func dockerImagesView(m *Model) ggui.Widget {
 				}
 				if !img.ForeignArch() {
 					entries = append(entries, ui.MenuItem(tr("Copy docker run command"), func() { m.Copy("docker run --rm -it "+ref, "docker run") }))
+					if st.microVM && img.EffectiveArch() == "arm64" {
+						entries = append(entries, ui.MenuItem(tr("Copy docker run (--runtime=microvm)"), func() { m.Copy("docker run --rm -it --runtime=microvm "+ref, "docker run") }))
+					}
+				} else if st.microVM && img.Arch == "amd64" {
+					entries = append(entries, ui.MenuItem(tr("Copy docker run command"), func() { m.Copy("docker run --rm -it --platform linux/amd64 "+ref, "docker run") }))
 				}
 				entries = append(entries,
 					ui.MenuDivider(),

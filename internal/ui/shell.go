@@ -822,8 +822,11 @@ func (m *Model) RefreshAll() {
 	case PagePods:
 		m.LoadPodLogs()
 	case PageLabs:
-		m.CheckAmd64()
-		m.refreshAmd64State()
+		if amd64BuilderPlatform() {
+			m.CheckAmd64()
+			m.refreshAmd64State()
+			m.refreshMicroVMState()
+		}
 	}
 	m.CheckKubeconfig()
 	for _, l := range m.Links() {

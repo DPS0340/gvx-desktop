@@ -571,7 +571,7 @@ func TestLabsSupportedAndNavigation(t *testing.T) {
 	if !semanticsContains(p, "AI agent MCP server") {
 		t.Errorf("PageLabs missing AI agent MCP server:\n%s", p.Semantics())
 	}
-	if semanticsContains(p, "Cross-architecture builds") {
-		t.Errorf("PageLabs should hide Cross-architecture builds on non-darwin/arm64:\n%s", p.Semantics())
+	if semanticsContains(p, "Cross-architecture & micro-VMs") || semanticsContains(p, "Micro-VM container runtime") {
+		t.Errorf("PageLabs should hide Cross-architecture & micro-VMs on non-darwin/arm64:\n%s", p.Semantics())
 	}
 }

@@ -33,3 +33,6 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
+
+// Temporary local replace until github.com/ironpark/gvx-desktop-vm v0.2.0 is tagged.
+replace github.com/ironpark/gvx-desktop-vm => ../gvx-desktop-vm

@@ -208,7 +208,7 @@ func mergeExecEnv(base, override []string) []string {
 }
 
 func (e *Engine) execCreate(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlFor(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("exec"))
 		return
 	}
@@ -278,7 +278,7 @@ func (e *Engine) requireControlForExec(c Container) (sandbox.Control, error) {
 	if e.isContainerPaused(c) {
 		return nil, errConflict("Container %s is paused, unpause the container before exec", c.ID)
 	}
-	ctl := e.runner.Control(c.ID)
+	ctl := e.ctrControl(c)
 	if ctl == nil {
 		return nil, errConflict("Container %s was started without a control socket; restart it to use exec", c.ID)
 	}
@@ -286,7 +286,7 @@ func (e *Engine) requireControlForExec(c Container) (sandbox.Control, error) {
 }
 
 func (e *Engine) execStart(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlForExec(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("exec"))
 		return
 	}
@@ -764,7 +764,7 @@ func execErrorMessage(err error) string {
 }
 
 func (e *Engine) execResize(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlForExec(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("exec"))
 		return
 	}
@@ -811,7 +811,7 @@ func (e *Engine) execResize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) execInspect(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlForExec(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("exec"))
 		return
 	}

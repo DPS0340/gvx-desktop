@@ -675,7 +675,8 @@ func dockerModeSettings(m *Model) ggui.Widget {
 	).Gap(8).Stretch()
 }
 
-// amd64BuilderSettings is the "amd64 builds with Rosetta" switch, in Labs.
+// amd64BuilderSettings is the shared Apple silicon requirements header plus the
+// "amd64 builds with Rosetta" switch, in Labs.
 func amd64BuilderSettings(m *Model) ggui.Widget {
 	enabled := ggui.Bind(func() bool { return m.Settings.Get().Amd64Builds }, m.SetAmd64Builds)
 	disabled := ggui.Combine(m.Settings, m.Amd64Check, func(s storeSettings, c Amd64CheckState) bool {
@@ -694,13 +695,162 @@ func amd64BuilderSettings(m *Model) ggui.Widget {
 		return amd64BuilderStatus(m)
 	})
 	return widget.Column(
-		settingRow(tr("amd64 builds with Rosetta"),
-			tr("Builds for --platform linux/amd64 run in a small Linux VM with Rosetta for Linux. The images can be loaded and pushed, not run yet. The VM starts on the first amd64 build and stops when idle."),
-			ui.Switch(enabled, "").Name(tr("amd64 builds with Rosetta")).BindDisabled(disabled)),
-		needsEngine,
 		amd64Requirements(m),
+		needsEngine,
+		settingRow(tr("amd64 builds with Rosetta"),
+			tr("Builds for --platform linux/amd64 run in a small Linux VM with Rosetta for Linux. The VM starts on the first amd64 build and stops when idle."),
+			ui.Switch(enabled, "").Name(tr("amd64 builds with Rosetta")).BindDisabled(disabled)),
 		statusBox,
-	).Gap(6).Stretch()
+	).Gap(8).Stretch()
+}
+
+// microVMSettings is the "Micro-VM container runtime" switch, default per-VM
+// resource fields, and live status card in Labs (Apple silicon macOS).
+func microVMSettings(m *Model) ggui.Widget {
+	enabled := ggui.Bind(func() bool { return m.Settings.Get().MicroVMContainers }, m.SetMicroVMContainers)
+	disabled := ggui.Combine(m.Settings, m.Amd64Check, func(s storeSettings, c Amd64CheckState) bool {
+		if !s.SandboxEngine {
+			return true
+		}
+		if s.MicroVMContainers {
+			return false
+		}
+		return !c.MicroVMOK() || c.Checking || c.Installing
+	})
+
+	initSet := ggui.Peek(m.Settings)
+	cpusField := ggui.State(strconv.Itoa(initSet.MicroVMCPUsOrDefault()))
+	memField := ggui.State(strconv.Itoa(initSet.MicroVMMemoryMiBOrDefault()))
+	ggui.Watch(m.Settings, func(s storeSettings) {
+		wantCPUs := strconv.Itoa(s.MicroVMCPUsOrDefault())
+		if ggui.Peek(cpusField) != wantCPUs {
+			cpusField.Set(wantCPUs)
+		}
+		wantMem := strconv.Itoa(s.MicroVMMemoryMiBOrDefault())
+		if ggui.Peek(memField) != wantMem {
+			memField.Set(wantMem)
+		}
+	})
+	commitResources := func(string) {
+		cur := ggui.Peek(m.Settings)
+		c, err1 := strconv.Atoi(strings.TrimSpace(ggui.Peek(cpusField)))
+		mem, err2 := strconv.Atoi(strings.TrimSpace(ggui.Peek(memField)))
+		if err1 != nil || err2 != nil || c <= 0 || mem <= 0 {
+			cpusField.Set(strconv.Itoa(cur.MicroVMCPUsOrDefault()))
+			memField.Set(strconv.Itoa(cur.MicroVMMemoryMiBOrDefault()))
+			return
+		}
+		m.SetMicroVMResources(c, mem)
+		after := ggui.Peek(m.Settings)
+		cpusField.Set(strconv.Itoa(after.MicroVMCPUsOrDefault()))
+		memField.Set(strconv.Itoa(after.MicroVMMemoryMiBOrDefault()))
+	}
+
+	resourcesDisabled := ggui.Map(m.Settings, func(s storeSettings) bool { return !s.SandboxEngine })
+	resourcesRow := settingRow(
+		tr("Default resources per VM"),
+		tr("Per-container defaults when docker run does not pass --cpus or -m. Defaults match apple/container (%d CPUs, %d MiB).", store.DefaultMicroVMCPUs, store.DefaultMicroVMMemoryMiB),
+		widget.Row(
+			ui.Caption(tr("CPUs")).Size(12),
+			widget.Box(ui.TextField(cpusField).Filter(digits).Name(tr("Default micro-VM CPUs")).OnCommit(commitResources).BindDisabled(resourcesDisabled)).Width(64),
+			ui.Caption(tr("Memory (MiB)")).Size(12),
+			widget.Box(ui.TextField(memField).Filter(digits).Name(tr("Default micro-VM memory (MiB)")).OnCommit(commitResources).BindDisabled(resourcesDisabled)).Width(84),
+		).Gap(8).Align(widget.AlignCenter),
+	)
+
+	statusBox := ggui.If(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine && s.MicroVMContainers }), func() ggui.Widget {
+		return microVMStatus(m)
+	})
+
+	return widget.Column(
+		settingRow(tr("Micro-VM container runtime"),
+			tr("Run linux/amd64 containers automatically with Rosetta, or run linux/arm64 containers on a real Linux kernel with --runtime=microvm. Each container gets an isolated VM and returns all memory when stopped."),
+			ui.Switch(enabled, "").Name(tr("Micro-VM container runtime")).BindDisabled(disabled)),
+		resourcesRow,
+		statusBox,
+	).Gap(10).Stretch()
+}
+
+// microVMStatus shows the live micro-VM container runtime status: running
+// micro-VM count, VM assets v2 download progress, Rosetta hint when Rosetta is
+// not installed, and any runtime error.
+func microVMStatus(m *Model) ggui.Widget {
+	type viewState struct {
+		st    engine.MicroVMState
+		check Amd64CheckState
+	}
+	combined := ggui.Combine(m.MicroVMState, m.Amd64Check, func(st engine.MicroVMState, c Amd64CheckState) viewState {
+		return viewState{st: st, check: c}
+	})
+	return ggui.View(combined, func(v viewState) ggui.Widget {
+		st := v.st
+		var rows []ggui.Widget
+
+		var stateDot ggui.Widget
+		var stateLabel string
+		switch {
+		case st.RunningVMs > 0:
+			stateDot = dot(colorGreen, 7)
+			stateLabel = trn(st.RunningVMs, "%d micro-VM running", "%d micro-VMs running")
+		case st.Downloading:
+			stateDot = dot(colorAmber, 7)
+			stateLabel = tr("Micro-VM runtime: idle")
+		default:
+			stateDot = dot(colorGray, 7)
+			stateLabel = tr("Micro-VM runtime: idle")
+		}
+
+		var assetLine string
+		switch {
+		case st.Downloading && st.Total > 0:
+			assetLine = tr("Downloading the VM, %s of %s", formatBytes(st.Done), formatBytes(st.Total))
+		case st.Downloading:
+			assetLine = tr("Downloading the VM…")
+		case st.Assets == "local":
+			assetLine = tr("VM assets: local override")
+		case st.Assets != "":
+			assetLine = tr("VM assets: v%s downloaded", st.Assets)
+		default:
+			assetLine = tr("VM assets download on the first micro-VM container.")
+		}
+
+		if st.Downloading {
+			rows = append(rows, widget.Row(
+				stateDot,
+				widget.Text(stateLabel).Size(12).Weight(ggui.WeightMedium),
+			).Gap(8).Align(widget.AlignCenter))
+			rows = append(rows, widget.Row(
+				ui.Spinner().Size(12),
+				widget.Expanded(ui.Caption(assetLine).Size(12)),
+			).Gap(8).Align(widget.AlignCenter))
+			if st.Total > 0 {
+				frac := float64(st.Done) / float64(st.Total)
+				rows = append(rows, widget.Box(ui.Progress(ggui.Const(min(1.0, max(0.0, frac)))).Height(4)))
+			}
+		} else {
+			rows = append(rows, widget.Row(
+				stateDot,
+				widget.Text(stateLabel).Size(12).Weight(ggui.WeightMedium),
+				widget.Expanded(ui.Caption(assetLine).Size(12)),
+			).Gap(8).Align(widget.AlignCenter))
+		}
+
+		if v.check.Checked && v.check.Err == "" && v.check.Result.Rosetta != vmhelper.RosettaInstalled {
+			rows = append(rows, widget.Row(
+				glyph(lucide.Info, 13).Color(colorBlue),
+				widget.Expanded(ui.Caption(tr("arm64 containers with --runtime=microvm are ready; install Rosetta to also run linux/amd64 containers.")).Size(12)),
+			).Gap(8).Align(widget.AlignStart))
+		}
+
+		if st.Err != "" {
+			rows = append(rows, widget.Row(
+				glyph(lucide.TriangleExclamationPoint, 13).Color(colorAmber),
+				widget.Expanded(ui.Caption(tr("Micro-VM runtime error: %s", st.Err)).Size(12)),
+			).Gap(8).Align(widget.AlignStart))
+		}
+
+		return widget.Box(widget.Column(rows...).Gap(6).Stretch()).Pad(10).Radius(8).Border(1, colorBorder)
+	})
 }
 
 // amd64Requirements shows the host requirements check for the amd64 builder VM

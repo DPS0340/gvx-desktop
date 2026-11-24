@@ -434,7 +434,7 @@ func (e *Engine) attachCopyStdin(c Container, cs *streamContainer, conn net.Conn
 					// If EOF arrived before the container started, wait for the run
 					// so CloseStdin reaches the guest.
 					if w := ensureStdin(); w != nil {
-						_ = e.runner.CloseStdin(c.ID)
+						_ = e.ctrCloseStdin(c.ID)
 					}
 				}
 				// Client closed its write side; keep output flowing if it only
@@ -457,7 +457,7 @@ func (e *Engine) attachWaitForStdin(id string, cs *streamContainer, done <-chan 
 			stateCh = cs.stateChanges()
 		}
 		changeCh := e.changes()
-		if w := e.runner.Stdin(id); w != nil {
+		if w := e.ctrStdin(id); w != nil {
 			return w
 		}
 		if !e.isOpen() {
@@ -708,7 +708,7 @@ func (e *Engine) containerResize(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if err := e.runner.Resize(c.ID, uint16(h), uint16(width)); err != nil {
+	if err := e.ctrResize(c, uint16(h), uint16(width)); err != nil {
 		writeError(w, r, err)
 		return
 	}

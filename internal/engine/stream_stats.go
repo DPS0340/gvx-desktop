@@ -164,7 +164,7 @@ func statsPayloadFromGuest(c Container, gs rungv.Stats, prev streamCPUStats, pre
 
 func (e *Engine) streamSampleStats(ctx context.Context, c Container, prev streamCPUStats, prevRead time.Time) streamStatsPayload {
 	if c.State.Running() {
-		if ctl := e.runner.Control(c.ID); ctl != nil {
+		if ctl := e.ctrControl(c); ctl != nil {
 			sCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			gs, err := ctl.Stats(sCtx)
 			cancel()
@@ -192,7 +192,7 @@ func (e *Engine) streamSampleStatsProcstat(c Container, prev streamCPUStats, pre
 	)
 	pid := c.State.Pid
 	if pid == 0 {
-		pid = e.runner.State(c.ID).PID
+		pid = e.ctrState(c).PID
 	}
 	if pid > 0 && c.State.Running() {
 		pids = 1
@@ -288,7 +288,7 @@ func (e *Engine) containerStats(w http.ResponseWriter, r *http.Request) {
 	// rungv stats subprocess; fall back to procstat on an error before the
 	// first sample or without Control.
 	if c.State.Running() {
-		if ctl := e.runner.Control(c.ID); ctl != nil {
+		if ctl := e.ctrControl(c); ctl != nil {
 			sCtx, cancel := context.WithCancel(r.Context())
 			defer cancel()
 			sent := false

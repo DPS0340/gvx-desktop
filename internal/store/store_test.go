@@ -321,3 +321,90 @@ func TestSettingsLabsEqual(t *testing.T) {
 		})
 	}
 }
+
+func TestSettingsMicroVMDefaultsHelpersAndRoundTrip(t *testing.T) {
+	def := DefaultSettings()
+	if def.MicroVMContainers {
+		t.Fatal("DefaultSettings().MicroVMContainers = true, want false")
+	}
+	if def.MicroVMCPUs != 0 || def.MicroVMMemoryMiB != 0 {
+		t.Fatalf("DefaultSettings() micro-VM resources = (%d, %d), want (0, 0)", def.MicroVMCPUs, def.MicroVMMemoryMiB)
+	}
+	if DefaultMicroVMCPUs != 4 {
+		t.Fatalf("DefaultMicroVMCPUs = %d, want 4", DefaultMicroVMCPUs)
+	}
+	if DefaultMicroVMMemoryMiB != 1024 {
+		t.Fatalf("DefaultMicroVMMemoryMiB = %d, want 1024", DefaultMicroVMMemoryMiB)
+	}
+	if got := def.MicroVMCPUsOrDefault(); got != DefaultMicroVMCPUs {
+		t.Fatalf("DefaultSettings().MicroVMCPUsOrDefault() = %d, want %d", got, DefaultMicroVMCPUs)
+	}
+	if got := def.MicroVMMemoryMiBOrDefault(); got != DefaultMicroVMMemoryMiB {
+		t.Fatalf("DefaultSettings().MicroVMMemoryMiBOrDefault() = %d, want %d", got, DefaultMicroVMMemoryMiB)
+	}
+
+	for _, tc := range []struct {
+		cpus    int
+		mem     int
+		wantCPU int
+		wantMem int
+	}{
+		{-2, -512, DefaultMicroVMCPUs, DefaultMicroVMMemoryMiB},
+		{0, 0, DefaultMicroVMCPUs, DefaultMicroVMMemoryMiB},
+		{0, 64, DefaultMicroVMCPUs, DefaultMicroVMMemoryMiB},
+		{0, 127, DefaultMicroVMCPUs, DefaultMicroVMMemoryMiB},
+		{1, 128, 1, 128},
+		{2, 512, 2, 512},
+		{8, 4096, 8, 4096},
+	} {
+		s := Settings{MicroVMCPUs: tc.cpus, MicroVMMemoryMiB: tc.mem}
+		if got := s.MicroVMCPUsOrDefault(); got != tc.wantCPU {
+			t.Errorf("MicroVMCPUsOrDefault(%d) = %d, want %d", tc.cpus, got, tc.wantCPU)
+		}
+		if got := s.MicroVMMemoryMiBOrDefault(); got != tc.wantMem {
+			t.Errorf("MicroVMMemoryMiBOrDefault(%d) = %d, want %d", tc.mem, got, tc.wantMem)
+		}
+	}
+
+	// Zero values omitted from JSON for backwards compatibility.
+	microVMKeys := []string{`"microVmContainers"`, `"microVmCpus"`, `"microVmMemoryMiB"`}
+	rawDef, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("json.Marshal(def): %v", err)
+	}
+	for _, key := range microVMKeys {
+		if strings.Contains(string(rawDef), key) {
+			t.Errorf("DefaultSettings JSON %s unexpectedly contains %s", rawDef, key)
+		}
+	}
+
+	// Store round-trip and Equal.
+	st := Store{Dir: t.TempDir()}
+	custom := DefaultSettings()
+	custom.MicroVMContainers = true
+	custom.MicroVMCPUs = 6
+	custom.MicroVMMemoryMiB = 2048
+
+	rawCustom, err := json.Marshal(custom)
+	if err != nil {
+		t.Fatalf("json.Marshal(custom): %v", err)
+	}
+	for _, key := range microVMKeys {
+		if !strings.Contains(string(rawCustom), key) {
+			t.Errorf("custom JSON %s missing %s", rawCustom, key)
+		}
+	}
+	if err := st.SaveSettings(custom); err != nil {
+		t.Fatalf("SaveSettings(custom): %v", err)
+	}
+	reloaded, err := st.Settings()
+	if err != nil {
+		t.Fatalf("Settings() after save: %v", err)
+	}
+	if !custom.Equal(reloaded) {
+		t.Fatalf("store round-trip mismatch:\ngot:  %+v\nwant: %+v", reloaded, custom)
+	}
+	if def.Equal(custom) {
+		t.Fatal("DefaultSettings should not Equal custom micro-VM Settings")
+	}
+}

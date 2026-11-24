@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -61,6 +63,53 @@ func OpenGVXImage(cacheDir, imageID string) (*GVXImage, error) {
 		g.layers = append(g.layers, img)
 	}
 	return g, nil
+}
+
+// ResolveGVXLayers returns the ordered bottom-to-top absolute paths of the
+// compiled .erofs layer files for the cached image identified by imageID in
+// cacheDir (supporting both arm64 and amd64 cached images).
+func ResolveGVXLayers(cacheDir, imageID string) ([]string, error) {
+	if strings.TrimSpace(cacheDir) == "" {
+		return nil, errors.New("layer cache directory is unknown")
+	}
+	if strings.TrimSpace(imageID) == "" {
+		return nil, errors.New("image ID is empty")
+	}
+	absCache, err := filepath.Abs(cacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve layer cache dir: %w", err)
+	}
+	rec, err := findGVXImageRecord(absCache, imageID, "")
+	if err != nil {
+		return nil, err
+	}
+	if len(rec.Manifests) == 0 {
+		return nil, errors.New("cached image has no manifest")
+	}
+	if strings.TrimSpace(rec.Format) == "" || strings.ContainsAny(rec.Format, `/\`) {
+		return nil, fmt.Errorf("cached image has invalid layer format %q", rec.Format)
+	}
+	var man ociManifest
+	if err := json.Unmarshal(rec.Manifests[len(rec.Manifests)-1], &man); err != nil {
+		return nil, fmt.Errorf("decode image manifest: %w", err)
+	}
+	paths := make([]string, 0, len(man.Layers))
+	for _, ml := range man.Layers {
+		hexStr := strings.TrimPrefix(strings.TrimSpace(ml.Digest), "sha256:")
+		if hexStr == "" || strings.ContainsAny(hexStr, `/\`) {
+			return nil, fmt.Errorf("invalid layer digest %q", ml.Digest)
+		}
+		p := filepath.Join(absCache, hexStr+"."+rec.Format+".erofs")
+		st, err := os.Stat(p)
+		if err != nil {
+			return nil, fmt.Errorf("resolve layer %s: %w", ShortDigest(ml.Digest), err)
+		}
+		if st.IsDir() {
+			return nil, fmt.Errorf("resolve layer %s: expected file, got directory", ShortDigest(ml.Digest))
+		}
+		paths = append(paths, p)
+	}
+	return paths, nil
 }
 
 // Layers is the number of layers.

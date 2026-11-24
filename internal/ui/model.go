@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -136,23 +135,25 @@ type Model struct {
 	// system: one of LanguageTags.
 	Lang *ggui.DerivedValue[string]
 
-	Specs             *ggui.StateValue[[]sandbox.Spec]
-	States            *ggui.StateValue[map[string]sandbox.State]
-	Rows              *ggui.DerivedValue[[]Row]
-	Active            *ggui.DerivedValue[int]
-	Running           *ggui.DerivedValue[int]
-	EngineRunning     *ggui.StateValue[int]
-	TotalRunning      *ggui.DerivedValue[int]
-	EngineVolumeUsers *ggui.StateValue[map[string][]string]
-	BuilderState      *ggui.StateValue[engine.BuilderState]
-	BuildxStatus      *ggui.StateValue[BuildxStatus]
-	Amd64State        *ggui.StateValue[engine.Amd64State]
-	Amd64Check        *ggui.StateValue[Amd64CheckState]
-	Amd64Resetting    *ggui.StateValue[bool]
-	Selected          *ggui.StateValue[string]
-	Logs              *ggui.StateValue[[]sandbox.LogLine]
-	Detail            *ggui.StateValue[int]
-	Query             *ggui.StateValue[string]
+	Specs                   *ggui.StateValue[[]sandbox.Spec]
+	States                  *ggui.StateValue[map[string]sandbox.State]
+	Rows                    *ggui.DerivedValue[[]Row]
+	Active                  *ggui.DerivedValue[int]
+	Running                 *ggui.DerivedValue[int]
+	EngineRunning           *ggui.StateValue[int]
+	TotalRunning            *ggui.DerivedValue[int]
+	EngineVolumeUsers       *ggui.StateValue[map[string][]string]
+	EngineContainerRuntimes *ggui.StateValue[map[string]engine.ContainerRuntimeInfo]
+	BuilderState            *ggui.StateValue[engine.BuilderState]
+	BuildxStatus            *ggui.StateValue[BuildxStatus]
+	Amd64State              *ggui.StateValue[engine.Amd64State]
+	MicroVMState            *ggui.StateValue[engine.MicroVMState]
+	Amd64Check              *ggui.StateValue[Amd64CheckState]
+	Amd64Resetting          *ggui.StateValue[bool]
+	Selected                *ggui.StateValue[string]
+	Logs                    *ggui.StateValue[[]sandbox.LogLine]
+	Detail                  *ggui.StateValue[int]
+	Query                   *ggui.StateValue[string]
 
 	Images          *ggui.StateValue[Listing[rungv.Image]]
 	Volumes         *ggui.StateValue[Listing[rungv.Volume]]
@@ -392,6 +393,8 @@ type Model struct {
 	sandboxEngine                              sandboxEngine // in-app Docker Engine API (*engine.Engine); tests may replace
 	sandboxEngineGen                           int
 	amd64Gen                                   int
+	microVMGen                                 int
+	rosettaState                               atomic.Int32 // 0=unknown, 1=missing, 2=installed
 	buildxSyncGen                              int
 	keepImages                                 atomic.Pointer[[]string]
 	buildCancelMu                              sync.Mutex
@@ -474,19 +477,21 @@ func NewModel(st store.Store, dataDir string) *Model {
 		AppUpdate:     ggui.State(AppUpdate{Install: appupdate.Detect()}),
 		Now:           ggui.State(time.Now()),
 
-		Specs:             ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
-		States:            ggui.State(map[string]sandbox.State{}).WithEqual(nil),
-		EngineRunning:     ggui.State(0),
-		EngineVolumeUsers: ggui.State(map[string][]string(nil)).WithEqual(stringSliceMapEqual),
-		BuilderState:      ggui.State(engine.BuilderState{Status: engine.BuilderIdle}),
-		BuildxStatus:      ggui.State(BuildxStatus{}).WithEqual(BuildxStatus.Equal),
-		Amd64State:        ggui.State(engine.Amd64State{Status: engine.BuilderIdle}).WithEqual(engine.Amd64State.Equal),
-		Amd64Check:        ggui.State(Amd64CheckState{}).WithEqual(Amd64CheckState.Equal),
-		Amd64Resetting:    ggui.State(false),
-		Selected:          ggui.State(""),
-		Logs:              ggui.State([]sandbox.LogLine(nil)).WithEqual(nil),
-		Detail:            ggui.State(0),
-		Query:             ggui.State(""),
+		Specs:                   ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
+		States:                  ggui.State(map[string]sandbox.State{}).WithEqual(nil),
+		EngineRunning:           ggui.State(0),
+		EngineVolumeUsers:       ggui.State(map[string][]string(nil)).WithEqual(stringSliceMapEqual),
+		EngineContainerRuntimes: ggui.State(map[string]engine.ContainerRuntimeInfo(nil)).WithEqual(maps.Equal[map[string]engine.ContainerRuntimeInfo]),
+		BuilderState:            ggui.State(engine.BuilderState{Status: engine.BuilderIdle}),
+		BuildxStatus:            ggui.State(BuildxStatus{}).WithEqual(BuildxStatus.Equal),
+		Amd64State:              ggui.State(engine.Amd64State{Status: engine.BuilderIdle}).WithEqual(engine.Amd64State.Equal),
+		MicroVMState:            ggui.State(engine.MicroVMState{}).WithEqual(engine.MicroVMState.Equal),
+		Amd64Check:              ggui.State(Amd64CheckState{}).WithEqual(Amd64CheckState.Equal),
+		Amd64Resetting:          ggui.State(false),
+		Selected:                ggui.State(""),
+		Logs:                    ggui.State([]sandbox.LogLine(nil)).WithEqual(nil),
+		Detail:                  ggui.State(0),
+		Query:                   ggui.State(""),
 
 		Images:                     ggui.State(Listing[rungv.Image]{}).WithEqual(nil),
 		Volumes:                    ggui.State(Listing[rungv.Volume]{}).WithEqual(nil),
@@ -617,11 +622,12 @@ func NewModel(st store.Store, dataDir string) *Model {
 		SelectedImage:    ggui.State(""),
 		SelectedVolume:   ggui.State(""),
 		runCLI:           runCLI,
-		runVMHelper:      defaultRunVMHelper,
+		runVMHelper:      defaultVMHelperRunner,
 		forwarder:        forwardThroughCluster,
 	}
 	m.dockerExposeLAN.Store(settings.DockerExposeLAN)
 	m.dockerSSHAgent.Store(settings.DockerSSHAgent)
+	m.watchAmd64Check()
 	ggui.OnCleanup(m.Toasts.Close)
 	ggui.OnCleanup(m.CloseLocalRegistry)
 	ggui.OnCleanup(m.CloseLocalProxy)
@@ -919,9 +925,10 @@ func (m *Model) Go(page string) {
 		m.LoadDisk()
 		m.LoadLocalRegistry()
 	case PageLabs:
-		if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		if amd64BuilderPlatform() {
 			m.CheckAmd64()
 			m.refreshAmd64State()
+			m.refreshMicroVMState()
 		}
 	case PageDocker:
 		m.LoadDocker()

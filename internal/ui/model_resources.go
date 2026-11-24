@@ -827,6 +827,7 @@ func (m *Model) LoadDocker() {
 			m.DockerVersion.Set(version)
 		}
 		m.refreshEngineRunning()
+		m.refreshEngineContainerRuntimes()
 		m.DockerContainers.Set(l)
 	})
 }

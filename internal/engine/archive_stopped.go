@@ -39,6 +39,9 @@ func (e *Engine) openStoppedFS(ctx context.Context, c Container) (*stoppedFS, er
 	if c.State.Status == StatusRestarting {
 		return nil, errConflict("Container %s is restarting, wait until the container is running", c.ID)
 	}
+	if c.isMicroVM() {
+		return nil, errConflict("Container %s is a stopped micro-VM container; start it to copy files from it", c.Name)
+	}
 	img, err := e.openImage(ctx, c.ImageID)
 	if err != nil {
 		return nil, err

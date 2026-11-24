@@ -249,7 +249,7 @@ func (e *Engine) closeHealthMonitors() {
 }
 
 func (e *Engine) startHealthMonitor(id string, gen uint64, hc *HealthConfig, startedAt time.Time) {
-	if !hc.enabled() || !e.runner.Features().Control {
+	if !hc.enabled() || (!e.isMicroVMContainer(id) && !e.runner.Features().Control) {
 		return
 	}
 	hcCopy := *hc
@@ -410,7 +410,7 @@ func (e *Engine) runOneHealthProbe(ctx context.Context, c Container, argv []stri
 		err  error
 	)
 	for {
-		ctl := e.runner.Control(c.ID)
+		ctl := e.ctrControl(c)
 		if ctl != nil {
 			proc, err = ctl.Exec(probeCtx, opts)
 			if err == nil {

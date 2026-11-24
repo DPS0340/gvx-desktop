@@ -43,12 +43,15 @@ type sandboxEngine interface {
 	RunningCount() int
 	StopRunning(timeout time.Duration)
 	VolumeOwnership() (owned map[string]bool, users map[string][]string)
+	ContainerRuntimes() map[string]engine.ContainerRuntimeInfo
 	BuilderSocket() string
 	BuilderState() engine.BuilderState
 	SetAmd64(cfg *engine.Amd64Config) error
 	Amd64Socket() string
 	Amd64State() engine.Amd64State
 	ResetAmd64Disk(ctx context.Context) error
+	SetMicroVM(cfg *engine.MicroVMConfig) error
+	MicroVMState() engine.MicroVMState
 	Features() rungv.Features
 	CanControl(ref string) bool
 }
@@ -115,8 +118,10 @@ func (m *Model) initDockerProxy(dataDir string) {
 		m.post(func() {
 			m.refreshEngineRunning()
 			m.refreshEngineVolumes()
+			m.refreshEngineContainerRuntimes()
 			m.refreshBuilderState()
 			m.refreshAmd64State()
+			m.refreshMicroVMState()
 			m.LoadDocker()
 			m.LoadDockerImages()
 			if ggui.Peek(m.Settings).SandboxEngine {
@@ -252,6 +257,13 @@ func (m *Model) openSandboxEngine() {
 			log.Printf("amd64 builder config: %v", err)
 		}
 	}
+	var microVMCfg *engine.MicroVMConfig
+	if set.MicroVMContainers {
+		var err error
+		if microVMCfg, err = m.microVMConfig(set); err != nil {
+			log.Printf("micro-VM runtime config: %v", err)
+		}
+	}
 	// Route traffic to the in-app engine right away so requests and LoadDocker
 	// never hit the dind backend while Open is in flight; Handler answers 503
 	// until Open finishes.
@@ -266,6 +278,9 @@ func (m *Model) openSandboxEngine() {
 	)
 	m.async(func(ctx context.Context) error {
 		if err := eng.SetAmd64(amd64Cfg); err != nil {
+			return err
+		}
+		if err := eng.SetMicroVM(microVMCfg); err != nil {
 			return err
 		}
 		// Configure buildx before eng.Open binds buildkit.sock so buildx
@@ -348,8 +363,10 @@ func (m *Model) openSandboxEngine() {
 		m.dockerProxy.SetLocal(eng.Handler())
 		m.refreshEngineRunning()
 		m.refreshEngineVolumes()
+		m.refreshEngineContainerRuntimes()
 		m.refreshBuilderState()
 		m.refreshAmd64State()
+		m.refreshMicroVMState()
 		if ggui.Peek(m.Settings).Amd64Builds {
 			m.syncAmd64BuildxNode(true)
 		}
@@ -387,8 +404,14 @@ func (m *Model) closeSandboxEngine() {
 		}
 		m.refreshEngineRunning()
 		m.refreshEngineVolumes()
+		if !ggui.Peek(m.Settings).SandboxEngine {
+			m.EngineContainerRuntimes.Set(nil)
+		} else {
+			m.refreshEngineContainerRuntimes()
+		}
 		m.refreshBuilderState()
 		m.refreshAmd64State()
+		m.refreshMicroVMState()
 		m.LoadDocker()
 		m.LoadDockerImages()
 		m.LoadDockerNetworks()
@@ -458,6 +481,28 @@ func (m *Model) refreshEngineVolumes() {
 		return nil
 	}, func(error) {
 		m.EngineVolumeUsers.Set(users)
+	})
+}
+
+func (m *Model) refreshEngineContainerRuntimes() {
+	if m.Offline || m.sandboxEngine == nil {
+		return
+	}
+	if !ggui.Peek(m.Settings).SandboxEngine {
+		m.EngineContainerRuntimes.Set(nil)
+		return
+	}
+	eng := m.sandboxEngine
+	var runtimes map[string]engine.ContainerRuntimeInfo
+	m.async(func(context.Context) error {
+		runtimes = eng.ContainerRuntimes()
+		return nil
+	}, func(error) {
+		if !ggui.Peek(m.Settings).SandboxEngine {
+			m.EngineContainerRuntimes.Set(nil)
+			return
+		}
+		m.EngineContainerRuntimes.Set(runtimes)
 	})
 }
 

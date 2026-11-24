@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ironpark/gvx-desktop-vm/vmproto"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
@@ -28,7 +29,7 @@ func (e *Engine) isContainerPaused(c Container) bool {
 	if c.State.Status != StatusRunning {
 		return false
 	}
-	return c.State.Paused || e.runner.State(c.ID).Paused
+	return c.State.Paused || e.ctrState(c).Paused
 }
 
 func (e *Engine) requireControl(c Container, what string) (sandbox.Control, error) {
@@ -38,7 +39,7 @@ func (e *Engine) requireControl(c Container, what string) (sandbox.Control, erro
 	if c.State.Status != StatusRunning {
 		return nil, errConflict("Container %s is not running", c.ID)
 	}
-	ctl := e.runner.Control(c.ID)
+	ctl := e.ctrControl(c)
 	if ctl == nil {
 		return nil, errConflict("Container %s was started without a control socket; restart it to use %s", c.ID, what)
 	}
@@ -50,6 +51,18 @@ func (e *Engine) requireControl(c Container, what string) (sandbox.Control, erro
 func controlCode(err error) string {
 	if err == nil {
 		return ""
+	}
+	if ve, ok := errors.AsType[*vmproto.Error](err); ok {
+		switch ve.Code {
+		case vmproto.CodeNotFound:
+			return rungv.CodeNotFound
+		case vmproto.CodeAlreadyPaused, vmproto.CodePaused:
+			return rungv.CodeAlreadyPaused
+		case vmproto.CodeNotPaused:
+			return rungv.CodeNotPaused
+		case vmproto.CodeBadRequest:
+			return rungv.CodeInvalidArgument
+		}
 	}
 	if code := rungv.ControlCode(err); code != "" {
 		return code
@@ -104,7 +117,7 @@ func lastNonEmptyLine(s string) string {
 // ---- pause / unpause ----
 
 func (e *Engine) containerPause(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlFor(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("Pausing a container"))
 		return
 	}
@@ -121,7 +134,7 @@ func (e *Engine) containerPause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errConflict("Container %s is already paused", c.ID))
 		return
 	}
-	if err := e.runner.Pause(r.Context(), c.ID); err != nil {
+	if err := e.ctrPause(r.Context(), c); err != nil {
 		if errors.Is(err, sandbox.ErrNoControl) {
 			writeError(w, r, errConflict("Container %s was started without a control socket; restart it to use pause", c.ID))
 			return
@@ -149,7 +162,7 @@ func (e *Engine) containerPause(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) containerUnpause(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlFor(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("Pausing a container"))
 		return
 	}
@@ -166,7 +179,7 @@ func (e *Engine) containerUnpause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errConflict("Container %s is not paused", c.ID))
 		return
 	}
-	if err := e.runner.Unpause(r.Context(), c.ID); err != nil {
+	if err := e.ctrUnpause(r.Context(), c); err != nil {
 		if errors.Is(err, sandbox.ErrNoControl) {
 			writeError(w, r, errConflict("Container %s was started without a control socket; restart it to use unpause", c.ID))
 			return
@@ -212,7 +225,7 @@ func formatTopCPUTime(cpuNanos int64) string {
 }
 
 func (e *Engine) containerTop(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlFor(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("Listing the processes of a container"))
 		return
 	}
@@ -278,7 +291,7 @@ type containerUpdateRequest struct {
 }
 
 func (e *Engine) containerUpdate(w http.ResponseWriter, r *http.Request) {
-	if !e.runner.Features().Control {
+	if !e.hasControlFor(r.PathValue("id")) {
 		writeError(w, r, errNotSupported("Updating a container"))
 		return
 	}
@@ -374,7 +387,9 @@ func (e *Engine) containerUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if c.State.Status == StatusRunning && !u.IsZero() {
-		if e.runner.Control(c.ID) != nil {
+		if c.isMicroVM() {
+			warnings = append(warnings, "Live resource updates are not supported for running micro-VM containers; new limits apply at the next start")
+		} else if e.runner.Control(c.ID) != nil {
 			if _, err := e.runner.Update(r.Context(), c.ID, u); err != nil {
 				writeError(w, r, err)
 				return

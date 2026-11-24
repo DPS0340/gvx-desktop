@@ -43,8 +43,9 @@ func labsPage(m *Model) ggui.Widget {
 		),
 	}
 	if amd64BuilderPlatform() {
-		sections = append(sections, settingsGroup(lucide.Cpu, tr("Cross-architecture builds"),
+		sections = append(sections, settingsGroup(lucide.Cpu, tr("Cross-architecture & micro-VMs"),
 			amd64BuilderSettings(m),
+			microVMSettings(m),
 		))
 	}
 	return page(sections...)

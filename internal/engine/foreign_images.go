@@ -142,7 +142,7 @@ func (e *Engine) markForeignImagesPossible() {
 // prior check found no foreign images (and none have been loaded/pulled since),
 // we skip the extra rungv subprocess on every poll.
 func (e *Engine) shouldListForeignImages() bool {
-	if e.isAmd64Enabled() {
+	if e.isAmd64Enabled() || e.isMicroVMEnabled() {
 		return true
 	}
 	e.img.mu.Lock()
@@ -329,34 +329,107 @@ func (e *Engine) lookupImageForPlatform(ctx context.Context, ref, platform strin
 	return ImageInspect{}, "", errNotFound("No such image: %s", ref)
 }
 
-// refuseForeignImage answers container create for ref (and the request's
-// platform, "" when none) with a 400 carrying foreignRunMessage when the
-// image would be one of another architecture: ref is cached only in the
-// foreign namespace, or platform names the foreign architecture. Never a
-// 404, which would make the docker CLI pull and try again. Nil otherwise.
-func (e *Engine) refuseForeignImage(ctx context.Context, ref, platform string) error {
+// resolveCreateImage resolves the image, execution runtime ("gvx" or
+// "microvm"), and target platform ("linux/arm64" or "linux/amd64") for
+// POST /containers/create according to the §3.2 runtime decision matrix.
+func (e *Engine) resolveCreateImage(ctx context.Context, ref, platform, requestedRuntime string) (ImageInspect, string, string, error) {
 	ref = strings.TrimSpace(ref)
-	if reqArch := parsePlatformArch(platform); reqArch != "" && reqArch != hostImageArch {
-		return errInvalid(foreignRunMessage, reqArch, ref, reqArch, hostImageArch)
+	platform = strings.TrimSpace(platform)
+	rawRuntime := strings.TrimSpace(requestedRuntime)
+	reqRuntime := strings.ToLower(rawRuntime)
+
+	switch reqRuntime {
+	case "", RuntimeGVX, RuntimeMicroVM:
+	default:
+		return ImageInspect{}, "", "", errInvalid("Unknown runtime specified %s", rawRuntime)
 	}
-	if ref == "" || validateImageRef(ref) != nil {
-		return nil
+	if reqRuntime == RuntimeMicroVM && !e.isMicroVMEnabled() {
+		return ImageInspect{}, "", "", errInvalid("Unknown or disabled runtime %q; enable Micro-VM container runtime in Labs", RuntimeMicroVM)
 	}
-	if _, err := e.lookupImageInArch(ctx, hostImageArch, ref); err == nil {
-		return nil
+	if err := validateImageRef(ref); err != nil {
+		return ImageInspect{}, "", "", err
 	}
-	if _, ok := e.archRunner(); !ok {
-		return nil
-	}
-	foreign := foreignImageArch()
-	if img, err := e.lookupImageInArch(ctx, foreign, ref); err == nil {
-		arch := normalizeArch(img.Architecture)
-		if arch == "" {
-			arch = foreign
+
+	reqArch := ""
+	if platform != "" {
+		if err := validateImagePlatform(platform); err != nil {
+			return ImageInspect{}, "", "", err
 		}
-		return errInvalid(foreignRunMessage, arch, ref, arch, hostImageArch)
+		reqArch = parsePlatformArch(platform)
+		if reqArch == "" {
+			return ImageInspect{}, "", "", errInvalid("invalid platform: %q", platform)
+		}
 	}
-	return nil
+
+	resolveForeign := func(arch string, cached *ImageInspect) (ImageInspect, string, string, error) {
+		if reqRuntime == RuntimeGVX {
+			return ImageInspect{}, "", "", errInvalid("linux/%s containers require the %s runtime", arch, RuntimeMicroVM)
+		}
+		if !e.isMicroVMEnabled() {
+			return ImageInspect{}, "", "", errInvalid(foreignRunMessage+"; enable Micro-VM container runtime in Labs", arch, ref, arch, hostImageArch)
+		}
+		if arch != "amd64" && arch != "arm64" {
+			return ImageInspect{}, "", "", errInvalid("unsupported architecture %q; micro-VM runtime supports linux/arm64 and linux/amd64", arch)
+		}
+		if arch == "amd64" && !e.isMicroVMRosettaReady() {
+			return ImageInspect{}, "", "", errInvalid("Rosetta is required to run linux/amd64 containers; install Rosetta in Labs")
+		}
+		if cached != nil {
+			img := *cached
+			e.enrichImageHealthcheck(ctx, &img)
+			return img, RuntimeMicroVM, "linux/" + arch, nil
+		}
+		img, err := e.lookupImageInArch(ctx, arch, ref)
+		if err != nil {
+			return ImageInspect{}, "", "", err
+		}
+		e.enrichImageHealthcheck(ctx, &img)
+		return img, RuntimeMicroVM, "linux/" + arch, nil
+	}
+
+	if reqArch != "" {
+		if reqArch != hostImageArch {
+			return resolveForeign(reqArch, nil)
+		}
+		targetRuntime := RuntimeGVX
+		if reqRuntime == RuntimeMicroVM {
+			targetRuntime = RuntimeMicroVM
+		}
+		img, err := e.lookupImageInArch(ctx, hostImageArch, ref)
+		if err != nil {
+			return ImageInspect{}, "", "", err
+		}
+		e.enrichImageHealthcheck(ctx, &img)
+		return img, targetRuntime, "linux/" + hostImageArch, nil
+	}
+
+	// No explicit platform: try host namespace first.
+	img, err := e.lookupImageInArch(ctx, hostImageArch, ref)
+	if err == nil {
+		targetRuntime := RuntimeGVX
+		if reqRuntime == RuntimeMicroVM {
+			targetRuntime = RuntimeMicroVM
+		}
+		e.enrichImageHealthcheck(ctx, &img)
+		return img, targetRuntime, "linux/" + hostImageArch, nil
+	}
+	if errors.Is(err, rungv.ErrNotFound) {
+		return ImageInspect{}, "", "", err
+	}
+
+	// Check foreign namespace before returning 404.
+	if _, ok := e.archRunner(); ok {
+		foreign := foreignImageArch()
+		if fimg, ferr := e.lookupImageInArch(ctx, foreign, ref); ferr == nil {
+			arch := normalizeArch(fimg.Architecture)
+			if arch == "" {
+				arch = foreign
+			}
+			return resolveForeign(arch, &fimg)
+		}
+	}
+
+	return ImageInspect{}, "", "", errNotFound("No such image: %s", ref)
 }
 
 // spoolImageArchive writes body into a temporary file under Config.Dir/tmp

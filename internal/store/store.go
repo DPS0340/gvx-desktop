@@ -29,6 +29,12 @@ const (
 	DefaultMCPPort             = 18787
 )
 
+// Default per-container micro-VM resources (matching apple/container).
+const (
+	DefaultMicroVMCPUs      = 4
+	DefaultMicroVMMemoryMiB = 1024
+)
+
 // Settings are the app's preferences.
 type Settings struct {
 	RungvPath      string `json:"rungvPath,omitempty"` // empty: locate automatically
@@ -85,6 +91,15 @@ type Settings struct {
 	// with Rosetta (experimental, macOS on Apple silicon; meaningful only
 	// with SandboxEngine on).
 	Amd64Builds bool `json:"amd64Builds,omitempty"`
+	// MicroVMContainers enables the per-container Linux micro-VM runtime
+	// (Labs, Apple silicon macOS): runs linux/amd64 containers automatically
+	// with Rosetta, and runs linux/arm64 containers on a real Linux 6.18
+	// kernel when --runtime=microvm is requested.
+	MicroVMContainers bool `json:"microVmContainers,omitempty"`
+	// MicroVMCPUs and MicroVMMemoryMiB configure default per-VM resources for
+	// micro-VM containers; 0 selects DefaultMicroVMCPUs / DefaultMicroVMMemoryMiB.
+	MicroVMCPUs      int `json:"microVmCpus,omitempty"`
+	MicroVMMemoryMiB int `json:"microVmMemoryMiB,omitempty"`
 	// DockerExposeLAN publishes container ports on 0.0.0.0 (all interfaces)
 	// instead of loopback 127.0.0.1 only (opt-in; defaults to false).
 	DockerExposeLAN bool `json:"docker_expose_lan,omitempty"`
@@ -143,6 +158,23 @@ func (s Settings) LocalProxyHTTPSPortOrDefault() int {
 // MCPPortOrDefault returns MCPPort when in [1, 65535], or DefaultMCPPort otherwise.
 func (s Settings) MCPPortOrDefault() int {
 	return portOrDefault(s.MCPPort, DefaultMCPPort)
+}
+
+// MicroVMCPUsOrDefault returns MicroVMCPUs when >= 1, or DefaultMicroVMCPUs otherwise.
+func (s Settings) MicroVMCPUsOrDefault() int {
+	if s.MicroVMCPUs >= 1 {
+		return s.MicroVMCPUs
+	}
+	return DefaultMicroVMCPUs
+}
+
+// MicroVMMemoryMiBOrDefault returns MicroVMMemoryMiB when >= 128, or
+// DefaultMicroVMMemoryMiB otherwise.
+func (s Settings) MicroVMMemoryMiBOrDefault() int {
+	if s.MicroVMMemoryMiB >= 128 {
+		return s.MicroVMMemoryMiB
+	}
+	return DefaultMicroVMMemoryMiB
 }
 
 // Equal makes Settings comparable for signals, which a list in it keeps

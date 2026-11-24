@@ -139,6 +139,13 @@ func (e *Engine) info(w http.ResponseWriter, r *http.Request) {
 		warnings = append(warnings, "GVX Desktop's experimental sandbox engine: exec, cp, diff, export and commit need rungv 0.20.")
 	}
 
+	runtimes := map[string]any{
+		RuntimeGVX: map[string]string{"path": "rungv"},
+	}
+	if e.isMicroVMEnabled() {
+		runtimes[RuntimeMicroVM] = map[string]string{"path": "gvx-microvm"}
+	}
+
 	resp := struct {
 		ID                 string              `json:"ID"`
 		Name               string              `json:"Name"`
@@ -192,8 +199,8 @@ func (e *Engine) info(w http.ResponseWriter, r *http.Request) {
 			"Network": {"bridge", "host", "null"},
 		},
 		SecurityOptions:   []string{},
-		Runtimes:          map[string]any{},
-		DefaultRuntime:    "gvx",
+		Runtimes:          runtimes,
+		DefaultRuntime:    RuntimeGVX,
 		LoggingDriver:     "json-file",
 		CgroupDriver:      "none",
 		ExperimentalBuild: true,

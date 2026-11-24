@@ -45,6 +45,23 @@ func (s Amd64CheckState) OK() bool {
 	return true
 }
 
+// MicroVMOK reports whether host requirements for running Linux micro-VM
+// containers are met (Apple silicon, macOS 13+, and Virtualization). Rosetta is
+// not required so arm64 containers with --runtime=microvm work even when
+// Rosetta is not installed; Rosetta is checked separately for amd64 containers.
+func (s Amd64CheckState) MicroVMOK() bool {
+	if !s.Checked || s.Err != "" || s.Result.Err != "" {
+		return false
+	}
+	if !s.Result.AppleSilicon || !s.Result.Virtualization {
+		return false
+	}
+	if s.Result.MacOS != "" {
+		return macOSAtLeast13(s.Result.MacOS)
+	}
+	return s.Result.Rosetta != vmhelper.RosettaNotSupported
+}
+
 func macOSAtLeast13(version string) bool {
 	if version == "" {
 		return false
@@ -55,6 +72,10 @@ func macOSAtLeast13(version string) bool {
 }
 
 type vmHelperRunner func(ctx context.Context, subcmd string) (vmhelper.CheckResult, error)
+
+// defaultVMHelperRunner is the helper runner used by NewModel. Test init stubs
+// it so `go test ./internal/ui` never recursively spawns `ui.test __vm-helper`.
+var defaultVMHelperRunner vmHelperRunner = defaultRunVMHelper
 
 // defaultRunVMHelper invokes this executable in VM-helper mode so the app
 // process never loads Virtualization.framework directly.
@@ -185,6 +206,188 @@ func (m *Model) refreshAmd64State() {
 		return
 	}
 	m.Amd64State.Set(m.sandboxEngine.Amd64State())
+}
+
+const (
+	rosettaUnknown   int32 = 0
+	rosettaMissing   int32 = 1
+	rosettaInstalled int32 = 2
+)
+
+func (m *Model) watchAmd64Check() {
+	ggui.Watch(m.Amd64Check, func(c Amd64CheckState) {
+		switch {
+		case !c.Checked || c.Err != "":
+			m.rosettaState.Store(rosettaUnknown)
+		case c.Result.Rosetta == vmhelper.RosettaInstalled:
+			m.rosettaState.Store(rosettaInstalled)
+		default:
+			m.rosettaState.Store(rosettaMissing)
+		}
+	})
+}
+
+const (
+	minMicroVMCPUs      = 1
+	minMicroVMMemoryMiB = 128
+	maxMicroVMMemoryMiB = 65536
+)
+
+// microVMHostCPUs returns the maximum selectable vCPU count for a micro-VM.
+// Tests may replace it.
+var microVMHostCPUs = func() int {
+	return max(1, runtime.NumCPU())
+}
+
+func clampMicroVMResources(cpus, memMiB int) (int, int) {
+	maxCPUs := max(1, microVMHostCPUs())
+	if cpus <= 0 {
+		cpus = store.DefaultMicroVMCPUs
+	}
+	cpus = min(max(cpus, minMicroVMCPUs), maxCPUs)
+	if memMiB <= 0 {
+		memMiB = store.DefaultMicroVMMemoryMiB
+	}
+	memMiB = min(max(memMiB, minMicroVMMemoryMiB), maxMicroVMMemoryMiB)
+	return cpus, memMiB
+}
+
+// microVMConfig builds the engine's MicroVMConfig pointing at this executable
+// in helper mode, resolving VM assets from the user's cache directory, and
+// supplying a thread-safe Rosetta readiness probe and default per-VM resources.
+func (m *Model) microVMConfig(set store.Settings) (*engine.MicroVMConfig, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	run := m.runVMHelper
+	cpus, memMiB := clampMicroVMResources(set.MicroVMCPUsOrDefault(), set.MicroVMMemoryMiBOrDefault())
+	return &engine.MicroVMConfig{
+		Launcher: vmclient.Launcher{
+			Path: exe,
+			Args: []string{vmhelper.Arg, vmhelper.CmdServe},
+			Log: func(line string) {
+				log.Printf("vm-helper: %s", line)
+			},
+		},
+		Assets: func(ctx context.Context, progress func(done, total int64)) (vmassets.Dir, error) {
+			cacheDir, err := vmassets.DefaultCacheDir()
+			if err != nil {
+				return vmassets.Dir{}, err
+			}
+			return vmassets.Resolve(ctx, vmassets.Options{
+				CacheDir: cacheDir,
+				Progress: progress,
+			})
+		},
+		RosettaReady: func() bool {
+			switch m.rosettaState.Load() {
+			case rosettaInstalled:
+				return true
+			case rosettaMissing:
+				return false
+			}
+			if run == nil {
+				return false
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			res, err := run(ctx, vmhelper.CmdCheck)
+			if err != nil {
+				return false
+			}
+			if res.Rosetta == vmhelper.RosettaInstalled {
+				m.rosettaState.Store(rosettaInstalled)
+				return true
+			}
+			return false
+		},
+		DefaultCPUs:  cpus,
+		DefaultMemMB: memMiB,
+	}, nil
+}
+
+func (m *Model) refreshMicroVMState() {
+	if m.Offline || m.sandboxEngine == nil {
+		return
+	}
+	m.MicroVMState.Set(m.sandboxEngine.MicroVMState())
+}
+
+// SetMicroVMContainers turns the experimental per-container Linux micro-VM
+// runtime on or off. Turning it on requires the sandbox engine and host
+// virtualization support (Apple silicon, macOS 13+, Virtualization); Rosetta is
+// NOT required so arm64 containers with --runtime=microvm work immediately.
+// Turning it off is always allowed and stops any running micro-VM containers.
+func (m *Model) SetMicroVMContainers(on bool) {
+	set := ggui.Peek(m.Settings)
+	if set.MicroVMContainers == on {
+		return
+	}
+	if on && (!set.SandboxEngine || !ggui.Peek(m.Amd64Check).MicroVMOK()) {
+		return
+	}
+	m.UpdateSettings(func(s *store.Settings) { s.MicroVMContainers = on })
+	if m.Offline || m.sandboxEngine == nil || !ggui.Peek(m.Settings).SandboxEngine {
+		return
+	}
+	m.applyMicroVMConfig(on)
+}
+
+// SetMicroVMResources persists the default per-VM CPU and memory limits (clamped
+// to valid host bounds) and updates the live engine configuration without
+// disrupting running micro-VMs.
+func (m *Model) SetMicroVMResources(cpus, memMiB int) {
+	cpus, memMiB = clampMicroVMResources(cpus, memMiB)
+	cur := ggui.Peek(m.Settings)
+	if cur.MicroVMCPUs == cpus && cur.MicroVMMemoryMiB == memMiB {
+		return
+	}
+	if cur.MicroVMCPUs == 0 && cpus == min(store.DefaultMicroVMCPUs, max(1, microVMHostCPUs())) &&
+		cur.MicroVMMemoryMiB == 0 && memMiB == store.DefaultMicroVMMemoryMiB {
+		return
+	}
+	m.UpdateSettings(func(s *store.Settings) {
+		s.MicroVMCPUs = cpus
+		s.MicroVMMemoryMiB = memMiB
+	})
+	if m.Offline || m.sandboxEngine == nil {
+		return
+	}
+	if set := ggui.Peek(m.Settings); set.SandboxEngine && set.MicroVMContainers {
+		m.applyMicroVMConfig(true)
+	}
+}
+
+func (m *Model) applyMicroVMConfig(on bool) {
+	if m.Offline || m.sandboxEngine == nil {
+		return
+	}
+	m.microVMGen++
+	gen := m.microVMGen
+	eng := m.sandboxEngine
+	var cfg *engine.MicroVMConfig
+	if on {
+		var err error
+		cfg, err = m.microVMConfig(ggui.Peek(m.Settings))
+		if err != nil {
+			m.toastError(tr("Could not configure micro-VM runtime"), err)
+			return
+		}
+	}
+	m.async(func(context.Context) error {
+		return eng.SetMicroVM(cfg)
+	}, func(err error) {
+		if m.microVMGen != gen {
+			return
+		}
+		m.refreshMicroVMState()
+		m.refreshEngineRunning()
+		m.refreshEngineContainerRuntimes()
+		if err != nil {
+			m.toastError(tr("Could not configure micro-VM runtime"), err)
+		}
+	})
 }
 
 func (m *Model) syncAmd64BuildxNode(on bool) {

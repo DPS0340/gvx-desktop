@@ -62,6 +62,15 @@ func (r DockerImageRow) ForeignArch() bool {
 	return r.Arch != "" && r.Arch != runtime.GOARCH
 }
 
+// EffectiveArch returns the image's CPU architecture, falling back to the host
+// architecture when manifest metadata was not present.
+func (r DockerImageRow) EffectiveArch() string {
+	if r.Arch != "" {
+		return r.Arch
+	}
+	return runtime.GOARCH
+}
+
 // Platform returns "linux/<arch>" for foreign-arch rows and "" otherwise.
 // Passing it to platform-scoped engine endpoints ensures name-based actions
 // (delete, tag, inspect) target the foreign namespace even when the same

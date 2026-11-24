@@ -49,7 +49,7 @@ func normalizeArchivePath(raw string) string {
 }
 
 func (e *Engine) archiveLookup(r *http.Request) (Container, string, string, error) {
-	if !e.runner.Features().Control {
+	if !e.hasControlFor(r.PathValue("id")) {
 		return Container{}, "", "", errNotSupported("Copying files to and from a container")
 	}
 	c, err := e.lookup(r.PathValue("id"))
@@ -71,7 +71,7 @@ func (e *Engine) archivePrepareRunning(r *http.Request, stoppedWhat string) (Con
 	if c.State.Status != StatusRunning {
 		return Container{}, nil, "", "", errNotSupported(stoppedWhat)
 	}
-	ctl := e.runner.Control(c.ID)
+	ctl := e.ctrControl(c)
 	if ctl == nil {
 		return Container{}, nil, "", "", errConflict("Container %s was started without a control socket; restart it to use cp", c.ID)
 	}
@@ -108,7 +108,7 @@ func (e *Engine) containerArchiveHead(w http.ResponseWriter, r *http.Request) {
 		e.containerArchiveStoppedHead(w, r, c, rawPath, guestPath)
 		return
 	}
-	ctl := e.runner.Control(c.ID)
+	ctl := e.ctrControl(c)
 	if ctl == nil {
 		writeError(w, r, errConflict("Container %s was started without a control socket; restart it to use cp", c.ID))
 		return
@@ -132,7 +132,7 @@ func (e *Engine) containerArchiveGet(w http.ResponseWriter, r *http.Request) {
 		e.containerArchiveStoppedGet(w, r, c, rawPath, guestPath)
 		return
 	}
-	ctl := e.runner.Control(c.ID)
+	ctl := e.ctrControl(c)
 	if ctl == nil {
 		writeError(w, r, errConflict("Container %s was started without a control socket; restart it to use cp", c.ID))
 		return

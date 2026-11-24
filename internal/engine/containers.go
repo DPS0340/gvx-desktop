@@ -445,8 +445,9 @@ func (e *Engine) resumeContainers(ctx context.Context) {
 // user.
 func (e *Engine) stopContainers(timeout time.Duration) {
 	type stopTarget struct {
-		id  string
-		sig string
+		id        string
+		sig       string
+		isMicroVM bool
 	}
 	var running []stopTarget
 	dirty := false
@@ -464,7 +465,7 @@ func (e *Engine) stopContainers(timeout time.Duration) {
 			if sig == "" {
 				sig = "SIGTERM"
 			}
-			running = append(running, stopTarget{id: c.ID, sig: sig})
+			running = append(running, stopTarget{id: c.ID, sig: sig, isMicroVM: c.isMicroVM()})
 		} else if c.State.Status == StatusRestarting {
 			c.State.Status = StatusExited
 			dirty = true
@@ -480,7 +481,7 @@ func (e *Engine) stopContainers(timeout time.Duration) {
 		wg.Add(1)
 		go func(item stopTarget) {
 			defer wg.Done()
-			if err := e.runner.Shutdown(item.id, item.sig, timeout); err != nil {
+			if err := e.ctrShutdown(item.id, item.isMicroVM, item.sig, timeout); err != nil {
 				e.logf("engine: stop %s: %v", item.id[:min(12, len(item.id))], err)
 			}
 		}(item)
@@ -612,12 +613,12 @@ func (e *Engine) startContainer(id string) error {
 	}
 
 	hc, _ := parseHealthConfig(snapshot.Config.Healthcheck)
-	runHealth := hc.enabled() && e.runner.Features().Control
+	runHealth := hc.enabled() && (snapshot.isMicroVM() || e.runner.Features().Control)
 
 	spec := snapshot.Spec.Clone()
 	spec.Name = snapshot.Name
 	spec.Ports = specPorts
-	if snapshot.HostConfig.PidsLimit != nil && *snapshot.HostConfig.PidsLimit > 0 && e.hasRunFlag("pids-limit") {
+	if !snapshot.isMicroVM() && snapshot.HostConfig.PidsLimit != nil && *snapshot.HostConfig.PidsLimit > 0 && e.hasRunFlag("pids-limit") {
 		if extra, err := rungv.SplitArgs(spec.ExtraArgs); err == nil {
 			extra = append(extra, "-pids-limit", strconv.FormatInt(*snapshot.HostConfig.PidsLimit, 10))
 			spec.ExtraArgs = rungv.FormatArgs(extra)
@@ -666,23 +667,33 @@ func (e *Engine) startContainer(id string) error {
 
 	e.ctr.portMu.Unlock()
 
-	spec = e.joinOverlay(&snapshot, spec)
-
-	if err := e.runner.Start(spec); err != nil {
-		e.leaveOverlay(id)
-		e.handleStartFailure(id, gen, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, prevHealth, err)
-		msg := strings.ToLower(err.Error())
-		if strings.Contains(msg, "volume") && (strings.Contains(msg, "in use") || strings.Contains(msg, "locked")) {
-			return errConflict("%s", err.Error())
+	if snapshot.isMicroVM() {
+		if err := e.microVMStart(&snapshot, gen, resolvedPorts); err != nil {
+			e.handleStartFailure(id, gen, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, prevHealth, err)
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "volume") && (strings.Contains(msg, "in use") || strings.Contains(msg, "locked")) {
+				return errConflict("%s", err.Error())
+			}
+			return err
 		}
-		return err
+	} else {
+		spec = e.joinOverlay(&snapshot, spec)
+		if err := e.runner.Start(spec); err != nil {
+			e.leaveOverlay(id)
+			e.handleStartFailure(id, gen, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, prevHealth, err)
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "volume") && (strings.Contains(msg, "in use") || strings.Contains(msg, "locked")) {
+				return errConflict("%s", err.Error())
+			}
+			return err
+		}
 	}
 
 	if snapshot.Config.Tty && snapshot.HostConfig.ConsoleSize[0] > 0 && snapshot.HostConfig.ConsoleSize[1] > 0 {
-		_ = e.runner.Resize(id, uint16(snapshot.HostConfig.ConsoleSize[0]), uint16(snapshot.HostConfig.ConsoleSize[1]))
+		_ = e.ctrResize(snapshot, uint16(snapshot.HostConfig.ConsoleSize[0]), uint16(snapshot.HostConfig.ConsoleSize[1]))
 	}
 
-	st := e.runner.State(id)
+	st := e.ctrState(snapshot)
 	var (
 		emitStart       bool
 		stillRunningGen bool
@@ -731,7 +742,7 @@ func (e *Engine) handleStartFailure(id string, gen uint64, prevStatus string, pr
 		updated    bool
 	)
 	e.ctr.mu.Lock()
-	if c := e.ctr.byID[id]; c != nil && (gen == 0 || c.runGen == gen) {
+	if c := e.ctr.byID[id]; c != nil && c.State.Status != StatusRemoving && (gen == 0 || c.runGen == gen) {
 		updated = true
 		c.State.Error = startErr.Error()
 		c.State.Pid = 0
@@ -812,11 +823,12 @@ func (e *Engine) stopContainerByRef(ctx context.Context, ref string, signal stri
 		return errNotModified
 	}
 	c.State.StoppedByUser = true
+	isMicroVM := c.isMicroVM()
 	attrs := containerAttrs(c)
 	_ = e.saveContainersLocked()
 	e.ctr.mu.Unlock()
 
-	if err := e.runner.Shutdown(id, sig, timeout); err != nil {
+	if err := e.ctrShutdown(id, isMicroVM, sig, timeout); err != nil {
 		return err
 	}
 	e.waitNotRunning(ctx, id)
@@ -850,13 +862,14 @@ func (e *Engine) waitNotRunning(ctx context.Context, id string) {
 // removeContainerCleanup finishes removing a container whose status is already
 // StatusRemoving.
 func (e *Engine) removeContainerCleanup(ctx context.Context, id string, stopFirst, removeVols bool, anonVols []string, attrs map[string]string) {
+	isMicroVM := e.isMicroVMContainer(id)
 	e.stopHealthMonitor(id)
 	if stopFirst {
-		_ = e.runner.Shutdown(id, "SIGKILL", 0)
+		_ = e.ctrShutdown(id, isMicroVM, "SIGKILL", 0)
 		e.waitNotRunning(ctx, id)
 	}
 	e.dropExecsForContainer(id)
-	e.runner.Forget(id)
+	e.ctrForget(id, isMicroVM)
 	e.dropLogs(id)
 	e.leaveOverlay(id)
 	e.disconnectNetworks(id)
@@ -868,7 +881,11 @@ func (e *Engine) removeContainerCleanup(ctx context.Context, id string, stopFirs
 	_ = e.saveContainersLocked()
 	e.ctr.mu.Unlock()
 	if removed != nil {
-		e.removeRootfs(*removed) // a crash before this leaves it to sweepRootfs
+		if removed.isMicroVM() {
+			e.removeMicroVMRootfs(removed.ID)
+		} else {
+			e.removeRootfs(*removed) // a crash before this leaves it to sweepRootfs
+		}
 	}
 
 	if removeVols {
@@ -918,19 +935,19 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		e.ctr.mu.Unlock()
 	}
 
-	// An image of another architecture is refused here, not with the 404
-	// below, which would make the docker CLI pull it and try again.
-	if err := e.refuseForeignImage(r.Context(), req.Image, r.URL.Query().Get("platform")); err != nil {
-		writeError(w, r, err)
-		return
+	// Resolve runtime and image according to the §3.2 matrix (400 on invalid /
+	// disabled runtime or refused foreign arch; 404 on uncached allowed image
+	// so Docker CLI auto-pulls).
+	reqRuntime := strings.TrimSpace(req.HostConfig.Runtime)
+	if reqRuntime == "" && req.Labels != nil {
+		reqRuntime = strings.TrimSpace(req.Labels["gvx.runtime"])
 	}
-
-	// Inspect the cached image (404 makes docker CLI pull).
-	img, err := e.imageConfig(r.Context(), req.Image)
+	img, targetRuntime, targetPlatform, err := e.resolveCreateImage(r.Context(), req.Image, r.URL.Query().Get("platform"), reqRuntime)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
+	isMicroVM := targetRuntime == RuntimeMicroVM
 
 	id := randomHex64()
 	cfg, argv, warnings, err := mergeContainerConfig(id, &req, img)
@@ -938,11 +955,14 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if hc, _ := parseHealthConfig(cfg.Healthcheck); hc.enabled() && !e.runner.Features().Control {
+	if hc, _ := parseHealthConfig(cfg.Healthcheck); hc.enabled() && !isMicroVM && !e.runner.Features().Control {
 		warnings = append(warnings, "Healthcheck requires rungv 0.20 and is ignored by GVX Desktop's experimental sandbox engine")
 	}
 
 	hc := req.HostConfig
+	if isMicroVM {
+		hc.Runtime = RuntimeMicroVM
+	}
 	if err := validateRestartPolicy(hc); err != nil {
 		writeError(w, r, err)
 		return
@@ -1038,10 +1058,30 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	warnings = append(warnings, portWarnings...)
+	if isMicroVM {
+		hasUDP := false
+		for k := range hc.PortBindings {
+			if strings.HasSuffix(k, "/udp") {
+				hasUDP = true
+				break
+			}
+		}
+		if !hasUDP && hc.PublishAllPorts {
+			for k := range cfg.ExposedPorts {
+				if strings.HasSuffix(k, "/udp") {
+					hasUDP = true
+					break
+				}
+			}
+		}
+		if hasUDP {
+			warnings = append(warnings, "UDP port publishing is not supported by the micro-VM runtime yet; only TCP ports will be forwarded")
+		}
+	}
 
 	// Plan and validate mounts before creating any volumes.
 	mountOpts := mountPlanOptions{
-		unixForward:  e.runner.Features().UnixForward,
+		unixForward:  !isMicroVM && e.runner.Features().UnixForward,
 		dockerSocket: e.cfg.DockerSocket,
 		sshAuthSock:  e.sshAuthSock(),
 	}
@@ -1127,7 +1167,7 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	spec.CreatedAt = created
-	if e.keepsRootfs(hc) {
+	if !isMicroVM && e.keepsRootfs(hc) {
 		// rungv makes the volume at the first start.
 		if err := os.MkdirAll(e.rootfsDir(), 0o700); err != nil {
 			e.ctr.mu.Unlock()
@@ -1138,6 +1178,10 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		spec.RootfsVolume = e.rootfsPath(id)
 	}
 
+	storedRuntime := ""
+	if isMicroVM {
+		storedRuntime = RuntimeMicroVM
+	}
 	c := &Container{
 		ID:               id,
 		Name:             name,
@@ -1150,6 +1194,8 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		Mounts:           mountPoints,
 		AnonymousVolumes: anonVols,
 		Spec:             spec,
+		Platform:         targetPlatform,
+		Runtime:          storedRuntime,
 		State: ContainerState{
 			Status: StatusCreated,
 		},
@@ -1177,10 +1223,19 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		netSettings[rn.net.Name] = ep
 	}
-	for _, rn := range resolvedNets {
-		if w := overlayWarning(rn.net); w != "" {
-			warnings = append(warnings, w)
-			break
+	if isMicroVM {
+		for _, rn := range resolvedNets {
+			if rn.net.Name != "bridge" && rn.net.Name != "host" && rn.net.Name != "none" {
+				warnings = append(warnings, "User-defined networks are not yet bridged into micro-VM containers; running on the default NAT network instead")
+				break
+			}
+		}
+	} else {
+		for _, rn := range resolvedNets {
+			if w := overlayWarning(rn.net); w != "" {
+				warnings = append(warnings, w)
+				break
+			}
 		}
 	}
 
@@ -1245,6 +1300,13 @@ func containerMAC(id string) string {
 }
 
 func (e *Engine) containerSizeRw(c Container) int64 {
+	if c.isMicroVM() {
+		p := e.microVMRootfsPath(c.ID)
+		if p == "" {
+			return 0
+		}
+		return allocatedFileBytes(p)
+	}
 	if !e.ownsRootfs(c.ID, c.Spec.RootfsVolume) {
 		return 0
 	}
@@ -1606,6 +1668,13 @@ func (e *Engine) containerInspect(w http.ResponseWriter, r *http.Request) {
 		sizeRootFs = &rootFS
 	}
 
+	driver := "gvx"
+	inspectHC := c.HostConfig
+	if c.isMicroVM() {
+		driver = "gvx-microvm"
+		inspectHC.Runtime = RuntimeMicroVM
+	}
+
 	resp := containerInspectResponse{
 		ID:      c.ID,
 		Created: formatInspectTime(c.Created),
@@ -1629,11 +1698,11 @@ func (e *Engine) containerInspect(w http.ResponseWriter, r *http.Request) {
 		LogPath:      logPath,
 		Name:         "/" + c.Name,
 		RestartCount: c.RestartCount,
-		Driver:       "gvx",
+		Driver:       driver,
 		Platform:     "linux",
 		ExecIDs:      e.execIDsForContainer(c.ID),
-		HostConfig:   c.HostConfig,
-		GraphDriver:  inspectGraphDriver{Name: "gvx"},
+		HostConfig:   inspectHC,
+		GraphDriver:  inspectGraphDriver{Name: driver},
 		SizeRw:       sizeRw,
 		SizeRootFs:   sizeRootFs,
 		Mounts:       mounts,
@@ -1778,13 +1847,14 @@ func (e *Engine) containerKill(w http.ResponseWriter, r *http.Request) {
 		c.restartTimer = nil
 	}
 	c.State.StoppedByUser = true
+	cCopy := c.clone()
 	attrs := containerAttrs(c)
 	attrs["signal"] = strconv.Itoa(int(sig))
 	_ = e.saveContainersLocked()
 	e.ctr.mu.Unlock()
 
-	if wasPaused || e.runner.State(id).Paused {
-		if err := e.runner.Unpause(r.Context(), id); err == nil {
+	if wasPaused || e.ctrState(cCopy).Paused {
+		if err := e.ctrUnpause(r.Context(), cCopy); err == nil {
 			e.ctr.mu.Lock()
 			if cur := e.ctr.byID[id]; cur != nil {
 				cur.State.Paused = false
@@ -1793,7 +1863,7 @@ func (e *Engine) containerKill(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := e.runner.Signal(id, sig); err != nil {
+	if err := e.ctrSignal(cCopy, sig); err != nil {
 		writeError(w, r, errConflict("Cannot kill container: %s: %v", ref, err))
 		return
 	}

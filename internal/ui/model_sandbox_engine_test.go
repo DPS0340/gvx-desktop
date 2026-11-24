@@ -23,26 +23,30 @@ import (
 )
 
 type fakeSandboxEngine struct {
-	mu           sync.Mutex
-	opens        int
-	closes       int
-	stopRuns     int
-	lastTimeout  time.Duration
-	running      int
-	ownedVols    map[string]bool
-	volUsers     map[string][]string
-	openHook     func(call int) error
-	handler      http.Handler
-	builderSock  string
-	builderState engine.BuilderState
-	amd64Sock    string
-	amd64State   engine.Amd64State
-	amd64Configs []*engine.Amd64Config
-	setAmd64Err  error
-	resetDisks   int
-	resetDiskErr error
-	features     rungv.Features
-	canControl   map[string]bool
+	mu                sync.Mutex
+	opens             int
+	closes            int
+	stopRuns          int
+	lastTimeout       time.Duration
+	running           int
+	ownedVols         map[string]bool
+	volUsers          map[string][]string
+	containerRuntimes map[string]engine.ContainerRuntimeInfo
+	openHook          func(call int) error
+	handler           http.Handler
+	builderSock       string
+	builderState      engine.BuilderState
+	amd64Sock         string
+	amd64State        engine.Amd64State
+	amd64Configs      []*engine.Amd64Config
+	setAmd64Err       error
+	resetDisks        int
+	resetDiskErr      error
+	microVMState      engine.MicroVMState
+	microVMConfigs    []*engine.MicroVMConfig
+	setMicroVMErr     error
+	features          rungv.Features
+	canControl        map[string]bool
 }
 
 func (f *fakeSandboxEngine) Open(context.Context) error {
@@ -62,6 +66,7 @@ func (f *fakeSandboxEngine) Close(timeout time.Duration) error {
 	defer f.mu.Unlock()
 	f.closes++
 	f.running = 0
+	f.microVMState.RunningVMs = 0
 	f.lastTimeout = timeout
 	return nil
 }
@@ -154,6 +159,39 @@ func (f *fakeSandboxEngine) ResetAmd64Disk(context.Context) error {
 	}
 	f.amd64State.DiskBytes = 0
 	return nil
+}
+
+func (f *fakeSandboxEngine) SetMicroVM(cfg *engine.MicroVMConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.microVMConfigs = append(f.microVMConfigs, cfg)
+	if f.setMicroVMErr != nil {
+		return f.setMicroVMErr
+	}
+	f.microVMState.Enabled = cfg != nil
+	if cfg == nil {
+		f.microVMState.RunningVMs = 0
+	}
+	return nil
+}
+
+func (f *fakeSandboxEngine) MicroVMState() engine.MicroVMState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.microVMState
+}
+
+func (f *fakeSandboxEngine) ContainerRuntimes() map[string]engine.ContainerRuntimeInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.containerRuntimes) == 0 {
+		return nil
+	}
+	out := make(map[string]engine.ContainerRuntimeInfo, len(f.containerRuntimes))
+	for k, v := range f.containerRuntimes {
+		out[k] = v
+	}
+	return out
 }
 
 func (f *fakeSandboxEngine) Features() rungv.Features {

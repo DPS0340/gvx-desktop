@@ -176,11 +176,96 @@ func ManagedPluginsDir() (string, error) {
 
 // ManagedDockerPath returns ~/.gvx/bin/docker (or docker.exe on Windows).
 func ManagedDockerPath() (string, error) {
+	return ManagedBinaryPath("docker")
+}
+
+// ManagedBinaryPath returns ~/.gvx/bin/<baseName> (or <baseName>.exe on Windows).
+func ManagedBinaryPath(baseName string) (string, error) {
 	dir, err := BinDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, exeName("docker", goos())), nil
+	return filepath.Join(dir, exeName(baseName, goos())), nil
+}
+
+// BinaryLinkedInBinDir reports whether src is already located at or synced
+// into ~/.gvx/bin/<baseName>[.exe].
+func BinaryLinkedInBinDir(src, baseName string) bool {
+	if strings.TrimSpace(src) == "" || strings.TrimSpace(baseName) == "" {
+		return false
+	}
+	dst, err := ManagedBinaryPath(baseName)
+	if err != nil {
+		return false
+	}
+	if sameFileOnDisk(src, dst) {
+		return true
+	}
+	if goos() == "windows" {
+		srcSum, err := fileSHA256(src)
+		if err != nil {
+			return false
+		}
+		prev, err := os.ReadFile(dst + ".gvx-sha256")
+		if err != nil || strings.TrimSpace(string(prev)) != srcSum {
+			return false
+		}
+		dstSum, err := fileSHA256(dst)
+		return err == nil && dstSum == srcSum
+	}
+	return false
+}
+
+// SyncBinaryToBinDir exposes src at ~/.gvx/bin/<baseName>[.exe] (symlink on
+// Unix, hash-tracked copy on Windows). If src is already at that path, it is
+// a no-op. If a different unmanaged regular file already occupies the slot, it
+// returns an error instead of overwriting it.
+func SyncBinaryToBinDir(src, baseName string) (string, error) {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return "", errors.New("binary path is empty")
+	}
+	targetOS := goos()
+	if !isExecutableFile(src, targetOS) {
+		return "", fmt.Errorf("%s is not an executable file", src)
+	}
+	dst, err := ManagedBinaryPath(baseName)
+	if err != nil {
+		return "", err
+	}
+	if sameFileOnDisk(src, dst) {
+		return dst, nil
+	}
+	if targetOS != "windows" {
+		if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink == 0 {
+			return "", fmt.Errorf("%s already exists and points to a different binary", dst)
+		}
+	} else {
+		if _, err := os.Stat(dst); err == nil {
+			if _, merr := os.Stat(dst + ".gvx-sha256"); errors.Is(merr, os.ErrNotExist) {
+				return "", fmt.Errorf("%s already exists and is not managed by GVX Desktop", dst)
+			}
+		}
+	}
+	if err := syncManagedBinary(src, dst, targetOS); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+func sameFileOnDisk(a, b string) bool {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return false
+	}
+	if samePath(filepath.Clean(a), filepath.Clean(b)) {
+		return true
+	}
+	sa, errA := os.Stat(a)
+	sb, errB := os.Stat(b)
+	if errA == nil && errB == nil && os.SameFile(sa, sb) {
+		return true
+	}
+	return false
 }
 
 // DockerConfigFile returns the path to Docker's config.json, honoring

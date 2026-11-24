@@ -145,6 +145,7 @@ func (m *Model) AddBundledDockerToPATH() {
 			return
 		}
 		m.BundledDocker.Set(st)
+		m.refreshRungvPathState()
 		m.toastOK(tr("Added ~/.gvx/bin to PATH"), tr("Updated %s. Open a new terminal to use docker.", tildePath(st.Profile)))
 		m.CheckLink(m.DockerLink)
 	})
@@ -171,6 +172,7 @@ func (m *Model) RemoveBundledDockerFromPATH() {
 			return
 		}
 		m.BundledDocker.Set(st)
+		m.refreshRungvPathState()
 		m.toastOK(tr("Removed ~/.gvx/bin from PATH"), tr("Updated %s.", tildePath(st.Profile)))
 	})
 }

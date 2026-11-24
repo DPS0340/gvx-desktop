@@ -137,23 +137,7 @@ func settingsPage(m *Model) ggui.Widget {
 		),
 		dockerSettings(m),
 		kubeSettings(m),
-		settingsGroup(lucide.Cpu, "rungv",
-			settingField(tr("rungv path"), tr("Leave empty to search $GVX_RUNGV, PATH, ~/.gvx/bin and the app's own folder."), widget.Row(
-				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, ~/.gvx/bin, next to the app)")).Name(tr("rungv path")).
-					OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = strings.TrimSpace(v) }) })),
-				ui.Button(tr("Browse…"), func() {
-					browseFile(m, path, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = v }) })
-				}).Outline(),
-			).Gap(8)),
-			settingField(tr("Layer cache directory"), tr("Passed as -cache-dir. Named volumes live in a volumes folder beside it."), widget.Row(
-				widget.Expanded(ui.TextField(cache).Placeholder(tr("rungv's default")).Name(tr("Layer cache directory")).
-					OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = strings.TrimSpace(v) }) })),
-				ui.Button(tr("Browse…"), func() {
-					browseFolder(m, cache, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = v }) })
-				}).Outline(),
-			).Gap(8)),
-			engineFacts(m),
-		),
+		rungvSettings(m, path, cache),
 		appUpdateSettings(m),
 		settingsGroup(lucide.Download, tr("rungv updates"),
 			widget.Column(
@@ -171,6 +155,95 @@ func settingsPage(m *Model) ggui.Widget {
 		aboutCard(m),
 	)
 	return page(groups...)
+}
+
+// rungvSettings configures the rungv binary path, layer cache, terminal PATH
+// registration, and detected runtime details.
+func rungvSettings(m *Model, path, cache *ggui.StateValue[string]) ggui.Widget {
+	pathField := settingField(tr("rungv path"), tr("Leave empty to search $GVX_RUNGV, PATH, ~/.gvx/bin and the app's own folder."), widget.Row(
+		widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, ~/.gvx/bin, next to the app)")).Name(tr("rungv path")).
+			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = strings.TrimSpace(v) }) })),
+		ui.Button(tr("Browse…"), func() {
+			browseFile(m, path, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = v }) })
+		}).Outline(),
+	).Gap(8))
+	cacheField := settingField(tr("Layer cache directory"), tr("Passed as -cache-dir. Named volumes live in a volumes folder beside it."), widget.Row(
+		widget.Expanded(ui.TextField(cache).Placeholder(tr("rungv's default")).Name(tr("Layer cache directory")).
+			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = strings.TrimSpace(v) }) })),
+		ui.Button(tr("Browse…"), func() {
+			browseFolder(m, cache, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = v }) })
+		}).Outline(),
+	).Gap(8))
+	facts := engineFacts(m)
+	showPath := ggui.Map(m.RungvPath, func(s RungvPathState) bool {
+		return s.EnginePath != "" || s.BinInPATH
+	})
+	return ggui.View(showPath, func(visible bool) ggui.Widget {
+		rows := []ggui.Widget{pathField, cacheField}
+		if visible {
+			rows = append(rows, rungvPathSettings(m))
+		}
+		rows = append(rows, facts)
+		return settingsGroup(lucide.Cpu, "rungv", rows...)
+	})
+}
+
+// rungvPathSettings shows whether rungv is reachable in terminals and lets the
+// user register or remove ~/.gvx/bin on their terminal PATH.
+func rungvPathSettings(m *Model) ggui.Widget {
+	return ggui.View(m.RungvPath, func(s RungvPathState) ggui.Widget {
+		if s.EnginePath == "" && !s.BinInPATH {
+			return widget.Box()
+		}
+		bin := tildePath(s.BinDir)
+		prof := tildePath(s.Profile)
+		var help string
+		var controls []ggui.Widget
+
+		switch {
+		case s.EnginePath == "" && s.BinInPATH:
+			help = tr("%s is on your terminal PATH (%s).", bin, prof)
+			if s.Managed {
+				controls = append(controls, ui.Button(tr("Remove from PATH"), m.RemoveRungvFromPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
+			}
+		case s.BinInPATH && s.InBinDir:
+			if s.PATHBinary != "" && !s.OnPATH {
+				help = tr("Available via %s (%s). Another rungv is earlier on PATH (%s).", bin, prof, tildePath(s.PATHBinary))
+			} else if prof != "" {
+				help = tr("Available in terminals via %s (%s).", bin, prof)
+			} else {
+				help = tr("Available in terminals via %s.", bin)
+			}
+			if s.Managed {
+				controls = append(controls, ui.Button(tr("Remove from PATH"), m.RemoveRungvFromPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
+			}
+		case s.OnPATH:
+			help = tr("Available in terminals via %s.", tildePath(s.PATHBinary))
+			if s.BinInPATH && s.Managed {
+				controls = append(controls, ui.Button(tr("Remove from PATH"), m.RemoveRungvFromPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
+			}
+		case s.BinInPATH && !s.InBinDir:
+			help = tr("%s is already on your terminal PATH. Link this rungv binary there to run it from terminals.", bin)
+			controls = append(controls, ui.Button(tr("Link to ~/.gvx/bin"), m.AddRungvToPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
+			if s.Managed {
+				controls = append(controls, ui.Button(tr("Remove from PATH"), m.RemoveRungvFromPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
+			}
+		case s.InBinDir:
+			help = tr("Add %s to %s to run rungv from any new terminal.", bin, prof)
+			controls = append(controls, ui.Button(tr("Add to PATH"), m.AddRungvToPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
+		default:
+			help = tr("Link rungv into %s and add it to %s to run it from any new terminal.", bin, prof)
+			controls = append(controls, ui.Button(tr("Add to PATH"), m.AddRungvToPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
+		}
+
+		var control ggui.Widget = widget.Box()
+		if len(controls) == 1 {
+			control = controls[0]
+		} else if len(controls) > 1 {
+			control = widget.Row(controls...).Gap(8).Align(widget.AlignCenter)
+		}
+		return settingRow(tr("Terminal PATH"), help, control)
+	})
 }
 
 // engineFacts is what the rungv in use says of itself, with the buttons

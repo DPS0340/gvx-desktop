@@ -216,3 +216,61 @@ func TestUnixPathAddAndRemove(t *testing.T) {
 		})
 	}
 }
+
+func TestSyncBinaryToBinDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tests Unix symlink behavior")
+	}
+	home := t.TempDir()
+	withEnv(t, filepath.Join(home, "app"), home, "darwin", map[string]string{
+		"SHELL": "/bin/zsh",
+		"PATH":  "/usr/bin:/bin",
+	})
+
+	// Case 1: binary already inside ~/.gvx/bin is a clean no-op.
+	managed := filepath.Join(home, ".gvx", "bin", "rungv")
+	writeExec(t, managed, "#!/bin/sh\necho managed\n")
+	if !BinaryLinkedInBinDir(managed, "rungv") {
+		t.Fatalf("BinaryLinkedInBinDir(managed) = false, want true")
+	}
+	dst, err := SyncBinaryToBinDir(managed, "rungv")
+	if err != nil || dst != managed {
+		t.Fatalf("SyncBinaryToBinDir(managed) = (%q, %v), want (%q, nil)", dst, err, managed)
+	}
+
+	// Case 2: external binary refuses to clobber an unmanaged regular file.
+	ext := filepath.Join(t.TempDir(), "rungv")
+	writeExec(t, ext, "#!/bin/sh\necho ext\n")
+	if BinaryLinkedInBinDir(ext, "rungv") {
+		t.Fatalf("BinaryLinkedInBinDir(ext) = true while unmanaged regular file occupies slot")
+	}
+	if _, err := SyncBinaryToBinDir(ext, "rungv"); err == nil {
+		t.Fatalf("SyncBinaryToBinDir(ext) succeeded over different regular file; want error")
+	}
+
+	// Case 3: once slot is free, external binary is symlinked and recognized.
+	if err := os.Remove(managed); err != nil {
+		t.Fatal(err)
+	}
+	dst, err = SyncBinaryToBinDir(ext, "rungv")
+	if err != nil || dst != managed {
+		t.Fatalf("SyncBinaryToBinDir(ext) = (%q, %v), want (%q, nil)", dst, err, managed)
+	}
+	if !BinaryLinkedInBinDir(ext, "rungv") {
+		t.Fatalf("BinaryLinkedInBinDir(ext) = false after symlink")
+	}
+	target, err := os.Readlink(managed)
+	if err != nil || target != ext {
+		t.Fatalf("readlink(%q) = (%q, %v), want %q", managed, target, err, ext)
+	}
+
+	// Case 4: updating an existing symlink to a newer external binary works.
+	ext2 := filepath.Join(t.TempDir(), "rungv")
+	writeExec(t, ext2, "#!/bin/sh\necho ext2\n")
+	if _, err := SyncBinaryToBinDir(ext2, "rungv"); err != nil {
+		t.Fatalf("SyncBinaryToBinDir(ext2) error: %v", err)
+	}
+	if !BinaryLinkedInBinDir(ext2, "rungv") {
+		t.Fatalf("BinaryLinkedInBinDir(ext2) = false after symlink update")
+	}
+}

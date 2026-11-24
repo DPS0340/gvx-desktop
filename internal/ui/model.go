@@ -262,6 +262,9 @@ type Model struct {
 	// BundledDocker describes the Docker CLI + plugins bundled inside this app
 	// package and whether ~/.gvx/bin is wired into the user's terminal PATH.
 	BundledDocker *ggui.StateValue[BundledDockerState]
+	// RungvPath describes whether the active rungv binary is exposed via
+	// ~/.gvx/bin and wired into the user's terminal PATH.
+	RungvPath *ggui.StateValue[RungvPathState]
 	// LinkCommandsOpen unfolds the commands that set the contexts up by hand.
 	LinkCommandsOpen *ggui.StateValue[bool]
 	// Menus is what the Docker and Kubernetes menus tell; see RecipeMenu.
@@ -455,6 +458,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 		DockerExposeLAN:     ggui.State(settings.DockerExposeLAN),
 		DockerSSHAgent:      ggui.State(settings.DockerSSHAgent),
 		BundledDocker:       ggui.State(BundledDockerState{}).WithEqual(BundledDockerState.Equal),
+		RungvPath:           ggui.State(RungvPathState{}).WithEqual(RungvPathState.Equal),
 		ContainerQuery:      ggui.State(""),
 		ContainerStatus:     ggui.State("all"),
 		SelectedContainer:   ggui.State(""),
@@ -891,6 +895,7 @@ func (m *Model) Start() {
 		}
 	})
 	m.syncBundledDocker()
+	m.refreshRungvPathState()
 	m.startDockerProxy()
 	m.followDocker()
 	m.followPods()
@@ -957,6 +962,7 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 		m.clientMu.Unlock()
 		m.Engine.Set(r.e)
 		m.RungvFeatures.Set(r.features)
+		m.refreshRungvPathState()
 		ok := r.e.Path != "" && r.e.Err == ""
 		ready := ok && len(r.e.Info.AvailableBackends) > 0
 		if ok {

@@ -4,7 +4,8 @@
 // joined to a user network, or that has extra hosts. The engine mounts it
 // at guestcfg.Path and runs it in place of the container's command, as
 // root. It makes a WireGuard link to the app's hub with the container's
-// addresses, adds the extra hosts to /etc/hosts, takes the default route
+// addresses, adds the extra hosts to /etc/hosts, makes /etc/resolv.conf
+// name the DNS relay that knows the containers' names, takes the default route
 // away from a container only on internal networks, drops to the
 // container's user, and executes the container's command, which then is
 // the sandbox's first process as it would be without netinit.
@@ -68,6 +69,9 @@ func main() {
 			if err := addHosts(cfg.Hosts); err != nil {
 				fmt.Fprintf(os.Stderr, "gvx: warning: extra hosts are not in /etc/hosts: %v\n", err)
 			}
+			if err := useDNS(cfg.DNS); err != nil {
+				fmt.Fprintf(os.Stderr, "gvx: warning: /etc/resolv.conf does not name %s, so container names may not resolve: %v\n", cfg.DNS, err)
+			}
 			if cfg.Isolated {
 				if err := isolate(isolatedKeep); err != nil {
 					fmt.Fprintf(os.Stderr, "gvx: warning: the container is not cut off from the internet: %v\n", err)
@@ -121,6 +125,36 @@ func addHosts(lines []string) error {
 	}
 	_, werr := f.WriteString(b.String())
 	return errors.Join(werr, f.Close())
+}
+
+// resolvConf is where the container's resolver looks for its nameservers.
+const resolvConf = "/etc/resolv.conf"
+
+// useDNS makes /etc/resolv.conf name nameserver alone, unless it already
+// does (see guestcfg.ResolvConf). The new file takes the old one's place by
+// a rename, which replaces a symbolic link rather than writing where it
+// points.
+func useDNS(nameserver string) error {
+	if nameserver == "" {
+		return nil
+	}
+	cur, err := os.ReadFile(resolvConf)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	want, replace := guestcfg.ResolvConf(string(cur), nameserver)
+	if !replace {
+		return nil
+	}
+	tmp := resolvConf + ".gvx-netinit"
+	if err := os.WriteFile(tmp, []byte(want), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, resolvConf); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func dropTo(spec string, keepHome bool) error {

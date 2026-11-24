@@ -68,6 +68,13 @@ type Config struct {
 	// only on internal networks has no way out. The routes to the hub and
 	// the DNS relay stay.
 	Isolated bool `json:"isolated,omitempty"`
+	// DNS is the nameserver that /etc/resolv.conf must name: rungv's DNS
+	// relay, which asks the container's DNS server, the one that knows the
+	// names of the containers on its networks. rungv writes
+	// /etc/resolv.conf only when the image has none, so an image that ships
+	// one (Debian's names 1.1.1.1) would ask past the relay. "" leaves the
+	// file as it is.
+	DNS string `json:"dns,omitempty"`
 }
 
 // HasLink reports whether c makes a WireGuard link.
@@ -221,6 +228,23 @@ func parseGroup(s string) []groupEntry {
 		out = append(out, g)
 	}
 	return out
+}
+
+// ResolvConf returns the /etc/resolv.conf that names nameserver alone, and
+// whether current, the file the container has, must give way to it: it
+// names another nameserver, or more than one, or none. As with Docker, the
+// image's own file counts for nothing then, its search and options lines
+// included. A file that already names nameserver alone stays as it is, with
+// the search and options lines rungv copies from the host.
+func ResolvConf(current, nameserver string) (string, bool) {
+	var servers []string
+	for line := range strings.Lines(current) {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" {
+			servers = append(servers, f[1])
+		}
+	}
+	return "nameserver " + nameserver + "\n", !slices.Equal(servers, []string{nameserver})
 }
 
 // ParseExtraHost reads a docker extra host, "NAME:IP" or "NAME=IP", where

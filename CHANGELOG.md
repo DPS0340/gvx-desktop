@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- In the Sandbox Engine, containers on a user network now resolve the other containers' names when their image ships its own `/etc/resolv.conf`, as Debian-based images such as `python:*-slim`, `redis` and `postgres` do. That file named `1.1.1.1`, so name lookups skipped the engine's DNS and Compose services could not reach each other by name. A `resolv.conf` the container mounts itself is left as it is.
+
 ## [0.10.0] - 2026-11-24
 
 ### Added

@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"net/netip"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -195,6 +196,9 @@ func (e *Engine) joinOverlay(c *Container, spec sandbox.Spec) sandbox.Spec {
 		} else {
 			joined = true
 			cfg.Isolated = isolated
+			if !mountsResolvConf(spec.Mounts) {
+				cfg.DNS = overlay.DNSRelay
+			}
 		}
 	}
 	cfg.Hosts = hosts
@@ -214,6 +218,17 @@ func (e *Engine) joinOverlay(c *Container, spec sandbox.Spec) sandbox.Spec {
 		e.syncOverlay()
 	}
 	return out
+}
+
+// mountsResolvConf reports whether one of mounts puts something at
+// /etc/resolv.conf: a file there, or a directory over /etc. The container
+// then resolves with what it mounted, and netinit, writing the file, would
+// write to the host's.
+func mountsResolvConf(mounts []sandbox.Mount) bool {
+	return slices.ContainsFunc(mounts, func(m sandbox.Mount) bool {
+		t := path.Clean(m.Target)
+		return t == "/etc/resolv.conf" || t == "/etc"
+	})
 }
 
 // linkMTU is overlay.LinkMTU when rungv can raise eth0's MTU for it

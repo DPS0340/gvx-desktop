@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/creack/pty v1.1.24
 	github.com/ironpark/ggfx v0.1.0
-	github.com/ironpark/ggui v0.8.1
+	github.com/ironpark/ggui v0.8.2
 	github.com/ironpark/ggui/icons/lucide v0.0.0-20261123195024-7077e9fcdd75
 	github.com/ironpark/ggui/icons/tabler v0.0.0-20261123195024-7077e9fcdd75
 	github.com/ironpark/ggwd v0.0.0-20261123092851-969c1988e18d

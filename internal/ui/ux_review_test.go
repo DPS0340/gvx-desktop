@@ -1,12 +1,17 @@
 package ui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/inspect"
+	"github.com/ironpark/ggui/ui"
+	uitheme "github.com/ironpark/ggui/ui/theme"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 	"github.com/ironpark/gvx-desktop/internal/store"
 )
@@ -250,5 +255,111 @@ func TestQuitHeadingAndSummary(t *testing.T) {
 	}
 	if s := quitSummary(1, 2); !strings.Contains(s, "1 sandbox and 2 containers") {
 		t.Errorf("both summary: %q", s)
+	}
+}
+
+func TestSidebarHoverDoesNotBleedIntoSnapshots(t *testing.T) {
+	t.Cleanup(func() { SetLanguage(LangEnglish) })
+	SetLanguage(LangEnglish)
+	dir := t.TempDir()
+	st := store.Store{Dir: dir}
+	set := store.DefaultSettings()
+	set.Language = LangEnglish
+	set.SandboxEngine = true
+	_ = st.SaveSettings(set)
+	k3s := recipes.KubernetesNode()
+	_ = st.SaveSandboxes([]sandbox.Spec{k3s})
+
+	var m *Model
+	p := ggui.ProbeBuilder(func() ggui.Widget {
+		return ggui.Provide(ggui.ReducedMotionKey, true, Build(m))
+	}, ggui.Sz(1280, 840))
+	p.Setup(func() {
+		preset := uitheme.Preset{Base: uitheme.BaseZinc, Accent: uitheme.AccentBlue}
+		uitheme.Bind(ggui.Const(false), preset.Dark(), preset.Light())
+		m = NewModel(st, dir)
+		m.Offline = true
+		m.Attach(p)
+		m.States.Set(map[string]sandbox.State{k3s.ID: {Status: sandbox.Running}})
+	})
+	defer p.Close()
+	var sb *ui.SidebarWidget
+	rows := map[string]*sidebarTabRow{}
+	p.OnInspect(func(f *inspect.Frame) {
+		for _, n := range f.Nodes {
+			if w, ok := n.Instance.(*ui.SidebarWidget); ok {
+				sb = w
+			}
+			if r, ok := n.Instance.(*sidebarTabRow); ok {
+				rows[r.key] = r
+			}
+		}
+	})
+	p.Frame()
+
+	if sb == nil {
+		t.Fatal("missing *ui.SidebarWidget in inspected tree")
+	}
+	sidebarHover := func() int64 {
+		return reflect.ValueOf(sb).Elem().FieldByName("hover").Int()
+	}
+
+	findTab := func(label string) ggui.Found {
+		t.Helper()
+		f, ok := p.FindRole(ggui.RoleTab, label)
+		if !ok {
+			t.Fatalf("missing sidebar tab %q:\n%s", label, p.Semantics())
+		}
+		return f
+	}
+	assertOnlyCustomHovered := func(wantKey string) {
+		t.Helper()
+		p.Frame()
+		if got := sidebarHover(); got != -1 {
+			t.Errorf("when hovering %q: SidebarWidget.hover=%d, want -1 (must not bleed into Snapshots)", wantKey, got)
+		}
+		for k, r := range rows {
+			if want := k == wantKey; r.hover != want {
+				t.Errorf("when hovering %q: row %q hover=%v, want %v", wantKey, k, r.hover, want)
+			}
+		}
+	}
+
+	// Hovering Snapshots itself hovers a native SidebarItem (not any custom row).
+	p.Move(findTab("Snapshots").Center())
+	p.Frame()
+	snapHover := sidebarHover()
+	if snapHover < 0 {
+		t.Fatalf("expected Snapshots to set SidebarWidget.hover >= 0, got %d", snapHover)
+	}
+	for k, r := range rows {
+		if r.hover {
+			t.Errorf("when hovering Snapshots: custom row %q unexpectedly hovered", k)
+		}
+	}
+
+	// Hovering Docker, Kubernetes, or any nested sub-item must highlight only
+	// that custom row and NEVER bleed hover onto Snapshots.
+	for _, tc := range []struct {
+		label string
+		key   string
+	}{
+		{"Docker", PageDocker},
+		{"Networks", PageNetworks},
+		{"Containers", PageContainers},
+		{"Kubernetes", PageKubernetes},
+		{"Pods", PagePods},
+		{"Workloads", PageWorkloads},
+		{"Services", PageServices},
+	} {
+		p.Move(findTab(tc.label).Center())
+		assertOnlyCustomHovered(tc.key)
+	}
+
+	// Hovering Image registry hovers a native SidebarItem distinct from Snapshots.
+	p.Move(findTab("Image registry").Center())
+	p.Frame()
+	if got := sidebarHover(); got < 0 || got == snapHover {
+		t.Errorf("when hovering Image registry: SidebarWidget.hover=%d, want >=0 and != %d", got, snapHover)
 	}
 }

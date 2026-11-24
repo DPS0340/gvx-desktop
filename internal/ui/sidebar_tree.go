@@ -40,7 +40,7 @@ type sidebarTreeGroup struct {
 
 func newSidebarTreeGroup(m *Model, parent sidebarNavItem, open *ggui.StateValue[bool], collapsedBadge ggui.Widget, subs ...sidebarNavItem) *sidebarTreeGroup {
 	g := &sidebarTreeGroup{open: open}
-	g.foldBtn = newSidebarFoldButton(open, parent.label)
+	g.foldBtn = newSidebarFoldButton(open, parent.key, parent.label)
 	var parentAction ggui.Widget = g.foldBtn
 	if collapsedBadge != nil {
 		parentAction = widget.Row(
@@ -205,6 +205,8 @@ func newSidebarTabRow(m *Model, item sidebarNavItem, depth int, action ggui.Widg
 	}
 }
 
+func (r *sidebarTabRow) HitID() any { return "sidebar-tab:" + r.key }
+
 func (r *sidebarTabRow) isActive() bool {
 	return ggui.Untrack(r.m.Page.Get) == r.key
 }
@@ -342,6 +344,10 @@ func (r *sidebarTabRow) HandlePointer(ev ggui.PointerEvent) bool {
 	return true
 }
 
+func (r *sidebarTabRow) Semantics() (ggui.Role, string) {
+	return ggui.RoleTab, r.labelText
+}
+
 func (r *sidebarTabRow) Describe() ggui.Node {
 	return ggui.Node{
 		Role:     ggui.RoleTab,
@@ -376,6 +382,7 @@ func (r *sidebarTabRow) Adopt(prev any) {
 // navigating away from the current page.
 type sidebarFoldButton struct {
 	open     *ggui.StateValue[bool]
+	key      string
 	name     string
 	icon     *icons.Widget
 	progress float64
@@ -384,13 +391,16 @@ type sidebarFoldButton struct {
 	env      ggui.Env
 }
 
-func newSidebarFoldButton(open *ggui.StateValue[bool], name string) *sidebarFoldButton {
+func newSidebarFoldButton(open *ggui.StateValue[bool], key, name string) *sidebarFoldButton {
 	return &sidebarFoldButton{
 		open: open,
+		key:  key,
 		name: name,
 		icon: glyph(lucide.ChevronRight, 14).Color(colorGray),
 	}
 }
+
+func (b *sidebarFoldButton) HitID() any { return "sidebar-fold:" + b.key }
 
 func (b *sidebarFoldButton) Layout(c ggui.Constraints, env ggui.Env) ggui.Size {
 	b.theme = uitheme.Of(env)
@@ -438,6 +448,13 @@ func (b *sidebarFoldButton) HandlePointer(ev ggui.PointerEvent) bool {
 		return false
 	}
 	return true
+}
+
+func (b *sidebarFoldButton) Semantics() (ggui.Role, string) {
+	if ggui.Untrack(b.open.Get) {
+		return ggui.RoleDisclosure, tr("Fold %s", b.name)
+	}
+	return ggui.RoleDisclosure, tr("Unfold %s", b.name)
 }
 
 func (b *sidebarFoldButton) Describe() ggui.Node {

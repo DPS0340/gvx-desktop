@@ -742,7 +742,13 @@ func (e *Engine) imageBuild(w http.ResponseWriter, r *http.Request) {
 
 	if imgID != "" {
 		sw.aux(imgID)
-		sw.stream(fmt.Sprintf("Successfully built %s\n", shortHex(imgID)))
+		if opts.Quiet {
+			sw.writeObj(struct {
+				Stream string `json:"stream"`
+			}{Stream: imgID + "\n"})
+		} else {
+			sw.stream(fmt.Sprintf("Successfully built %s\n", shortHex(imgID)))
+		}
 	}
 	for _, tag := range opts.Tags {
 		sw.stream(fmt.Sprintf("Successfully tagged %s\n", tag))

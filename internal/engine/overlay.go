@@ -383,18 +383,25 @@ func (e *Engine) syncOverlay() {
 }
 
 // reconcileEndpoints makes the containers' endpoints on user networks show
-// the addresses their networks gave them: containers made before the
-// overlay recorded the NAT's address.
+// the addresses their networks gave them (containers made before the overlay
+// recorded the NAT's address) and restores builtin network memberships (which
+// networks.json does not persist) so disconnect and overlay isolation reflect
+// them after an engine restart.
 func (e *Engine) reconcileEndpoints() {
 	type addr struct {
 		ip, gateway string
 		bits        int
 	}
 	byNet := map[string]map[string]addr{} // network name → container → addr
+	builtinNames := map[string]string{}   // builtin network name → network ID
 	e.net.mu.Lock()
 	for _, n := range e.net.byID {
+		if n.Builtin {
+			builtinNames[n.Name] = n.ID
+			continue
+		}
 		sub, err := netip.ParsePrefix(n.Subnet)
-		if n.Builtin || err != nil {
+		if err != nil {
 			continue
 		}
 		m := map[string]addr{}
@@ -405,11 +412,19 @@ func (e *Engine) reconcileEndpoints() {
 	}
 	e.net.mu.Unlock()
 
+	builtinMembers := map[string]map[string][]string{} // builtin network ID → container ID → aliases
+
 	e.ctr.mu.Lock()
-	defer e.ctr.mu.Unlock()
 	dirty := false
 	for _, c := range e.ctr.byID {
 		for name, ep := range c.Networks {
+			if bid, ok := builtinNames[name]; ok {
+				if builtinMembers[bid] == nil {
+					builtinMembers[bid] = map[string][]string{}
+				}
+				builtinMembers[bid][c.ID] = slices.Clone(ep.Aliases)
+				continue
+			}
 			a, ok := byNet[name][c.ID]
 			if !ok || (ep.IPAddress == a.ip && ep.Gateway == a.gateway && ep.IPPrefixLen == a.bits) {
 				continue
@@ -424,5 +439,25 @@ func (e *Engine) reconcileEndpoints() {
 		if err := e.saveContainersLocked(); err != nil {
 			e.logf("engine: save containers.json: %v", err)
 		}
+	}
+	e.ctr.mu.Unlock()
+
+	if len(builtinMembers) > 0 {
+		e.net.mu.Lock()
+		for bid, members := range builtinMembers {
+			n := e.net.byID[bid]
+			if n == nil || !n.Builtin {
+				continue
+			}
+			if n.Containers == nil {
+				n.Containers = map[string][]string{}
+			}
+			for cid, aliases := range members {
+				if _, exists := n.Containers[cid]; !exists {
+					n.Containers[cid] = aliases
+				}
+			}
+		}
+		e.net.mu.Unlock()
 	}
 }

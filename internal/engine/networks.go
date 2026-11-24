@@ -870,8 +870,10 @@ func (e *Engine) networkDisconnect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errInvalid("container is required"))
 		return
 	}
+	var ctrNetworks map[string]EndpointSettings
 	if c, err := e.lookup(cid); err == nil {
 		cid = c.ID
+		ctrNetworks = c.Networks
 	} else if !req.Force {
 		writeError(w, r, err)
 		return
@@ -885,6 +887,9 @@ func (e *Engine) networkDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, connected := n.Containers[cid]
+	if !connected && ctrNetworks != nil {
+		_, connected = ctrNetworks[n.Name]
+	}
 	if !connected && !req.Force {
 		name := n.Name
 		e.net.mu.Unlock()

@@ -947,8 +947,20 @@ func buildSandboxSpecWithForwards(id, name, specImage string, cfg ContainerConfi
 	if hc.Memory < 0 {
 		return sandbox.Spec{}, errInvalid("memory limit cannot be negative")
 	}
+	if hc.Memory > 0 && hc.Memory < minContainerMemoryBytes {
+		return sandbox.Spec{}, errInvalid("Minimum memory limit allowed is 6MB")
+	}
 	if hc.NanoCpus < 0 {
 		return sandbox.Spec{}, errInvalid("CPU limit cannot be negative")
+	}
+	if hc.NanoCpus > 0 && (hc.CpuQuota != 0 || hc.CpuPeriod != 0) {
+		return sandbox.Spec{}, errInvalid("Conflicting options: Nano CPUs cannot be combined with CPU quota or period")
+	}
+	if hc.CpuPeriod < 0 || (hc.CpuPeriod > 0 && (hc.CpuPeriod < 1000 || hc.CpuPeriod > 1000000)) {
+		return sandbox.Spec{}, errInvalid("CPU cfs period cannot be less than 1ms (i.e. 1000) or larger than 1s (i.e. 1000000)")
+	}
+	if hc.CpuQuota < -1 || (hc.CpuQuota > 0 && hc.CpuQuota < 1000) {
+		return sandbox.Spec{}, errInvalid("CPU cfs quota cannot be less than 1ms (i.e. 1000)")
 	}
 	if specImage == "" {
 		specImage = cfg.Image
@@ -960,6 +972,12 @@ func buildSandboxSpecWithForwards(id, name, specImage string, cfg ContainerConfi
 	cpus := ""
 	if hc.NanoCpus > 0 {
 		cpus = strconv.FormatFloat(float64(hc.NanoCpus)/1e9, 'f', -1, 64)
+	} else if hc.CpuQuota > 0 {
+		period := hc.CpuPeriod
+		if period <= 0 {
+			period = 100000
+		}
+		cpus = strconv.FormatFloat(float64(hc.CpuQuota)/float64(period), 'f', -1, 64)
 	}
 	netMode := "nat"
 	if hc.NetworkMode == "none" {

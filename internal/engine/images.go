@@ -76,6 +76,7 @@ type imageSummary struct {
 	Containers  int64                  `json:"Containers"`
 	Manifests   []imageManifestSummary `json:"Manifests,omitempty"`
 	arch        string
+	createdAt   time.Time
 }
 
 type imageInspectResponse struct {
@@ -348,10 +349,14 @@ func (e *Engine) imageList(w http.ResponseWriter, r *http.Request) {
 		if !f.matchLabels(row.Labels) {
 			continue
 		}
-		if hasBefore && !time.Unix(row.Created, 0).Before(beforeTime) {
+		rowTime := row.createdAt
+		if rowTime.IsZero() {
+			rowTime = time.Unix(row.Created, 0).UTC()
+		}
+		if hasBefore && !rowTime.Before(beforeTime) {
 			continue
 		}
-		if hasSince && !time.Unix(row.Created, 0).After(sinceTime) {
+		if hasSince && !rowTime.After(sinceTime) {
 			continue
 		}
 		out = append(out, row)
@@ -454,6 +459,7 @@ func (e *Engine) buildImageSummariesForArch(ctx context.Context, arch string, ct
 		tags := g.tags
 		digests := g.digests
 		var created int64
+		var createdAt time.Time
 		var size int64
 		var labels map[string]string
 		imgArch := arch
@@ -466,7 +472,8 @@ func (e *Engine) buildImageSummariesForArch(ctx context.Context, arch string, ct
 				digests = slices.Clone(ins.RepoDigests)
 			}
 			if !ins.Created.IsZero() {
-				created = ins.Created.Unix()
+				createdAt = ins.Created.UTC()
+				created = createdAt.Unix()
 			}
 			size = ins.Size
 			labels = ins.Config.Labels
@@ -479,7 +486,8 @@ func (e *Engine) buildImageSummariesForArch(ctx context.Context, arch string, ct
 		}
 		if created == 0 {
 			if t, err := parseRungvTime(g.row.CreatedAt); err == nil {
-				created = t.Unix()
+				createdAt = t.UTC()
+				created = createdAt.Unix()
 			}
 		}
 		if size == 0 {
@@ -503,6 +511,7 @@ func (e *Engine) buildImageSummariesForArch(ctx context.Context, arch string, ct
 			Containers:  ctrCounts[id],
 			Manifests:   makeImageManifests(id, imgArch, imgOS, size),
 			arch:        arch,
+			createdAt:   createdAt,
 		})
 	}
 	return out, nil
@@ -1027,16 +1036,23 @@ func (e *Engine) imageDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	byID := isImageIDRef(name, img.ID)
 
-	if !force {
-		ctrs := e.allContainers()
-		for _, c := range ctrs {
-			if c.ImageID != img.ID {
-				continue
-			}
-			// Allow untagging an unused extra alias when multiple tags remain.
-			if !byID && len(img.RepoTags) > 1 && normalizeImageRef(c.Image) != normalizeImageRef(name) {
-				continue
-			}
+	ctrs := e.allContainers()
+	for _, c := range ctrs {
+		if c.ImageID != img.ID {
+			continue
+		}
+		// Allow untagging an unused extra alias when multiple tags remain.
+		if !byID && len(img.RepoTags) > 1 && normalizeImageRef(c.Image) != normalizeImageRef(name) {
+			continue
+		}
+		if c.State.Running() && (byID || len(img.RepoTags) <= 1) {
+			writeError(w, r, errConflict(
+				"conflict: unable to delete %s (cannot be forced) - image is being used by running container %s",
+				shortHex(img.ID), shortHex(c.ID),
+			))
+			return
+		}
+		if !force {
 			writeError(w, r, errConflict(
 				"conflict: unable to remove repository reference %q (must force) - container %s is using its referenced image %s",
 				name, shortHex(c.ID), shortHex(img.ID),

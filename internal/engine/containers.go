@@ -1706,6 +1706,10 @@ func (e *Engine) containerRename(w http.ResponseWriter, r *http.Request) {
 	oldName := c.Name
 	c.Name = newName
 	c.Spec.Name = newName
+	for netName, ep := range c.Networks {
+		ep.DNSNames = buildDNSNames(newName, shortHex(c.ID), ep.Aliases)
+		c.Networks[netName] = ep
+	}
 	id := c.ID
 	attrs := containerAttrs(c)
 	attrs["oldName"] = "/" + oldName

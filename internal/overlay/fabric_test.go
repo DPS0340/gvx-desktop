@@ -2,10 +2,12 @@ package overlay
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -340,5 +342,54 @@ func TestRouterDropsWhatItMayNotPass(t *testing.T) {
 	r.Close()
 	if _, err := r.Read(bufs, sizes, 0); err == nil {
 		t.Fatal("Read after Close did not fail")
+	}
+}
+
+type flakyPacketConn struct {
+	net.PacketConn
+	mu        sync.Mutex
+	failCount int
+	err       error
+}
+
+func (c *flakyPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	c.mu.Lock()
+	if c.failCount > 0 {
+		c.failCount--
+		err := c.err
+		c.mu.Unlock()
+		return 0, nil, err
+	}
+	c.mu.Unlock()
+	return c.PacketConn.ReadFrom(p)
+}
+
+func TestServeUDPSurvivesTransientError(t *testing.T) {
+	transientErr := errors.New("simulated WSAECONNRESET")
+
+	udp, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		udp.Close()
+		t.Fatal(err)
+	}
+	flaky := &flakyPacketConn{PacketConn: udp, failCount: 3, err: transientErr}
+	s := &dnsServer{
+		addr:         netip.MustParseAddrPort(udp.LocalAddr().String()),
+		udp:          flaky,
+		tcp:          tcp,
+		resolve:      func(name string) []netip.Addr { return []netip.Addr{addr("10.89.1.9")} },
+		transientErr: func(err error) bool { return errors.Is(err, transientErr) },
+	}
+	s.wg.Add(2)
+	go s.serveUDP()
+	go s.serveTCP()
+	t.Cleanup(s.close)
+
+	if got := aRecords(query(t, s.addr, "udp", "web", dnsmessage.TypeA)); !slices.Equal(got, []string{"10.89.1.9"}) {
+		t.Fatalf("UDP query after transient errors = %v, want [10.89.1.9]", got)
 	}
 }

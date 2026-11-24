@@ -182,6 +182,78 @@ func TestExtractBuildContextTarAndGzip(t *testing.T) {
 	}
 }
 
+func TestExtractBuildContextWindowsHostfsMeta(t *testing.T) {
+	rawTar := makeTestTar(t, []struct {
+		hdr  tar.Header
+		body string
+	}{
+		{hdr: tar.Header{Name: "Dockerfile", Mode: 0o644}, body: "FROM alpine:3.20\n"},
+		{hdr: tar.Header{Name: "entrypoint.sh", Mode: 0o755}, body: "#!/bin/sh\necho hi\n"},
+		{hdr: tar.Header{Name: "hardlink.sh", Typeflag: tar.TypeLink, Linkname: "entrypoint.sh"}},
+		{hdr: tar.Header{Name: "secret/", Typeflag: tar.TypeDir, Mode: 0o700}},
+		{hdr: tar.Header{Name: "sub/", Typeflag: tar.TypeDir, Mode: 0o755}},
+		{hdr: tar.Header{Name: "sub/app.txt", Mode: 0o644}, body: "hello"},
+		{hdr: tar.Header{Name: "sub/link.txt", Typeflag: tar.TypeSymlink, Linkname: "app.txt"}},
+		{hdr: tar.Header{Name: ".gvx_meta", Mode: 0o644}, body: "ignored-reserved"},
+	})
+
+	dst := t.TempDir()
+	if err := extractBuildContextForOS(bytes.NewReader(rawTar), dst, 1<<20, "windows"); err != nil {
+		t.Fatalf("extractBuildContextForOS(windows): %v", err)
+	}
+
+	// Regular files were written, while the symlink stayed virtual in .gvx_meta.
+	if got, err := os.ReadFile(filepath.Join(dst, "entrypoint.sh")); err != nil || string(got) != "#!/bin/sh\necho hi\n" {
+		t.Fatalf("entrypoint.sh = %q, %v", string(got), err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "sub", "link.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected virtual symlink on Windows, got lstat err = %v", err)
+	}
+
+	rawMeta, err := os.ReadFile(filepath.Join(dst, hostfsMetaFile))
+	if err != nil {
+		t.Fatalf("read %s: %v", hostfsMetaFile, err)
+	}
+	var doc hostfsMetaFileDoc
+	if err := json.Unmarshal(rawMeta, &doc); err != nil {
+		t.Fatalf("unmarshal %s: %v (%q)", hostfsMetaFile, err, rawMeta)
+	}
+	if doc.Version != 2 {
+		t.Fatalf("meta version = %d, want 2", doc.Version)
+	}
+	if got := doc.Entries["entrypoint.sh"]; got.Mode != hostfsModeReg|0o755 {
+		t.Errorf("entrypoint.sh meta = %+v, want mode %#o", got, hostfsModeReg|0o755)
+	}
+	if got := doc.Entries["hardlink.sh"]; got.Mode != hostfsModeReg|0o755 {
+		t.Errorf("hardlink.sh meta = %+v, want mode %#o", got, hostfsModeReg|0o755)
+	}
+	if got := doc.Entries["secret"]; got.Mode != hostfsModeDir|0o700 {
+		t.Errorf("secret dir meta = %+v, want mode %#o", got, hostfsModeDir|0o700)
+	}
+	if got := doc.Entries["sub/link.txt"]; got.Mode != hostfsModeSymlink|0o777 || got.Symlink != "app.txt" {
+		t.Errorf("sub/link.txt meta = %+v, want symlink to app.txt", got)
+	}
+	// Default-mode entries (0644 files, 0755 dirs) and reserved root names are omitted.
+	for _, omit := range []string{"Dockerfile", "sub", "sub/app.txt", ".gvx_meta"} {
+		if _, ok := doc.Entries[omit]; ok {
+			t.Errorf("unexpected meta entry for %q: %+v", omit, doc.Entries[omit])
+		}
+	}
+
+	// Traversing through a virtual symlink on Windows must still be rejected.
+	traversalTar := makeTestTar(t, []struct {
+		hdr  tar.Header
+		body string
+	}{
+		{hdr: tar.Header{Name: "dir/", Typeflag: tar.TypeDir, Mode: 0o755}},
+		{hdr: tar.Header{Name: "dirlink", Typeflag: tar.TypeSymlink, Linkname: "dir"}},
+		{hdr: tar.Header{Name: "dirlink/escaped.txt", Mode: 0o644}, body: "bad"},
+	})
+	if err := extractBuildContextForOS(bytes.NewReader(traversalTar), t.TempDir(), 1<<20, "windows"); err == nil || statusOf(err) != http.StatusBadRequest {
+		t.Fatalf("virtual symlink traversal err = %v, want 400", err)
+	}
+}
+
 func TestExtractBuildContextRejectsTraversalAndCap(t *testing.T) {
 	badArchives := []struct {
 		name    string

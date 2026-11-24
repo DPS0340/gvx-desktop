@@ -158,19 +158,25 @@ func (b *loopbackBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	disableUDPConnReset(pc)
 	// Room for bursts of large datagrams; macOS starts a UDP socket with
 	// a send buffer of 9216 bytes, less than two packets at LinkMTU.
 	_ = pc.SetReadBuffer(4 << 20)
 	_ = pc.SetWriteBuffer(1 << 20)
 	b.pc = pc
 	recv := func(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
-		n, addr, err := pc.ReadFromUDPAddrPort(packets[0])
-		if err != nil {
-			return 0, err
+		for {
+			n, addr, err := pc.ReadFromUDPAddrPort(packets[0])
+			if err != nil {
+				if isPlatformTransientUDPErr(err) {
+					continue
+				}
+				return 0, err
+			}
+			sizes[0] = n
+			eps[0] = loopbackEndpoint(netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()))
+			return 1, nil
 		}
-		sizes[0] = n
-		eps[0] = loopbackEndpoint(netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()))
-		return 1, nil
 	}
 	return []conn.ReceiveFunc{recv}, uint16(pc.LocalAddr().(*net.UDPAddr).Port), nil
 }

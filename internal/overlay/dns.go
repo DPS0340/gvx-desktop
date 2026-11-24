@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -20,12 +21,13 @@ import (
 // containers that share a network with it, and passes every other query
 // to the host's resolvers, as Docker's embedded DNS server does.
 type dnsServer struct {
-	addr    netip.AddrPort
-	udp     net.PacketConn
-	tcp     net.Listener
-	resolve func(name string) []netip.Addr
-	up      *upstreams // nil refuses other names
-	wg      sync.WaitGroup
+	addr         netip.AddrPort
+	udp          net.PacketConn
+	tcp          net.Listener
+	resolve      func(name string) []netip.Addr
+	up           *upstreams // nil refuses other names
+	transientErr func(error) bool
+	wg           sync.WaitGroup
 }
 
 const answerTTL = 10
@@ -36,6 +38,9 @@ func startDNS(resolve func(string) []netip.Addr, up *upstreams) (*dnsServer, err
 		udp, err := net.ListenPacket("udp4", "127.0.0.1:0")
 		if err != nil {
 			return nil, err
+		}
+		if sc, ok := udp.(syscall.Conn); ok {
+			disableUDPConnReset(sc)
 		}
 		port := udp.LocalAddr().(*net.UDPAddr).Port
 		tcp, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
@@ -65,12 +70,22 @@ func (s *dnsServer) close() {
 	s.wg.Wait()
 }
 
+func (s *dnsServer) isTransient(err error) bool {
+	if s.transientErr != nil {
+		return s.transientErr(err)
+	}
+	return isPlatformTransientUDPErr(err)
+}
+
 func (s *dnsServer) serveUDP() {
 	defer s.wg.Done()
 	buf := make([]byte, 65535)
 	for {
 		n, addr, err := s.udp.ReadFrom(buf)
 		if err != nil {
+			if s.isTransient(err) {
+				continue
+			}
 			return
 		}
 		q := append([]byte(nil), buf[:n]...)

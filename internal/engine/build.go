@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -204,10 +205,53 @@ func buildctlArgs(addr string, opts buildOptions) []string {
 	return args
 }
 
+const (
+	hostfsMetaFile    = ".gvx_meta"
+	hostfsModeDir     = 0o040000
+	hostfsModeReg     = 0o100000
+	hostfsModeSymlink = 0o120000
+)
+
+type hostfsMetaEntry struct {
+	Mode    uint32 `json:"mode"`
+	UID     uint32 `json:"uid"`
+	GID     uint32 `json:"gid"`
+	Symlink string `json:"symlink,omitempty"`
+}
+
+type hostfsMetaFileDoc struct {
+	Version int                        `json:"version"`
+	Entries map[string]hostfsMetaEntry `json:"entries"`
+}
+
+func isHostfsReservedRoot(relSlash string) bool {
+	if strings.Contains(relSlash, "/") {
+		return false
+	}
+	lower := strings.ToLower(relSlash)
+	return lower == hostfsMetaFile || lower == ".gvx_meta.lock" || lower == ".gvx_meta.tmp" || strings.HasPrefix(lower, ".gvx_meta.tmp.")
+}
+
+func hasVirtualSymlinkParent(virtualSymlinks map[string]bool, relSlash string) (string, bool) {
+	if len(virtualSymlinks) == 0 {
+		return "", false
+	}
+	for dir := path.Dir(relSlash); dir != "." && dir != "/"; dir = path.Dir(dir) {
+		if virtualSymlinks[dir] {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
 // extractBuildContext unpacks a tar (raw, gzip, or bzip2) build context stream
 // into dstDir, rejecting path traversal, symlink escapes, special device nodes,
 // and archives exceeding maxBytes.
 func extractBuildContext(body io.Reader, dstDir string, maxBytes int64) error {
+	return extractBuildContextForOS(body, dstDir, maxBytes, runtime.GOOS)
+}
+
+func extractBuildContextForOS(body io.Reader, dstDir string, maxBytes int64, goos string) error {
 	if maxBytes <= 0 {
 		maxBytes = maxBuildContextBytes
 	}
@@ -233,6 +277,16 @@ func extractBuildContext(body io.Reader, dstDir string, maxBytes int64) error {
 	}
 
 	cleanRoot := filepath.Clean(dstDir)
+	winMode := goos == "windows"
+	var (
+		metaEntries     map[string]hostfsMetaEntry
+		virtualSymlinks map[string]bool
+	)
+	if winMode {
+		metaEntries = map[string]hostfsMetaEntry{}
+		virtualSymlinks = map[string]bool{}
+	}
+
 	tr := tar.NewReader(tarStream)
 	var extracted int64
 
@@ -260,6 +314,13 @@ func extractBuildContext(body io.Reader, dstDir string, maxBytes int64) error {
 		if rel == "." {
 			continue
 		}
+		relSlash := filepath.ToSlash(rel)
+		if isHostfsReservedRoot(relSlash) {
+			continue
+		}
+		if parent, ok := hasVirtualSymlinkParent(virtualSymlinks, relSlash); ok {
+			return errInvalid("tar entry %q traverses symlink %q", hdr.Name, parent)
+		}
 		target := filepath.Join(cleanRoot, rel)
 		if !isPathWithinRoot(cleanRoot, target) {
 			return errInvalid("tar entry %q escapes build context", hdr.Name)
@@ -276,6 +337,14 @@ func extractBuildContext(body io.Reader, dstDir string, maxBytes int64) error {
 			}
 			if err := os.MkdirAll(target, mode|0o700); err != nil {
 				return err
+			}
+			if winMode {
+				delete(virtualSymlinks, relSlash)
+				if mode != 0o755 {
+					metaEntries[relSlash] = hostfsMetaEntry{Mode: hostfsModeDir | uint32(mode)}
+				} else {
+					delete(metaEntries, relSlash)
+				}
 			}
 		case tar.TypeReg, tar.TypeRegA:
 			if hdr.Size < 0 || extracted+hdr.Size > maxBytes {
@@ -305,6 +374,16 @@ func extractBuildContext(body io.Reader, dstDir string, maxBytes int64) error {
 			if extracted > maxBytes {
 				return errInvalid("build context exceeds size limit (%d bytes)", maxBytes)
 			}
+			if winMode {
+				delete(virtualSymlinks, relSlash)
+				if mode != 0o644 {
+					metaEntries[relSlash] = hostfsMetaEntry{Mode: hostfsModeReg | uint32(mode)}
+				} else {
+					delete(metaEntries, relSlash)
+				}
+			} else {
+				_ = os.Chmod(target, mode|0o200)
+			}
 		case tar.TypeSymlink:
 			link := hdr.Linkname
 			if link == "" || strings.ContainsRune(link, 0) {
@@ -321,7 +400,17 @@ func extractBuildContext(body io.Reader, dstDir string, maxBytes int64) error {
 				return err
 			}
 			_ = os.Remove(target)
-			if err := os.Symlink(link, target); err != nil {
+			if winMode {
+				// Store as a hostfs virtual symlink in .gvx_meta rather than
+				// calling os.Symlink, which fails on Windows without Developer
+				// Mode / admin privileges and is refused as an NTFS reparse
+				// point by rungv's hostfs.
+				virtualSymlinks[relSlash] = true
+				metaEntries[relSlash] = hostfsMetaEntry{
+					Mode:    hostfsModeSymlink | 0o777,
+					Symlink: strings.ReplaceAll(link, "\\", "/"),
+				}
+			} else if err := os.Symlink(link, target); err != nil {
 				return err
 			}
 		case tar.TypeLink:
@@ -337,11 +426,38 @@ func extractBuildContext(body io.Reader, dstDir string, maxBytes int64) error {
 				return err
 			}
 			_ = os.Remove(target)
+			linkRelSlash := filepath.ToSlash(linkRel)
+			if winMode && virtualSymlinks[linkRelSlash] {
+				virtualSymlinks[relSlash] = true
+				metaEntries[relSlash] = metaEntries[linkRelSlash]
+				continue
+			}
 			if err := os.Link(linkTarget, target); err != nil {
 				return err
 			}
+			if winMode {
+				delete(virtualSymlinks, relSlash)
+				if entry, ok := metaEntries[linkRelSlash]; ok {
+					metaEntries[relSlash] = entry
+				} else {
+					delete(metaEntries, relSlash)
+				}
+			}
 		default:
 			return errInvalid("unsupported tar entry type %q for %q", string(hdr.Typeflag), hdr.Name)
+		}
+	}
+
+	if winMode && len(metaEntries) > 0 {
+		raw, err := json.Marshal(hostfsMetaFileDoc{
+			Version: 2,
+			Entries: metaEntries,
+		})
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(cleanRoot, hostfsMetaFile), append(raw, '\n'), 0o644); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -18,6 +18,23 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/store"
 )
 
+func TestBuildxEndpointForSocket(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"/tmp/gvxd/buildkit.sock", "unix:///tmp/gvxd/buildkit.sock"},
+		{"tcp://127.0.0.1:23760", "tcp://127.0.0.1:23760"},
+		{"unix:///tmp/already.sock", "unix:///tmp/already.sock"},
+		{"npipe:////./pipe/buildkitd", "npipe:////./pipe/buildkitd"},
+	}
+	for _, tc := range cases {
+		if got := buildxEndpointForSocket(tc.in); got != tc.want {
+			t.Errorf("buildxEndpointForSocket(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestBuildxParseInspectMultiNode(t *testing.T) {
 	raw := `Name:          gvx-desktop
 Driver:        remote

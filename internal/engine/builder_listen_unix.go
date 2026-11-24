@@ -15,6 +15,22 @@ import (
 
 const builderStaleDialTimeout = 500 * time.Millisecond
 
+func defaultBuilderEndpoint(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "buildkit.sock")
+}
+
+func listenBuilderFront(dir string) (ln net.Listener, endpoint, sockFile string, err error) {
+	sockPath := filepath.Join(dir, "buildkit.sock")
+	ln, err = listenBuilderUnix(sockPath)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return ln, sockPath, sockPath, nil
+}
+
 func isBuilderConnRefused(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED)
 }

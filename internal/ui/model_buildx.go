@@ -163,6 +163,9 @@ func nodeMatchesAmd64(n buildxNodeInfo, wantEndpoint string) bool {
 }
 
 func buildxEndpointForSocket(sockPath string) string {
+	if strings.Contains(sockPath, "://") {
+		return sockPath
+	}
 	return "unix://" + filepath.ToSlash(sockPath)
 }
 

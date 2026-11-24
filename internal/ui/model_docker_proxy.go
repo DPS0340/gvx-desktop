@@ -280,7 +280,31 @@ func (m *Model) openSandboxEngine() {
 				cancel()
 			}
 		}
-		return eng.Open(ctx)
+		if err := eng.Open(ctx); err != nil {
+			return err
+		}
+		// If Open bound a different endpoint (e.g. Windows loopback TCP fell
+		// back from the preferred port to an ephemeral port), reconcile buildx
+		// in probeSafe mode so it updates the endpoint without waking buildkitd.
+		if actualSock := eng.BuilderSocket(); actualSock != "" && actualSock != sockPath {
+			if cli, ok := findCLI("docker", set.DockerPath); ok {
+				bxChecked = true
+				bxCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				st2, prev2, save2, inst2 := configureBuildxWithAmd64(
+					bxCtx, cli, run, actualSock, dockerHost, set.DockerBuilderBefore,
+					false, "", true,
+				)
+				cancel()
+				bxStatus = st2
+				if save2 && prev2 != "" && !bxSavePrev {
+					bxPrevSave, bxSavePrev = prev2, true
+				}
+				if inst2 {
+					bxInstalledAlias = true
+				}
+			}
+		}
+		return nil
 	}, func(err error) {
 		if (bxSavePrev && bxPrevSave != "") || bxInstalledAlias {
 			m.UpdateSettings(func(s *store.Settings) {

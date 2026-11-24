@@ -66,17 +66,18 @@ type builderJob struct {
 type builderState struct {
 	startStopMu sync.Mutex
 
-	mu          sync.Mutex
-	opened      bool
-	closed      bool
-	ctx         context.Context
-	cancel      context.CancelFunc
-	sockDir     string
-	tempSockDir string // created only when cfg.Dir is too long for sun_path
-	frontSock   string
-	backendSock string
-	ln          net.Listener
-	tracked     map[net.Conn]struct{}
+	mu            sync.Mutex
+	opened        bool
+	closed        bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	sockDir       string
+	tempSockDir   string // created only when cfg.Dir is too long for sun_path
+	frontSock     string // endpoint returned by BuilderSocket (Unix path or tcp://...)
+	frontSockFile string // Unix socket file path to unlink on Close, empty for TCP
+	backendSock   string
+	ln            net.Listener
+	tracked       map[net.Conn]struct{}
 
 	starting  bool
 	running   bool
@@ -110,8 +111,9 @@ func (e *Engine) builderIdleTimeout() time.Duration {
 	return defaultBuilderIdleTimeout
 }
 
-// BuilderSocket returns the front Unix socket path buildx connects to, or ""
-// when the engine is not open or has no socket directory.
+// BuilderSocket returns the front endpoint buildx connects to (a Unix socket
+// path on macOS/Linux, or a tcp://127.0.0.1:<port> URL on Windows), or "" when
+// the engine has no socket directory.
 func (e *Engine) BuilderSocket() string {
 	e.bld.mu.Lock()
 	defer e.bld.mu.Unlock()
@@ -119,10 +121,10 @@ func (e *Engine) BuilderSocket() string {
 		return e.bld.frontSock
 	}
 	if e.cfg.BuilderSocketDir != "" {
-		return filepath.Join(e.cfg.BuilderSocketDir, "buildkit.sock")
+		return defaultBuilderEndpoint(e.cfg.BuilderSocketDir)
 	}
 	if e.cfg.Dir != "" {
-		return filepath.Join(e.cfg.Dir, "buildkit.sock")
+		return defaultBuilderEndpoint(e.cfg.Dir)
 	}
 	return ""
 }
@@ -176,9 +178,8 @@ func (e *Engine) openBuilder() error {
 		return nil
 	}
 
-	frontSock := filepath.Join(dir, "buildkit.sock")
 	backendSock := filepath.Join(dir, "buildkitd.sock")
-	ln, err := listenBuilderUnix(frontSock)
+	ln, frontSock, frontSockFile, err := listenBuilderFront(dir)
 	if err != nil {
 		if tempDir != "" {
 			_ = os.RemoveAll(tempDir)
@@ -195,6 +196,7 @@ func (e *Engine) openBuilder() error {
 	e.bld.sockDir = dir
 	e.bld.tempSockDir = tempDir
 	e.bld.frontSock = frontSock
+	e.bld.frontSockFile = frontSockFile
 	e.bld.backendSock = backendSock
 	e.bld.ln = ln
 	e.bld.tracked = map[net.Conn]struct{}{}
@@ -231,7 +233,9 @@ func (e *Engine) closeBuilder(timeout time.Duration) {
 	}
 	ln := e.bld.ln
 	e.bld.ln = nil
-	frontSock := e.bld.frontSock
+	frontSockFile := e.bld.frontSockFile
+	e.bld.frontSock = ""
+	e.bld.frontSockFile = ""
 	backendSock := e.bld.backendSock
 	tempDir := e.bld.tempSockDir
 	e.bld.tempSockDir = ""
@@ -252,8 +256,8 @@ func (e *Engine) closeBuilder(timeout time.Duration) {
 	if ln != nil {
 		_ = ln.Close()
 	}
-	if frontSock != "" {
-		_ = os.Remove(frontSock)
+	if frontSockFile != "" {
+		_ = os.Remove(frontSockFile)
 	}
 	for _, c := range conns {
 		_ = c.Close()

@@ -397,14 +397,20 @@ func (e *Engine) containerUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.NanoCpus > 0 {
 		cur.HostConfig.NanoCpus = req.NanoCpus
+		cur.HostConfig.CpuQuota = 0
+		cur.HostConfig.CpuPeriod = 0
 		cur.Spec.CPUs = strconv.FormatFloat(float64(req.NanoCpus)/1e9, 'f', -1, 64)
 	}
 	if req.CpuPeriod != 0 {
 		cur.HostConfig.CpuPeriod = req.CpuPeriod
+		if req.NanoCpus == 0 && req.CpuQuota == 0 && cur.HostConfig.CpuQuota > 0 && req.CpuPeriod > 0 {
+			cur.Spec.CPUs = strconv.FormatFloat(float64(cur.HostConfig.CpuQuota)/float64(req.CpuPeriod), 'f', -1, 64)
+		}
 	}
 	if req.CpuQuota != 0 {
 		cur.HostConfig.CpuQuota = req.CpuQuota
 		if req.NanoCpus == 0 {
+			cur.HostConfig.NanoCpus = 0
 			if req.CpuQuota < 0 {
 				cur.Spec.CPUs = ""
 			} else {

@@ -571,6 +571,109 @@ type mountPlanOptions struct {
 	unixForward  bool
 	dockerSocket string
 	sshAuthSock  string
+	volumesFrom  []plannedMount
+}
+
+// resolveVolumesFrom resolves HostConfig.VolumesFrom entries ("<container>[:ro|:rw]")
+// into planned mounts inherited from the referenced containers. Anonymous
+// volumes are inherited without transferring ownership so removing the
+// inheriting container does not delete the source container's volumes.
+func resolveVolumesFrom(specs []string, lookup func(string) (Container, error), opts mountPlanOptions) ([]plannedMount, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	var out []plannedMount
+	for _, raw := range specs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		ref, mode, hasMode := strings.Cut(raw, ":")
+		if ref == "" {
+			return nil, errInvalid("invalid volumes-from specification %q", raw)
+		}
+		forceRO := false
+		if hasMode {
+			switch mode {
+			case "ro":
+				forceRO = true
+			case "rw":
+			default:
+				return nil, errInvalid("invalid volumes-from mode %q in %q", mode, raw)
+			}
+		}
+		src, err := lookup(ref)
+		if err != nil {
+			return nil, err
+		}
+		specByTarget := make(map[string]sandbox.Mount, len(src.Spec.Mounts))
+		for _, sm := range src.Spec.Mounts {
+			specByTarget[sm.Target] = sm
+		}
+		for _, mp := range src.Mounts {
+			dst, err := validateMountTarget(mp.Destination)
+			if err != nil {
+				continue
+			}
+			ro := !mp.RW || forceRO
+			inheritedPoint := mp
+			inheritedPoint.Destination = dst
+			inheritedPoint.RW = !ro
+			inheritedPoint.Anonymous = false
+			if ro && inheritedPoint.Mode == "" {
+				inheritedPoint.Mode = "ro"
+			}
+			switch mp.Type {
+			case "bind":
+				pm := plannedMount{point: inheritedPoint}
+				if uf, ok := resolveUnixForwardBind(mp.Source, dst, opts); ok {
+					pm.unixForward = uf
+				} else {
+					pm.spec = sandbox.Mount{
+						Type:     sandbox.MountBind,
+						Source:   mp.Source,
+						Target:   dst,
+						ReadOnly: ro,
+					}
+				}
+				out = append(out, pm)
+			case "volume":
+				volName := mp.Name
+				if volName == "" {
+					volName = mp.Source
+				}
+				if volName == "" {
+					continue
+				}
+				out = append(out, plannedMount{
+					spec: sandbox.Mount{
+						Type:     sandbox.MountVolume,
+						Source:   volName,
+						Target:   dst,
+						ReadOnly: ro,
+					},
+					point:     inheritedPoint,
+					createVol: true,
+					anonymous: false,
+				})
+			case "tmpfs":
+				size := ""
+				if sm, ok := specByTarget[dst]; ok {
+					size = sm.Size
+				}
+				out = append(out, plannedMount{
+					spec: sandbox.Mount{
+						Type:     sandbox.MountTmpfs,
+						Target:   dst,
+						ReadOnly: ro,
+						Size:     size,
+					},
+					point: inheritedPoint,
+				})
+			}
+		}
+	}
+	return out, nil
 }
 
 func isUnixSocket(p string) bool {
@@ -862,7 +965,17 @@ func planMountsWithOptions(hc HostConfig, cfg ContainerConfig, opts mountPlanOpt
 		})
 	}
 
-	// 4. Image and request Volumes not already covered by an explicit mount.
+	// 4. Inherited mounts from HostConfig.VolumesFrom (explicit mounts above win).
+	for _, pm := range opts.volumesFrom {
+		dst := pm.point.Destination
+		if targets[dst] {
+			continue
+		}
+		targets[dst] = true
+		planned = append(planned, pm)
+	}
+
+	// 5. Image and request Volumes not already covered by an explicit mount.
 	for _, rawDst := range slices.Sorted(maps.Keys(cfg.Volumes)) {
 		dst, err := validateMountTarget(rawDst)
 		if err != nil {

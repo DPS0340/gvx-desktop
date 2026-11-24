@@ -1040,11 +1040,20 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 	warnings = append(warnings, portWarnings...)
 
 	// Plan and validate mounts before creating any volumes.
-	planned, err := planMountsWithOptions(hc, cfg, mountPlanOptions{
+	mountOpts := mountPlanOptions{
 		unixForward:  e.runner.Features().UnixForward,
 		dockerSocket: e.cfg.DockerSocket,
 		sshAuthSock:  e.sshAuthSock(),
-	})
+	}
+	if len(hc.VolumesFrom) > 0 {
+		inherited, err := resolveVolumesFrom(hc.VolumesFrom, e.lookup, mountOpts)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		mountOpts.volumesFrom = inherited
+	}
+	planned, err := planMountsWithOptions(hc, cfg, mountOpts)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -1235,8 +1244,16 @@ func containerMAC(id string) string {
 	return fmt.Sprintf("02:42:%s:%s:%s:%s", id[0:2], id[2:4], id[4:6], id[6:8])
 }
 
+func (e *Engine) containerSizeRw(c Container) int64 {
+	if !e.ownsRootfs(c.ID, c.Spec.RootfsVolume) {
+		return 0
+	}
+	return allocatedFileBytes(c.Spec.RootfsVolume)
+}
+
 func (e *Engine) containerList(w http.ResponseWriter, r *http.Request) {
 	all := queryBool(r, "all")
+	showSize := queryBool(r, "size")
 	limit, err := queryInt(r, "limit", 0)
 	if err != nil {
 		writeError(w, r, err)
@@ -1256,15 +1273,62 @@ func (e *Engine) containerList(w http.ResponseWriter, r *http.Request) {
 		}
 		nameRegexes = append(nameRegexes, re)
 	}
+
+	var beforeID, sinceID string
+	if vals := f["before"]; len(vals) > 0 {
+		anchor, err := e.lookup(vals[0])
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		beforeID = anchor.ID
+	}
+	if vals := f["since"]; len(vals) > 0 {
+		anchor, err := e.lookup(vals[0])
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		sinceID = anchor.ID
+	}
+
 	showAll := all || limit > 0 || f.has("status") || f.has("exited")
 
 	containers := e.allContainers()
 	// Newest first.
 	slices.Reverse(containers)
 
+	beforeIdx, sinceIdx := -1, -1
+	if beforeID != "" || sinceID != "" {
+		for idx, c := range containers {
+			if c.ID == beforeID {
+				beforeIdx = idx
+			}
+			if c.ID == sinceID {
+				sinceIdx = idx
+			}
+		}
+	}
+
+	var imgSizes map[string]int64
+	if showSize {
+		if imgs, err := e.buildImageSummaries(r.Context()); err == nil {
+			imgSizes = make(map[string]int64, len(imgs))
+			for _, img := range imgs {
+				imgSizes[img.ID] = img.Size
+			}
+		}
+	}
+
 	now := time.Now().UTC()
 	out := make([]containerListItem, 0, len(containers))
-	for _, c := range containers {
+	for idx, c := range containers {
+		if beforeIdx >= 0 && idx <= beforeIdx {
+			continue
+		}
+		if sinceIdx >= 0 && idx >= sinceIdx {
+			continue
+		}
 		c.State.Paused = e.isContainerPaused(c)
 		if !showAll && !c.State.Running() {
 			continue
@@ -1272,7 +1336,13 @@ func (e *Engine) containerList(w http.ResponseWriter, r *http.Request) {
 		if !matchContainerFilters(c, f, nameRegexes) {
 			continue
 		}
-		out = append(out, formatContainerListItem(c, now))
+		item := formatContainerListItem(c, now)
+		if showSize {
+			rw := e.containerSizeRw(c)
+			item.SizeRw = rw
+			item.SizeRootFs = imgSizes[c.ImageID] + rw
+		}
+		out = append(out, item)
 		if limit > 0 && len(out) >= limit {
 			break
 		}
@@ -1525,6 +1595,17 @@ func (e *Engine) containerInspect(w http.ResponseWriter, r *http.Request) {
 		stateWord = StatusPaused
 	}
 
+	var sizeRw, sizeRootFs *int64
+	if queryBool(r, "size") {
+		rw := e.containerSizeRw(c)
+		rootFS := rw
+		if img, _, err := e.lookupImage(r.Context(), c.ImageID); err == nil {
+			rootFS += img.Size
+		}
+		sizeRw = &rw
+		sizeRootFs = &rootFS
+	}
+
 	resp := containerInspectResponse{
 		ID:      c.ID,
 		Created: formatInspectTime(c.Created),
@@ -1553,6 +1634,8 @@ func (e *Engine) containerInspect(w http.ResponseWriter, r *http.Request) {
 		ExecIDs:      e.execIDsForContainer(c.ID),
 		HostConfig:   c.HostConfig,
 		GraphDriver:  inspectGraphDriver{Name: "gvx"},
+		SizeRw:       sizeRw,
+		SizeRootFs:   sizeRootFs,
 		Mounts:       mounts,
 		Config:       c.Config,
 		NetworkSettings: inspectNetworkSettings{
@@ -1823,9 +1906,10 @@ func (e *Engine) containerPrune(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type candidate struct {
-		id       string
-		anonVols []string
-		attrs    map[string]string
+		id          string
+		anonVols    []string
+		attrs       map[string]string
+		rootfsBytes int64
 	}
 	var toRemove []candidate
 
@@ -1843,9 +1927,10 @@ func (e *Engine) containerPrune(w http.ResponseWriter, r *http.Request) {
 		c.State.Status = StatusRemoving
 		c.State.StoppedByUser = true
 		toRemove = append(toRemove, candidate{
-			id:       c.ID,
-			anonVols: slices.Clone(c.AnonymousVolumes),
-			attrs:    containerAttrs(c),
+			id:          c.ID,
+			anonVols:    slices.Clone(c.AnonymousVolumes),
+			attrs:       containerAttrs(c),
+			rootfsBytes: e.containerSizeRw(*c),
 		})
 	}
 	if len(toRemove) > 0 {
@@ -1854,14 +1939,18 @@ func (e *Engine) containerPrune(w http.ResponseWriter, r *http.Request) {
 	e.ctr.mu.Unlock()
 
 	deleted := make([]string, 0, len(toRemove))
+	var reclaimed uint64
 	for _, cand := range toRemove {
 		e.removeContainerCleanup(r.Context(), cand.id, false, true, cand.anonVols, cand.attrs)
 		deleted = append(deleted, cand.id)
+		if cand.rootfsBytes > 0 {
+			reclaimed += uint64(cand.rootfsBytes)
+		}
 	}
 	slices.Sort(deleted)
 	writeJSON(w, http.StatusOK, containerPruneResponse{
 		ContainersDeleted: deleted,
-		SpaceReclaimed:    0,
+		SpaceReclaimed:    reclaimed,
 	})
 }
 

@@ -36,6 +36,7 @@ type ociConfig struct {
 	History []struct {
 		Created    time.Time `json:"created"`
 		CreatedBy  string    `json:"created_by"`
+		Comment    string    `json:"comment"`
 		EmptyLayer bool      `json:"empty_layer"`
 	} `json:"history"`
 }
@@ -199,6 +200,79 @@ func ReadGVXImageConfig(cacheDir, imageID string) ([]byte, error) {
 		return nil, err
 	}
 	return rec.Config, nil
+}
+
+// GVXImageHistoryEntry is one OCI history entry paired with its layer size
+// (0 for empty layers), in oldest-to-newest order.
+type GVXImageHistoryEntry struct {
+	Created    time.Time
+	CreatedBy  string
+	Comment    string
+	Size       int64
+	EmptyLayer bool
+}
+
+// ReadGVXImageHistory returns the OCI history entries for imageID from
+// rungv's cache without opening any EROFS layer files.
+func ReadGVXImageHistory(cacheDir, imageID string) ([]GVXImageHistoryEntry, error) {
+	if cacheDir == "" {
+		return nil, errors.New("layer cache directory is unknown")
+	}
+	rec, err := findGVXImageRecord(cacheDir, imageID, "")
+	if err != nil {
+		return nil, err
+	}
+	var cfg ociConfig
+	if err := json.Unmarshal(rec.Config, &cfg); err != nil {
+		return nil, fmt.Errorf("decode image config: %w", err)
+	}
+	var man ociManifest
+	if len(rec.Manifests) > 0 {
+		_ = json.Unmarshal(rec.Manifests[len(rec.Manifests)-1], &man)
+	}
+	layerSize := func(idx int) int64 {
+		if idx < 0 || idx >= len(man.Layers) {
+			return 0
+		}
+		ml := man.Layers[idx]
+		if ml.Size > 0 {
+			return ml.Size
+		}
+		hexStr := strings.TrimPrefix(strings.TrimSpace(ml.Digest), "sha256:")
+		if hexStr != "" && rec.Format != "" {
+			if st, err := os.Stat(filepath.Join(cacheDir, hexStr+"."+rec.Format+".erofs")); err == nil {
+				return st.Size()
+			}
+		}
+		return 0
+	}
+
+	if len(cfg.History) == 0 {
+		out := make([]GVXImageHistoryEntry, 0, len(man.Layers))
+		for i := range man.Layers {
+			out = append(out, GVXImageHistoryEntry{
+				Size: layerSize(i),
+			})
+		}
+		return out, nil
+	}
+
+	out := make([]GVXImageHistoryEntry, 0, len(cfg.History))
+	layerCursor := 0
+	for _, h := range cfg.History {
+		ent := GVXImageHistoryEntry{
+			Created:    h.Created,
+			CreatedBy:  h.CreatedBy,
+			Comment:    h.Comment,
+			EmptyLayer: h.EmptyLayer,
+		}
+		if !h.EmptyLayer && layerCursor < len(man.Layers) {
+			ent.Size = layerSize(layerCursor)
+			layerCursor++
+		}
+		out = append(out, ent)
+	}
+	return out, nil
 }
 
 func (f *gvxFS) Layers() []Layer {

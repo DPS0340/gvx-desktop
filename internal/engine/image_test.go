@@ -124,10 +124,10 @@ func TestImagePullStreamAndErrors(t *testing.T) {
 		t.Fatalf("missing pull = %d %s, want 404", st, body)
 	}
 
-	// fromSrc import → 501.
+	// fromSrc import with empty body → 400.
 	st, _ = te.do(t, http.MethodPost, "/images/create?fromSrc=-", nil)
-	if st != http.StatusNotImplemented {
-		t.Fatalf("fromSrc = %d, want 501", st)
+	if st != http.StatusBadRequest {
+		t.Fatalf("fromSrc empty = %d, want 400", st)
 	}
 }
 

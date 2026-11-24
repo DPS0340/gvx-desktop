@@ -233,6 +233,7 @@ func (e *Engine) systemDF(w http.ResponseWriter, r *http.Request) {
 		Mounts          []MountPoint      `json:"Mounts"`
 	}
 	dfCtrs := make([]dfContainer, 0, len(ctrs))
+	var ctrActive, ctrTotal, ctrReclaim int64
 	for _, c := range ctrs {
 		labels := c.Config.Labels
 		if labels == nil {
@@ -243,6 +244,13 @@ func (e *Engine) systemDF(w http.ResponseWriter, r *http.Request) {
 			mounts = []MountPoint{}
 		}
 		cmd := strings.Join(append(append([]string{}, c.Config.Entrypoint...), c.Config.Cmd...), " ")
+		rw := e.containerSizeRw(c)
+		ctrTotal += rw
+		if c.State.Running() {
+			ctrActive++
+		} else {
+			ctrReclaim += rw
+		}
 		dfCtrs = append(dfCtrs, dfContainer{
 			ID:              c.ID,
 			Names:           []string{"/" + c.Name},
@@ -252,8 +260,8 @@ func (e *Engine) systemDF(w http.ResponseWriter, r *http.Request) {
 			Created:         c.Created.Unix(),
 			State:           c.State.Status,
 			Status:          c.State.Status,
-			SizeRw:          0,
-			SizeRootFs:      imgSizes[c.ImageID],
+			SizeRw:          rw,
+			SizeRootFs:      imgSizes[c.ImageID] + rw,
 			Labels:          labels,
 			HostConfig:      map[string]string{"NetworkMode": c.HostConfig.NetworkMode},
 			NetworkSettings: map[string]any{"Networks": c.Networks},
@@ -280,12 +288,6 @@ func (e *Engine) systemDF(w http.ResponseWriter, r *http.Request) {
 			imgActive++
 		} else {
 			imgReclaim += img.Size
-		}
-	}
-	var ctrActive int64
-	for _, c := range ctrs {
-		if c.State.Running() {
-			ctrActive++
 		}
 	}
 	var volActive, volTotal, volReclaim int64
@@ -336,8 +338,8 @@ func (e *Engine) systemDF(w http.ResponseWriter, r *http.Request) {
 		ContainerUsage: diskUsageSummary[dfContainer]{
 			ActiveCount: ctrActive,
 			TotalCount:  int64(len(dfCtrs)),
-			Reclaimable: 0,
-			TotalSize:   0,
+			Reclaimable: ctrReclaim,
+			TotalSize:   ctrTotal,
 			Items:       dfCtrs,
 		},
 		VolumeUsage: diskUsageSummary[dockerVolume]{

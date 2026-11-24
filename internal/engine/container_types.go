@@ -216,6 +216,7 @@ type HostConfig struct {
 	PublishAllPorts bool                     `json:"PublishAllPorts"`
 	ReadonlyRootfs  bool                     `json:"ReadonlyRootfs"`
 	Tmpfs           map[string]string        `json:"Tmpfs,omitempty"`
+	VolumesFrom     []string                 `json:"VolumesFrom,omitempty"`
 	Memory          int64                    `json:"Memory"`
 	NanoCpus        int64                    `json:"NanoCpus"`
 	CpuQuota        int64                    `json:"CpuQuota,omitempty"`
@@ -244,6 +245,7 @@ func (h HostConfig) clone() HostConfig {
 	}
 	cp.ExtraHosts = slices.Clone(h.ExtraHosts)
 	cp.Tmpfs = maps.Clone(h.Tmpfs)
+	cp.VolumesFrom = slices.Clone(h.VolumesFrom)
 	if h.PidsLimit != nil {
 		v := *h.PidsLimit
 		cp.PidsLimit = &v
@@ -393,6 +395,8 @@ type containerListItem struct {
 	Command         string              `json:"Command"`
 	Created         int64               `json:"Created"`
 	Ports           []containerListPort `json:"Ports"`
+	SizeRw          int64               `json:"SizeRw,omitempty"`
+	SizeRootFs      int64               `json:"SizeRootFs,omitempty"`
 	Labels          map[string]string   `json:"Labels"`
 	State           string              `json:"State"`
 	Status          string              `json:"Status"`
@@ -437,6 +441,8 @@ type containerInspectResponse struct {
 	ExecIDs         []string               `json:"ExecIDs"`
 	HostConfig      HostConfig             `json:"HostConfig"`
 	GraphDriver     inspectGraphDriver     `json:"GraphDriver"`
+	SizeRw          *int64                 `json:"SizeRw,omitempty"`
+	SizeRootFs      *int64                 `json:"SizeRootFs,omitempty"`
 	Mounts          []MountPoint           `json:"Mounts"`
 	Config          ContainerConfig        `json:"Config"`
 	NetworkSettings inspectNetworkSettings `json:"NetworkSettings"`

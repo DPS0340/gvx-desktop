@@ -103,8 +103,7 @@ func (g *GVXImage) Exists(name string) (bool, error) {
 // names are relative, directories end in "/" and come before what they
 // hold, and a file with more than one name is written once and linked
 // after. With headersOnly, regular files are written with no content and a
-// size of 0, and symbolic links with no target, for a reader that wants
-// only the tree.
+// size of 0, for a reader that wants only the tree and symlink targets.
 func (g *GVXImage) WriteLayer(i int, tw *tar.Writer, headersOnly bool) error {
 	if i < 0 || i >= len(g.layers) {
 		return fmt.Errorf("layer %d of %d", i, len(g.layers))
@@ -116,6 +115,95 @@ func (g *GVXImage) WriteLayer(i int, tw *tar.Writer, headersOnly bool) error {
 	}
 	w := erofsTarWriter{img: img, tw: tw, headersOnly: headersOnly, links: map[uint64]string{}}
 	return w.dir(root, "", 0)
+}
+
+// StatLayer returns the byte size of name in layer i (0 for non-regular files).
+func (g *GVXImage) StatLayer(i int, name string) (int64, error) {
+	if i < 0 || i >= len(g.layers) {
+		return 0, fmt.Errorf("layer %d of %d", i, len(g.layers))
+	}
+	ino, ok, err := g.layers[i].lookup(CleanPath(name))
+	if err != nil {
+		return 0, err
+	}
+	if !ok || ino.isWhiteout() {
+		return 0, fmt.Errorf("%s: not found in layer %d", name, i)
+	}
+	if ino.mode&posixIFMT == posixIFREG {
+		return int64(ino.size), nil
+	}
+	return 0, nil
+}
+
+// WriteEntry writes the single entry at name from layer i to tw under outName.
+// Unlike WriteLayer, hard-linked regular files are always written as regular
+// files with their full content, making single-file archive extraction O(depth).
+func (g *GVXImage) WriteEntry(i int, name, outName string, tw *tar.Writer) error {
+	if i < 0 || i >= len(g.layers) {
+		return fmt.Errorf("layer %d of %d", i, len(g.layers))
+	}
+	img := g.layers[i]
+	ino, ok, err := img.lookup(CleanPath(name))
+	if err != nil {
+		return err
+	}
+	if !ok || ino.isWhiteout() {
+		return fmt.Errorf("%s: not found in layer %d", name, i)
+	}
+	hdr := &tar.Header{
+		Name:    outName,
+		Mode:    int64(ino.mode & 0o7777),
+		Uid:     int(ino.uid),
+		Gid:     int(ino.gid),
+		ModTime: ino.modTime(),
+	}
+	switch ino.mode & posixIFMT {
+	case posixIFDIR:
+		hdr.Typeflag = tar.TypeDir
+		if !strings.HasSuffix(hdr.Name, "/") {
+			hdr.Name += "/"
+		}
+		return tw.WriteHeader(hdr)
+	case posixIFREG:
+		hdr.Typeflag = tar.TypeReg
+		hdr.Size = int64(ino.size)
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		for off := uint64(0); off < ino.size; {
+			n := min(ino.size-off, copyChunk)
+			b, err := img.readRange(ino, off, n)
+			if err != nil {
+				return err
+			}
+			if _, err := tw.Write(b); err != nil {
+				return err
+			}
+			off += n
+		}
+		return nil
+	case posixIFLNK:
+		hdr.Typeflag = tar.TypeSymlink
+		target, err := img.readLink(ino)
+		if err != nil {
+			return err
+		}
+		hdr.Linkname = target
+		return tw.WriteHeader(hdr)
+	case posixIFCHR, 0o060000:
+		hdr.Typeflag = tar.TypeChar
+		if ino.mode&posixIFMT == 0o060000 {
+			hdr.Typeflag = tar.TypeBlock
+		}
+		hdr.Devmajor = int64((ino.rdev & 0xfff00) >> 8)
+		hdr.Devminor = int64((ino.rdev & 0xff) | ((ino.rdev >> 12) & 0xfff00))
+		return tw.WriteHeader(hdr)
+	case 0o010000:
+		hdr.Typeflag = tar.TypeFifo
+		return tw.WriteHeader(hdr)
+	default:
+		return nil
+	}
 }
 
 type erofsTarWriter struct {
@@ -212,13 +300,11 @@ func (w *erofsTarWriter) entry(ino erofsInode, name string, depth int) error {
 		return nil
 	case posixIFLNK:
 		hdr.Typeflag = tar.TypeSymlink
-		if !w.headersOnly {
-			target, err := w.img.readLink(ino)
-			if err != nil {
-				return err
-			}
-			hdr.Linkname = target
+		target, err := w.img.readLink(ino)
+		if err != nil {
+			return err
 		}
+		hdr.Linkname = target
 	case posixIFCHR, 0o060000:
 		hdr.Typeflag = tar.TypeChar
 		if ino.mode&posixIFMT == 0o060000 {

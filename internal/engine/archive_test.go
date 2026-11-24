@@ -126,9 +126,21 @@ func TestArchiveHeadGetPutAndErrors(t *testing.T) {
 		t.Fatalf("gzip body not decompressed: %q", last.Data)
 	}
 
-	// PUT bzip2 / xz -> 400.
+	// PUT valid bzip2-compressed tar -> transparently decompressed before CopyTo.
+	bz2Valid := []byte("BZh91AY&SYe\x96Lu\x00\x00\x01\x9e\x00\x00\x02\x10\x000 T\x10 \x001\x06LA\x00\xd3\xd2R\x06\xc1\xf8\xbb\x92)\xc2\x84\x83,\xb2c\xa8")
+	if st, b := te.do(t, http.MethodPut, "/containers/"+cid+"/archive?path=/tmp", bz2Valid); st != http.StatusOK {
+		t.Fatalf("put valid bzip2 = %d %s", st, b)
+	}
+	ctl.mu.Lock()
+	last = ctl.copyToCalls[len(ctl.copyToCalls)-1]
+	ctl.mu.Unlock()
+	if string(last.Data) != "BZIP2-TAR" {
+		t.Fatalf("bzip2 body not decompressed: %q", last.Data)
+	}
+
+	// PUT corrupt bzip2 / unsupported xz -> 400.
 	if st, _ := te.do(t, http.MethodPut, "/containers/"+cid+"/archive?path=/tmp", []byte("BZh91AY&SY")); st != http.StatusBadRequest {
-		t.Fatalf("put bzip2 = %d, want 400", st)
+		t.Fatalf("put corrupt bzip2 = %d, want 400", st)
 	}
 	if st, _ := te.do(t, http.MethodPut, "/containers/"+cid+"/archive?path=/tmp", []byte{0xfd, '7', 'z', 'X', 'Z', 0x00, 1, 2}); st != http.StatusBadRequest {
 		t.Fatalf("put xz = %d, want 400", st)
@@ -154,9 +166,9 @@ func TestArchiveHeadGetPutAndErrors(t *testing.T) {
 	}
 	_, _ = te.do(t, http.MethodPost, "/containers/"+cid+"/unpause", nil)
 
-	// Stopped container -> 501.
+	// Stopped container: PUT -> 501 (ext4lite is read-only).
 	_, _ = te.do(t, http.MethodPost, "/containers/"+cid+"/stop?t=0", nil)
-	if st, b := te.do(t, http.MethodGet, "/containers/"+cid+"/archive?path=/etc/hostname", nil); st != http.StatusNotImplemented || !strings.Contains(string(b), "not running") {
-		t.Fatalf("archive stopped = %d %s", st, b)
+	if st, b := te.do(t, http.MethodPut, "/containers/"+cid+"/archive?path=/tmp", []byte("RAW")); st != http.StatusNotImplemented || !strings.Contains(string(b), "not running") {
+		t.Fatalf("archive put stopped = %d %s", st, b)
 	}
 }

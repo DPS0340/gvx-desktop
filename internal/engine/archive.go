@@ -5,6 +5,7 @@ package engine
 import (
 	"bufio"
 	"bytes"
+	"compress/bzip2"
 	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
@@ -47,26 +48,34 @@ func normalizeArchivePath(raw string) string {
 	return raw
 }
 
-func (e *Engine) archivePrepare(r *http.Request) (Container, sandbox.Control, string, string, error) {
+func (e *Engine) archiveLookup(r *http.Request) (Container, string, string, error) {
 	if !e.runner.Features().Control {
-		return Container{}, nil, "", "", errNotSupported("Copying files to and from a container")
+		return Container{}, "", "", errNotSupported("Copying files to and from a container")
 	}
 	c, err := e.lookup(r.PathValue("id"))
 	if err != nil {
-		return Container{}, nil, "", "", err
+		return Container{}, "", "", err
 	}
 	rawPath := r.URL.Query().Get("path")
 	if rawPath == "" {
-		return Container{}, nil, "", "", errInvalid("path query parameter is required")
+		return Container{}, "", "", errInvalid("path query parameter is required")
+	}
+	return c, rawPath, normalizeArchivePath(rawPath), nil
+}
+
+func (e *Engine) archivePrepareRunning(r *http.Request, stoppedWhat string) (Container, sandbox.Control, string, string, error) {
+	c, rawPath, guestPath, err := e.archiveLookup(r)
+	if err != nil {
+		return Container{}, nil, "", "", err
 	}
 	if c.State.Status != StatusRunning {
-		return Container{}, nil, "", "", errNotSupported("Copying files to and from a container that is not running")
+		return Container{}, nil, "", "", errNotSupported(stoppedWhat)
 	}
 	ctl := e.runner.Control(c.ID)
 	if ctl == nil {
 		return Container{}, nil, "", "", errConflict("Container %s was started without a control socket; restart it to use cp", c.ID)
 	}
-	return c, ctl, rawPath, normalizeArchivePath(rawPath), nil
+	return c, ctl, rawPath, guestPath, nil
 }
 
 func mapArchiveError(c Container, rawPath string, err error) error {
@@ -90,9 +99,18 @@ func mapArchiveError(c Container, rawPath string, err error) error {
 }
 
 func (e *Engine) containerArchiveHead(w http.ResponseWriter, r *http.Request) {
-	c, ctl, rawPath, guestPath, err := e.archivePrepare(r)
+	c, rawPath, guestPath, err := e.archiveLookup(r)
 	if err != nil {
 		writeError(w, r, err)
+		return
+	}
+	if c.State.Status != StatusRunning {
+		e.containerArchiveStoppedHead(w, r, c, rawPath, guestPath)
+		return
+	}
+	ctl := e.runner.Control(c.ID)
+	if ctl == nil {
+		writeError(w, r, errConflict("Container %s was started without a control socket; restart it to use cp", c.ID))
 		return
 	}
 	st, err := ctl.StatPath(r.Context(), guestPath)
@@ -105,9 +123,18 @@ func (e *Engine) containerArchiveHead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) containerArchiveGet(w http.ResponseWriter, r *http.Request) {
-	c, ctl, rawPath, guestPath, err := e.archivePrepare(r)
+	c, rawPath, guestPath, err := e.archiveLookup(r)
 	if err != nil {
 		writeError(w, r, err)
+		return
+	}
+	if c.State.Status != StatusRunning {
+		e.containerArchiveStoppedGet(w, r, c, rawPath, guestPath)
+		return
+	}
+	ctl := e.runner.Control(c.ID)
+	if ctl == nil {
+		writeError(w, r, errConflict("Container %s was started without a control socket; restart it to use cp", c.ID))
 		return
 	}
 	st, err := ctl.StatPath(r.Context(), guestPath)
@@ -129,7 +156,7 @@ func (e *Engine) containerArchiveGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) containerArchivePut(w http.ResponseWriter, r *http.Request) {
-	c, ctl, rawPath, guestPath, err := e.archivePrepare(r)
+	c, ctl, rawPath, guestPath, err := e.archivePrepareRunning(r, "Copying files into a container that is not running")
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -148,6 +175,7 @@ func (e *Engine) containerArchivePut(w http.ResponseWriter, r *http.Request) {
 	br := bufio.NewReader(r.Body)
 	peek, _ := br.Peek(6)
 	var bodyReader io.Reader = br
+	var decompressTrack *trackingReader
 	switch {
 	case len(peek) >= 2 && peek[0] == 0x1f && peek[1] == 0x8b:
 		gz, err := gzip.NewReader(br)
@@ -156,10 +184,16 @@ func (e *Engine) containerArchivePut(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer gz.Close()
-		bodyReader = gz
+		decompressTrack = &trackingReader{r: gz}
+		bodyReader = decompressTrack
 	case len(peek) >= 3 && peek[0] == 'B' && peek[1] == 'Z' && peek[2] == 'h':
-		writeError(w, r, errInvalid("bzip2-compressed archives are not supported"))
-		return
+		decompressTrack = &trackingReader{r: bzip2.NewReader(br)}
+		bzBuf := bufio.NewReader(decompressTrack)
+		if _, err := bzBuf.Peek(1); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, r, errInvalid("invalid bzip2 archive: %v", err))
+			return
+		}
+		bodyReader = bzBuf
 	case len(peek) >= 6 && bytes.Equal(peek[:6], []byte{0xfd, '7', 'z', 'X', 'Z', 0x00}):
 		writeError(w, r, errInvalid("xz-compressed archives are not supported"))
 		return
@@ -170,8 +204,25 @@ func (e *Engine) containerArchivePut(w http.ResponseWriter, r *http.Request) {
 		NoOverwriteDir: queryBool(r, "noOverwriteDirNonDir"),
 	}
 	if err := ctl.CopyTo(r.Context(), guestPath, bodyReader, opts); err != nil {
+		if decompressTrack != nil && decompressTrack.err != nil {
+			writeError(w, r, errInvalid("invalid compressed archive: %v", decompressTrack.err))
+			return
+		}
 		writeError(w, r, mapArchiveError(c, rawPath, err))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+type trackingReader struct {
+	r   io.Reader
+	err error
+}
+
+func (tr *trackingReader) Read(p []byte) (int, error) {
+	n, err := tr.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && tr.err == nil {
+		tr.err = err
+	}
+	return n, err
 }

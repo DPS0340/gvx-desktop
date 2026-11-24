@@ -192,8 +192,6 @@ func TestUnsupportedTableFull(t *testing.T) {
 		{"GET", "/containers/abc/archive", "Copying"},
 		{"PUT", "/containers/abc/archive", "Copying"},
 		{"POST", "/commit", "Committing"},
-		{"GET", "/images/search", "Searching"},
-		{"GET", "/images/alpine:3.20/history", "Image history"},
 		{"POST", "/images/alpine:3.20/push", "Pushing"},
 		{"GET", "/distribution/alpine:3.20/json", "manifest"},
 		{"PUT", "/volumes/foo", "cluster volume"},

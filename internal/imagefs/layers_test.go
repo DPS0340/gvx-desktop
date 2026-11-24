@@ -202,3 +202,52 @@ func TestGVXImageExists(t *testing.T) {
 		}
 	}
 }
+
+func TestReadGVXImageHistoryAndWriteEntry(t *testing.T) {
+	hist, err := ReadGVXImageHistory(fixtureCache, fixtureID)
+	if err != nil {
+		t.Fatalf("ReadGVXImageHistory: %v", err)
+	}
+	if len(hist) != 2 {
+		t.Fatalf("len(hist) = %d, want 2 (%+v)", len(hist), hist)
+	}
+	for i, h := range hist {
+		if h.Size <= 0 {
+			t.Errorf("hist[%d].Size = %d, want > 0", i, h.Size)
+		}
+	}
+
+	g, err := OpenGVXImage(fixtureCache, fixtureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+
+	sz, err := g.StatLayer(0, "data/big.bin")
+	if err != nil || sz != 100000 {
+		t.Fatalf("StatLayer(data/big.bin) = %d, %v; want 100000", sz, err)
+	}
+	sz, err = g.StatLayer(0, "etc/hl")
+	if err != nil || sz != 6 {
+		t.Fatalf("StatLayer(etc/hl) = %d, %v; want 6", sz, err)
+	}
+
+	// WriteEntry writes hard-linked file as regular file with full content.
+	names, ents := readTar(t, func(tw *tar.Writer) error {
+		return g.WriteEntry(0, "etc/hl", "hl", tw)
+	})
+	if len(names) != 1 || names[0] != "hl" {
+		t.Fatalf("WriteEntry(etc/hl) names = %v", names)
+	}
+	if ents["hl"].hdr.Typeflag != tar.TypeReg || string(ents["hl"].body) != "alpha\n" {
+		t.Fatalf("WriteEntry(etc/hl) = %+v %q", ents["hl"].hdr, ents["hl"].body)
+	}
+
+	// WriteEntry writes symlink with target.
+	names, ents = readTar(t, func(tw *tar.Writer) error {
+		return g.WriteEntry(0, "lib/link", "link", tw)
+	})
+	if len(names) != 1 || ents["link"].hdr.Typeflag != tar.TypeSymlink || ents["link"].hdr.Linkname != "../etc/a.txt" {
+		t.Fatalf("WriteEntry(lib/link) = %v %+v", names, ents["link"].hdr)
+	}
+}

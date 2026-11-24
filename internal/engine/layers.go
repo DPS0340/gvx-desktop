@@ -8,10 +8,13 @@ package engine
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"strings"
+	"time"
 )
 
 const (
@@ -30,10 +33,25 @@ func layerName(name string) string {
 // that only exists as the parent of entries.
 const implicitOwner = -1
 
+var (
+	errTooManySymlinks = errors.New("too many levels of symbolic links")
+	errNotDirectory    = errors.New("not a directory")
+)
+
+type nodeMeta struct {
+	typeflag byte
+	mode     int64
+	uid      int
+	gid      int
+	modTime  time.Time
+	linkname string
+}
+
 type treeNode struct {
 	children map[string]*treeNode
 	owner    int // index of the layer whose entry wins, or implicitOwner
 	ord      int // position of that entry in its layer
+	meta     nodeMeta
 }
 
 func (n *treeNode) child(name string, create bool) *treeNode {
@@ -58,6 +76,7 @@ func (n *treeNode) hideBelow(i int) bool {
 	}
 	if len(n.children) > 0 {
 		n.owner = implicitOwner
+		n.meta = nodeMeta{}
 		return true
 	}
 	return false
@@ -128,6 +147,14 @@ func (t *layerTree) Apply(i int, tr *tar.Reader) error {
 		default:
 			n := t.lookup(name, true)
 			n.owner, n.ord = i, ord
+			n.meta = nodeMeta{
+				typeflag: hdr.Typeflag,
+				mode:     hdr.Mode,
+				uid:      hdr.Uid,
+				gid:      hdr.Gid,
+				modTime:  hdr.ModTime,
+				linkname: hdr.Linkname,
+			}
 			if hdr.Typeflag != tar.TypeDir {
 				// A file in place of a directory hides what it held.
 				n.hideChildrenBelow(i)
@@ -235,4 +262,157 @@ func copyLayer(tr *tar.Reader, tw *tar.Writer, skip func(name string) bool) erro
 // under reports whether name is dir or below it ("" holds everything).
 func under(name, dir string) bool {
 	return dir == "" || name == dir || strings.HasPrefix(name, dir+"/")
+}
+
+func (n *treeNode) isDir() bool {
+	return n.owner == implicitOwner || n.meta.typeflag == tar.TypeDir
+}
+
+// resolvePath resolves guestPath inside t, following symlinks in parent
+// components (and in the final component when followLast is true), clamping
+// ".." at the container root. Returns "" and &t.root for "/".
+func (t *layerTree) resolvePath(guestPath string, followLast bool) (string, *treeNode, error) {
+	const maxSymlinkHops = 40
+	var cur []string
+	pending := splitPathSegments(guestPath)
+	hops := 0
+
+	for len(pending) > 0 {
+		seg := pending[0]
+		pending = pending[1:]
+		if seg == "" || seg == "." {
+			continue
+		}
+		if seg == ".." {
+			if len(cur) > 0 {
+				cur = cur[:len(cur)-1]
+			}
+			continue
+		}
+		parent := t.lookup(strings.Join(cur, "/"), false)
+		if parent == nil {
+			return "", nil, os.ErrNotExist
+		}
+		if !parent.isDir() {
+			return "", nil, errNotDirectory
+		}
+		child := parent.children[seg]
+		if child == nil {
+			return "", nil, os.ErrNotExist
+		}
+		if child.meta.typeflag == tar.TypeSymlink && (len(pending) > 0 || followLast) {
+			hops++
+			if hops > maxSymlinkHops {
+				return "", nil, errTooManySymlinks
+			}
+			target := child.meta.linkname
+			if strings.HasPrefix(target, "/") {
+				cur = cur[:0]
+			}
+			pending = append(splitPathSegments(target), pending...)
+			continue
+		}
+		cur = append(cur, seg)
+	}
+
+	resolved := strings.Join(cur, "/")
+	node := t.lookup(resolved, false)
+	if node == nil {
+		return "", nil, os.ErrNotExist
+	}
+	if followLast && resolved != "" && !node.isDir() {
+		return "", nil, errNotDirectory
+	}
+	return resolved, node, nil
+}
+
+func splitPathSegments(p string) []string {
+	var out []string
+	for seg := range strings.SplitSeq(p, "/") {
+		if seg != "" {
+			out = append(out, seg)
+		}
+	}
+	return out
+}
+
+// EmitSubtree replays layer i from tr, writing to tw only the winning entries
+// strictly below rootPath (rebased from "rootPath/rest" to "baseName/rest").
+// Callers write the top directory header "baseName/" before replaying layers.
+// Hard links whose targets lie outside rootPath (or lost to a later layer) are
+// materialized as regular files on their first winning link.
+func (t *layerTree) EmitSubtree(i int, tr *tar.Reader, tw *tar.Writer, rootPath, baseName string) error {
+	if rootPath == "" {
+		return t.Emit(i, tr, tw)
+	}
+	prefix := rootPath + "/"
+	rebase := func(name string) (string, bool) {
+		rest, ok := strings.CutPrefix(name, prefix)
+		if !ok || rest == "" {
+			return "", false
+		}
+		return baseName + "/" + rest, true
+	}
+
+	lost := map[string][]byte{}
+	moved := map[string]string{}
+	for ord := 0; ; ord++ {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name := layerName(hdr.Name)
+		if name == "" || strings.HasPrefix(path.Base(name), whiteoutPrefix) {
+			continue
+		}
+		rebased, inSubtree := rebase(name)
+		n := t.lookup(name, false)
+		won := n != nil && n.owner == i && n.ord == ord
+		if !won || !inSubtree {
+			if t.linked[i][name] && hdr.Typeflag == tar.TypeReg {
+				if hdr.Size > maxLostLink {
+					return fmt.Errorf("%s: a hard link's target of %d bytes cannot be exported across subtree", name, hdr.Size)
+				}
+				if lost[name], err = io.ReadAll(tr); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		out := *hdr
+		out.Name = rebased
+		var body io.Reader
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			out.Name += "/"
+		case tar.TypeReg:
+			body = tr
+		case tar.TypeLink:
+			target := layerName(hdr.Linkname)
+			if to, ok := moved[target]; ok {
+				out.Linkname = to
+			} else if b, ok := lost[target]; ok {
+				out.Typeflag, out.Linkname, out.Size = tar.TypeReg, "", int64(len(b))
+				body = bytes.NewReader(b)
+				moved[target] = rebased
+				delete(lost, target)
+			} else if targetRebased, ok := rebase(target); ok {
+				out.Linkname = targetRebased
+			} else {
+				// Target was not seen earlier (or wasn't a regular file); keep cleaned name.
+				out.Linkname = target
+			}
+		}
+		if err := tw.WriteHeader(&out); err != nil {
+			return err
+		}
+		if body != nil {
+			if _, err := io.Copy(tw, body); err != nil {
+				return err
+			}
+		}
+	}
 }

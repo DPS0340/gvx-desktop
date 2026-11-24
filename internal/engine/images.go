@@ -550,7 +550,7 @@ func matchImageReference(tags []string, pattern string) bool {
 func (e *Engine) imageCreate(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if strings.TrimSpace(q.Get("fromSrc")) != "" {
-		writeError(w, r, errNotSupported("Importing an image"))
+		e.imageImport(w, r)
 		return
 	}
 	fromImage := strings.TrimSpace(q.Get("fromImage"))

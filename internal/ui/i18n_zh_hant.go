@@ -1449,7 +1449,7 @@ var traditionalChinese = &i18n.Catalog{
 		"Filter local registry images":     "篩選本機登錄庫映像檔",
 		"Host CLI":                         "主機 CLI",
 		"Legacy registry sandbox (paused)": "舊版登錄庫沙箱（已暫停）",
-		"Load them directly into the cluster's nodes (Images → Docker → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "將它們直接載入叢集節點（映像檔 → Docker → 載入叢集），並使用非 latest 的標籤。若需使用 docker push、buildx --push、Tilt/Skaffold 或 :latest 標籤，請推送到內建本機登錄庫（%s / %s），它會隨 Docker 或 Kubernetes 自動啟動。",
+		"Load them directly into the cluster's nodes (Images → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "將它們直接載入叢集節點（映像檔 → 載入叢集），並使用非 latest 的標籤。若需使用 docker push、buildx --push、Tilt/Skaffold 或 :latest 標籤，請推送到內建本機登錄庫（%s / %s），它會隨 Docker 或 Kubernetes 自動啟動。",
 		"Local Registry":                  "本機登錄庫",
 		"Local registry":                  "本機登錄庫",
 		"Local registry is off":           "本機登錄庫已關閉",
@@ -1462,7 +1462,7 @@ var traditionalChinese = &i18n.Catalog{
 		"Open in Images":                  "在「映像檔」中開啟",
 		"Platform":                        "平台",
 		"Prune local registry?":           "要清理本機登錄庫嗎？",
-		"Push from Images → Docker → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "可從 映像檔 → Docker → 推送到本機登錄庫 推送，或執行 docker push %s/myapp:dev。若不加上標籤就一次性載入 k3s，請使用「載入叢集」。",
+		"Push from Images → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "可從 映像檔 → 推送到本機登錄庫 推送，或執行 docker push %s/myapp:dev。若不加上標籤就一次性載入 k3s，請使用「載入叢集」。",
 		"Push to local registry":                          "推送到本機登錄庫",
 		"Reading local registry…":                         "正在讀取本機登錄庫…",
 		"Refresh local registry":                          "重新整理本機登錄庫",
@@ -1481,6 +1481,13 @@ var traditionalChinese = &i18n.Catalog{
 		"Unreferenced manifests and blobs in the local registry are deleted.":                  "本機登錄庫中未被參照的資訊清單與 Blob 將被刪除。",
 		"Unreferenced manifests and blobs in the local registry are deleted (%s reclaimable).": "本機登錄庫中未被參照的資訊清單與 Blob 將被刪除（可回收 %s）。",
 		"Updated": "更新時間",
+
+		// Unified cached images view in Sandbox Engine mode.
+		". Shared by GVX sandboxes and Docker; layers are read-only EROFS files.": "。由 GVX 沙箱與 Docker 共用；映像層為唯讀 EROFS 檔案。",
+		"Cached Images": "已快取映像檔",
+		"Used by %s. Sandboxes pull it again at their next start; force removing untags or deletes the image from the cache (%s).": "正由 %s 使用。沙箱會在下次啟動時重新拉取；強制移除會從快取中取消標籤或刪除映像檔（%s）。",
+		"Used by running container %s. Stop it first before removing this image.":                                                  "正由執行中的容器 %s 使用。移除此映像檔前請先停止該容器。",
+		"Used by sandbox %s. Remove it from Cached Images if you want to re-pull it later.":                                        "正由沙箱 %s 使用。若要稍後重新拉取，請在「已快取映像檔」中移除。",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d custom": {Other: "自訂 %d 個"},

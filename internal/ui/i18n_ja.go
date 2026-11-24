@@ -1457,7 +1457,7 @@ var japanese = &i18n.Catalog{
 		"Filter local registry images":     "ローカルレジストリのイメージを絞り込み",
 		"Host CLI":                         "ホスト CLI",
 		"Legacy registry sandbox (paused)": "レガシーレジストリサンドボックス（一時停止中）",
-		"Load them directly into the cluster's nodes (Images → Docker → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "latest 以外のタグを付けてクラスターのノードへ直接読み込んでください（イメージ → Docker → クラスターに読み込む）。docker push、buildx --push、Tilt/Skaffold、または :latest タグを使う場合は、Docker や Kubernetes とともに自動起動する組み込みローカルレジストリ（%s / %s）にプッシュしてください。",
+		"Load them directly into the cluster's nodes (Images → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "latest 以外のタグを付けてクラスターのノードへ直接読み込んでください（イメージ → クラスターに読み込む）。docker push、buildx --push、Tilt/Skaffold、または :latest タグを使う場合は、Docker や Kubernetes とともに自動起動する組み込みローカルレジストリ（%s / %s）にプッシュしてください。",
 		"Local Registry":                  "ローカルレジストリ",
 		"Local registry":                  "ローカルレジストリ",
 		"Local registry is off":           "ローカルレジストリはオフです",
@@ -1470,7 +1470,7 @@ var japanese = &i18n.Catalog{
 		"Open in Images":                  "イメージで開く",
 		"Platform":                        "プラットフォーム",
 		"Prune local registry?":           "ローカルレジストリを整理しますか？",
-		"Push from Images → Docker → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "イメージ → Docker → ローカルレジストリにプッシュ からプッシュするか、docker push %s/myapp:dev を実行してください。タグを付けずに k3s へ一度だけ読み込む場合は、クラスターに読み込む を使用してください。",
+		"Push from Images → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "イメージ → ローカルレジストリにプッシュ からプッシュするか、docker push %s/myapp:dev を実行してください。タグを付けずに k3s へ一度だけ読み込む場合は、クラスターに読み込む を使用してください。",
 		"Push to local registry":                          "ローカルレジストリにプッシュ",
 		"Reading local registry…":                         "ローカルレジストリを読み込み中…",
 		"Refresh local registry":                          "ローカルレジストリを更新",
@@ -1489,6 +1489,13 @@ var japanese = &i18n.Catalog{
 		"Unreferenced manifests and blobs in the local registry are deleted.":                  "ローカルレジストリ内の参照されていないマニフェストとブロブを削除します。",
 		"Unreferenced manifests and blobs in the local registry are deleted (%s reclaimable).": "ローカルレジストリ内の参照されていないマニフェストとブロブを削除します（%s 回収可能）。",
 		"Updated": "更新日時",
+
+		// Unified cached images view in Sandbox Engine mode.
+		". Shared by GVX sandboxes and Docker; layers are read-only EROFS files.": "。GVX サンドボックスと Docker で共有され、レイヤーは読み取り専用の EROFS ファイルです。",
+		"Cached Images": "キャッシュ済みイメージ",
+		"Used by %s. Sandboxes pull it again at their next start; force removing untags or deletes the image from the cache (%s).": "%s で使用中です。サンドボックスは次回起動時に再度プルします。強制削除するとキャッシュからタグ解除または削除されます（%s）。",
+		"Used by running container %s. Stop it first before removing this image.":                                                  "実行中のコンテナ %s で使用中です。このイメージを削除する前に停止してください。",
+		"Used by sandbox %s. Remove it from Cached Images if you want to re-pull it later.":                                        "サンドボックス %s で使用中です。後で再度取得する場合は、キャッシュ済みイメージから削除してください。",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d custom": {Other: "カスタム %d 個"},

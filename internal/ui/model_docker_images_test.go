@@ -313,3 +313,123 @@ func TestFormatSizeAndBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestImagesPageUnifiedInSandboxEngineAndSplitInCompat(t *testing.T) {
+	t.Cleanup(func() { SetLanguage(LangEnglish) })
+	SetLanguage(LangEnglish)
+
+	dir := t.TempDir()
+	st := store.Store{Dir: dir}
+	set := store.DefaultSettings()
+	set.Language = LangEnglish
+	set.SandboxEngine = true
+	_ = st.SaveSettings(set)
+	sb := sandbox.Spec{ID: "sb1", Name: "my-pg", Image: "postgres:17-alpine"}
+	_ = st.SaveSandboxes([]sandbox.Spec{sb})
+
+	var m *Model
+	p := ggui.ProbeBuilder(func() ggui.Widget { return ggui.Provide(ggui.ReducedMotionKey, true, Build(m)) }, ggui.Sz(1200, 840))
+	p.Setup(func() {
+		m = NewModel(st, dir)
+		m.Offline = true
+		m.Attach(p)
+	})
+	defer p.Close()
+	p.Frame()
+
+	tabNames := func() []string {
+		var out []string
+		for _, n := range p.Semantics().Nodes(ggui.RoleTab) {
+			out = append(out, n.Name)
+		}
+		return out
+	}
+	shows := func(substr string) bool {
+		for _, n := range p.Semantics().All() {
+			if strings.Contains(n.Name, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 1. Default Sandbox Engine mode: unified 2-tab layout (Cached Images + Local Registry).
+	m.GoImages(ImagesGVX)
+	p.Frame()
+	if got := tabNames(); !slices.Contains(got, "Cached Images") || !slices.Contains(got, "Local Registry") || slices.Contains(got, "GVX Sandboxes") {
+		t.Fatalf("Sandbox Engine tabs = %v, want Cached Images + Local Registry (no GVX Sandboxes)", got)
+	}
+
+	// 2. Fallback to m.Images works when m.DockerImages is not loaded yet.
+	m.Images.Set(Listing[rungv.Image]{Loaded: true, Items: []rungv.Image{
+		{Repository: "alpine", Tag: "3.20", ID: "abcdef123456", Size: "8MB"},
+	}})
+	p.Frame()
+	if !shows("alpine") {
+		t.Fatalf("expected fallback m.Images row on unified Cached Images tab:\n%s", p.Semantics())
+	}
+
+	// 3. Once m.DockerImages loads, unified tab uses rich rows with both sandbox and Docker/k3s actions.
+	pgID := "sha256:aaaa111122223333"
+	m.DockerImages.Set(Listing[dockerapi.Image]{Loaded: true, Items: []dockerapi.Image{
+		{ID: pgID, RepoTags: []string{"postgres:17-alpine"}, Size: 100 << 20, Created: time.Now().Add(-time.Hour).Unix()},
+	}})
+	m.GoImages(ImagesDocker)
+	p.Frame()
+	if !shows("postgres") || !shows("In use") {
+		t.Fatalf("expected unified row with In use badge:\n%s", p.Semantics())
+	}
+	p.Tap("More actions for postgres:17-alpine")
+	p.Frame()
+	for _, item := range []string{"Browse files", "Run…", "Inspect", "Pull again", "Load into cluster", "Push to local registry", "Copy docker run command", "Remove…"} {
+		if _, ok := p.Semantics().Find(ggui.RoleMenuItem, item); !ok {
+			t.Errorf("unified Cached Images menu missing %q:\n%s", item, p.Semantics())
+		}
+	}
+
+	// 4. AskRemoveCachedImage confirms sandbox-used image, but refuses when a running container uses it.
+	pgRow := DockerImageRow{ID: pgID, ShortID: "aaaa11112222", Repository: "postgres", Tag: "17-alpine", Size: 100 << 20}
+	m.AskRemoveCachedImage(pgRow)
+	p.Frame()
+	if !ggui.Peek(m.ConfirmOpen) || !strings.Contains(ggui.Peek(m.ConfirmText), "my-pg") {
+		t.Fatalf("AskRemoveCachedImage confirm = open:%v text:%q", ggui.Peek(m.ConfirmOpen), ggui.Peek(m.ConfirmText))
+	}
+	m.ConfirmOpen.Set(false)
+	m.DockerContainers.Set(Listing[dockerapi.Container]{Loaded: true, Items: []dockerapi.Container{
+		{ID: "c1", Names: []string{"/db"}, Image: "postgres:17-alpine", ImageID: pgID, State: "running"},
+	}})
+	m.AskRemoveCachedImage(pgRow)
+	p.Frame()
+	if ggui.Peek(m.ConfirmOpen) {
+		t.Fatal("AskRemoveCachedImage opened confirm dialog while a running container uses the image")
+	}
+
+	// 5. OpenRegistry still selects Local Registry tab cleanly.
+	m.OpenRegistry()
+	p.Frame()
+	if ggui.Peek(m.ImageView) != ImagesRegistry || !shows("No images in the local registry") {
+		t.Fatalf("OpenRegistry failed in Sandbox Engine mode (view=%d):\n%s", ggui.Peek(m.ImageView), p.Semantics())
+	}
+
+	// 6. Command Palette hides duplicate "Docker images" in Sandbox Engine mode.
+	m.PaletteOpen.Set(true)
+	p.Frame()
+	if _, ok := p.Semantics().Find(ggui.RoleMenuItem, "Docker images"); ok {
+		t.Errorf("command palette unexpectedly offered duplicate Docker images in Sandbox Engine mode")
+	}
+	m.PaletteOpen.Set(false)
+	p.Frame()
+
+	// 7. Switching to Compatibility mode (docker:dind) splits into 3 tabs + shows Docker images in palette.
+	m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = false })
+	m.GoImages(ImagesGVX)
+	p.Frame()
+	if got := tabNames(); !slices.Contains(got, "GVX Sandboxes") || !slices.Contains(got, "Docker") || !slices.Contains(got, "Local Registry") || slices.Contains(got, "Cached Images") {
+		t.Fatalf("Compat mode tabs = %v, want GVX Sandboxes + Docker + Local Registry", got)
+	}
+	m.PaletteOpen.Set(true)
+	p.Frame()
+	if _, ok := p.Semantics().Find(ggui.RoleMenuItem, "Docker images"); !ok {
+		t.Errorf("command palette missing Docker images in Compatibility mode")
+	}
+}

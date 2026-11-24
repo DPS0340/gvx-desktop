@@ -1463,7 +1463,7 @@ var korean = &i18n.Catalog{
 		"Filter local registry images":     "로컬 레지스트리 이미지 필터",
 		"Host CLI":                         "호스트 CLI",
 		"Legacy registry sandbox (paused)": "레거시 레지스트리 샌드박스 (일시 중지됨)",
-		"Load them directly into the cluster's nodes (Images → Docker → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "latest가 아닌 태그를 붙여 클러스터 노드에 직접 로드하세요(이미지 → Docker → 클러스터에 로드). docker push, buildx --push, Tilt/Skaffold 또는 :latest 태그를 쓰려면 Docker나 Kubernetes와 함께 자동으로 시작되는 내장 로컬 레지스트리(%s / %s)에 푸시하세요.",
+		"Load them directly into the cluster's nodes (Images → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "latest가 아닌 태그를 붙여 클러스터 노드에 직접 로드하세요(이미지 → 클러스터에 로드). docker push, buildx --push, Tilt/Skaffold 또는 :latest 태그를 쓰려면 Docker나 Kubernetes와 함께 자동으로 시작되는 내장 로컬 레지스트리(%s / %s)에 푸시하세요.",
 		"Local Registry":                  "로컬 레지스트리",
 		"Local registry":                  "로컬 레지스트리",
 		"Local registry is off":           "로컬 레지스트리가 꺼져 있습니다",
@@ -1476,7 +1476,7 @@ var korean = &i18n.Catalog{
 		"Open in Images":                  "이미지에서 열기",
 		"Platform":                        "플랫폼",
 		"Prune local registry?":           "로컬 레지스트리를 정리할까요?",
-		"Push from Images → Docker → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "이미지 → Docker → 로컬 레지스트리로 푸시를 사용하거나 docker push %s/myapp:dev 명령을 실행하세요. 태그를 붙이지 않고 k3s에 일회성으로 로드하려면 클러스터에 로드를 사용하세요.",
+		"Push from Images → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "이미지 → 로컬 레지스트리로 푸시를 사용하거나 docker push %s/myapp:dev 명령을 실행하세요. 태그를 붙이지 않고 k3s에 일회성으로 로드하려면 클러스터에 로드를 사용하세요.",
 		"Push to local registry":                          "로컬 레지스트리로 푸시",
 		"Reading local registry…":                         "로컬 레지스트리를 읽는 중…",
 		"Refresh local registry":                          "로컬 레지스트리 새로 고침",
@@ -1495,6 +1495,13 @@ var korean = &i18n.Catalog{
 		"Unreferenced manifests and blobs in the local registry are deleted.":                  "로컬 레지스트리에서 참조되지 않는 매니페스트와 블롭이 삭제됩니다.",
 		"Unreferenced manifests and blobs in the local registry are deleted (%s reclaimable).": "로컬 레지스트리에서 참조되지 않는 매니페스트와 블롭이 삭제됩니다(%s 회수 가능).",
 		"Updated": "업데이트",
+
+		// Unified cached images view in Sandbox Engine mode.
+		". Shared by GVX sandboxes and Docker; layers are read-only EROFS files.": ". GVX 샌드박스와 Docker가 함께 사용하며, 레이어는 읽기 전용 EROFS 파일입니다.",
+		"Cached Images": "캐시된 이미지",
+		"Used by %s. Sandboxes pull it again at their next start; force removing untags or deletes the image from the cache (%s).": "%s에서 사용 중입니다. 샌드박스는 다음 시작 시 이미지를 다시 가져옵니다. 강제 제거하면 캐시에서 태그가 해제되거나 이미지가 삭제됩니다(%s).",
+		"Used by running container %s. Stop it first before removing this image.":                                                  "실행 중인 컨테이너 %s에서 사용 중입니다. 이 이미지를 제거하기 전에 먼저 중지하세요.",
+		"Used by sandbox %s. Remove it from Cached Images if you want to re-pull it later.":                                        "샌드박스 %s에서 사용 중입니다. 나중에 다시 받으려면 캐시된 이미지에서 제거하세요.",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d custom": {Other: "사용자 정의 %d개"},

@@ -1461,7 +1461,7 @@ var german = &i18n.Catalog{
 		"Filter local registry images":     "Images der lokalen Registry filtern",
 		"Host CLI":                         "Host-CLI",
 		"Legacy registry sandbox (paused)": "Legacy-Registry-Sandbox (angehalten)",
-		"Load them directly into the cluster's nodes (Images → Docker → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "Laden Sie sie direkt in die Knoten des Clusters (Images → Docker → In den Cluster laden) mit einem anderen Tag als latest. Für docker push, buildx --push, Tilt/Skaffold oder :latest-Tags pushen Sie in die integrierte lokale Registry (%s / %s), die automatisch mit Docker oder Kubernetes startet.",
+		"Load them directly into the cluster's nodes (Images → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "Laden Sie sie direkt in die Knoten des Clusters (Images → In den Cluster laden) mit einem anderen Tag als latest. Für docker push, buildx --push, Tilt/Skaffold oder :latest-Tags pushen Sie in die integrierte lokale Registry (%s / %s), die automatisch mit Docker oder Kubernetes startet.",
 		"Local Registry":                  "Lokale Registry",
 		"Local registry":                  "Lokale Registry",
 		"Local registry is off":           "Lokale Registry ist ausgeschaltet",
@@ -1474,7 +1474,7 @@ var german = &i18n.Catalog{
 		"Open in Images":                  "In „Images“ öffnen",
 		"Platform":                        "Plattform",
 		"Prune local registry?":           "Lokale Registry bereinigen?",
-		"Push from Images → Docker → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "Pushen Sie über Images → Docker → In die lokale Registry pushen oder führen Sie docker push %s/myapp:dev aus. Für einmaliges Laden in k3s ohne Tagging verwenden Sie „In den Cluster laden“.",
+		"Push from Images → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "Pushen Sie über Images → In die lokale Registry pushen oder führen Sie docker push %s/myapp:dev aus. Für einmaliges Laden in k3s ohne Tagging verwenden Sie „In den Cluster laden“.",
 		"Push to local registry":                          "In die lokale Registry pushen",
 		"Reading local registry…":                         "Lokale Registry wird gelesen…",
 		"Refresh local registry":                          "Lokale Registry neu laden",
@@ -1493,6 +1493,13 @@ var german = &i18n.Catalog{
 		"Unreferenced manifests and blobs in the local registry are deleted.":                  "Nicht referenzierte Manifeste und Blobs in der lokalen Registry werden gelöscht.",
 		"Unreferenced manifests and blobs in the local registry are deleted (%s reclaimable).": "Nicht referenzierte Manifeste und Blobs in der lokalen Registry werden gelöscht (%s freigebbar).",
 		"Updated": "Aktualisiert",
+
+		// Unified cached images view in Sandbox Engine mode.
+		". Shared by GVX sandboxes and Docker; layers are read-only EROFS files.": ". Gemeinsam genutzt von GVX-Sandboxes und Docker; Layer sind schreibgeschützte EROFS-Dateien.",
+		"Cached Images": "Gecachte Images",
+		"Used by %s. Sandboxes pull it again at their next start; force removing untags or deletes the image from the cache (%s).": "Wird von %s verwendet. Sandboxes laden es beim nächsten Start erneut; erzwungenes Entfernen hebt den Tag auf oder löscht das Image aus dem Cache (%s).",
+		"Used by running container %s. Stop it first before removing this image.":                                                  "Wird vom laufenden Container %s verwendet. Stoppen Sie ihn zuerst, bevor Sie dieses Image entfernen.",
+		"Used by sandbox %s. Remove it from Cached Images if you want to re-pull it later.":                                        "Wird von Sandbox %s verwendet. Entfernen Sie es unter „Gecachte Images“, wenn Sie es später erneut laden möchten.",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d custom": {One: "%d benutzerdefiniert", Other: "%d benutzerdefiniert"},

@@ -23,8 +23,15 @@ import (
 // ---- Images -------------------------------------------------------------
 
 func imagesPage(m *Model) ggui.Widget {
-	header := ggui.View(m.ImageView, func(view int) ggui.Widget {
-		if view == ImagesRegistry {
+	type headerKey struct {
+		view int
+		se   bool
+	}
+	hk := ggui.Derived(func() headerKey {
+		return headerKey{view: m.ImageView.Get(), se: m.Settings.Get().SandboxEngine}
+	})
+	header := ggui.View(hk, func(k headerKey) ggui.Widget {
+		if k.view == ImagesRegistry {
 			summary := ui.CaptionOf(ggui.Derived(func() string {
 				st := m.LocalRegistry.Get()
 				l := m.LocalRegistryImages.Get()
@@ -63,17 +70,55 @@ func imagesPage(m *Model) ggui.Widget {
 				ui.Button(tr("Copy address"), func() { m.Copy(recipes.RegistryLocal(), recipes.RegistryLocal()) }).Outline().Icon(glyph(lucide.Copy, 16)),
 			)
 		}
-		if view == ImagesDocker {
+		if k.se {
 			summary := ui.CaptionOf(ggui.Derived(func() string {
-				open, l, se := m.ContainersOpen.Get(), m.DockerImages.Get(), m.Settings.Get().SandboxEngine
-				if !open || !l.Loaded || l.Err != "" {
-					if se {
-						return tr("Images shared with gvx's image cache.")
-					}
-					return tr("Images built or pulled inside the Docker Engine sandbox.")
+				open := m.ContainersOpen.Get()
+				dl := m.DockerImages.Get()
+				gl := m.Images.Get()
+				disk := m.Disk.Get()
+				useDocker := useDockerForCachedImages(open, dl, gl)
+				count := len(gl.Items)
+				if useDocker {
+					count = len(dl.Items)
 				}
-				if se {
-					return tr("%d images · %s. Shared with gvx's image cache.", len(l.Items), formatBytes(dockerImagesTotalSize(l.Items)))
+				var s strings.Builder
+				s.WriteString(fmt.Sprintf(tr("%d cached images"), count))
+				hasDisk := false
+				for _, r := range disk {
+					if r.Type == "Images" {
+						s.WriteString(fmt.Sprintf(tr(" · %s on disk · %s reclaimable"), formatSize(r.Size), formatSize(r.Reclaimable)))
+						hasDisk = true
+						break
+					}
+				}
+				if !hasDisk && useDocker && len(dl.Items) > 0 {
+					s.WriteString(" · " + formatBytes(dockerImagesTotalSize(dl.Items)))
+				}
+				return s.String() + tr(". Shared by GVX sandboxes and Docker; layers are read-only EROFS files.")
+			}))
+			return pageHeader(tr("Images"), summary,
+				tip(iconButton(lucide.RefreshCw, tr("Refresh images"), func() {
+					m.LoadImages()
+					m.LoadDockerImages()
+					m.LoadDisk()
+				}), tr("Refresh")),
+				ui.Button(tr("Prune"), m.AskPruneCachedImages).Outline().Icon(glyph(lucide.Eraser, 16)).BindDisabled(ggui.Map(m.BusyOps, func(b map[string]bool) bool {
+					return b["img:prune"] || b["dimg:prune"]
+				})),
+				ui.Button(tr("Pull image"), func() {
+					if ggui.Peek(m.ContainersOpen) {
+						m.OpenDockerPull("")
+					} else {
+						m.OpenPull("")
+					}
+				}).Icon(glyph(lucide.Download, 16)),
+			)
+		}
+		if k.view == ImagesDocker {
+			summary := ui.CaptionOf(ggui.Derived(func() string {
+				open, l := m.ContainersOpen.Get(), m.DockerImages.Get()
+				if !open || !l.Loaded || l.Err != "" {
+					return tr("Images built or pulled inside the Docker Engine sandbox.")
 				}
 				return tr("%d images · %s. Images built or pulled inside the Docker Engine sandbox.", len(l.Items), formatBytes(dockerImagesTotalSize(l.Items)))
 			}))
@@ -101,15 +146,294 @@ func imagesPage(m *Model) ggui.Widget {
 			ui.Button(tr("Pull image"), func() { m.OpenPull("") }).Icon(glyph(lucide.Download, 16)),
 		)
 	})
-	tabs := ui.Tabs(m.ImageView,
-		ui.Tab(tr("GVX Sandboxes"), widget.Padding(gvxImagesView(m), 12, 0, 0, 0)).
-			Header(tabHeader(lucide.Box, tr("GVX Sandboxes"))),
-		ui.Tab("Docker", widget.Padding(dockerImagesView(m), 12, 0, 0, 0)).
-			Header(tabHeader(dockerIcon, "Docker")),
-		ui.Tab(tr("Local Registry"), widget.Padding(localRegistryImagesView(m), 12, 0, 0, 0)).
-			Header(tabHeader(lucide.Warehouse, tr("Local Registry"))),
-	).Name(tr("Image sources"))
+	tabs := ggui.View(ggui.Map(m.Settings, func(s storeSettings) bool { return s.SandboxEngine }), func(se bool) ggui.Widget {
+		if se {
+			unifiedTab := ggui.Bind(func() int {
+				if m.ImageView.Get() == ImagesRegistry {
+					return 1
+				}
+				return 0
+			}, func(i int) {
+				if i == 1 {
+					m.ImageView.Set(ImagesRegistry)
+				} else {
+					m.ImageView.Set(ImagesGVX)
+				}
+			})
+			return ui.Tabs(unifiedTab,
+				ui.Tab(tr("Cached Images"), widget.Padding(cachedImagesView(m), 12, 0, 0, 0)).
+					Header(tabHeader(lucide.Layers, tr("Cached Images"))),
+				ui.Tab(tr("Local Registry"), widget.Padding(localRegistryImagesView(m), 12, 0, 0, 0)).
+					Header(tabHeader(lucide.Warehouse, tr("Local Registry"))),
+			).Name(tr("Image sources"))
+		}
+		return ui.Tabs(m.ImageView,
+			ui.Tab(tr("GVX Sandboxes"), widget.Padding(gvxImagesView(m), 12, 0, 0, 0)).
+				Header(tabHeader(lucide.Box, tr("GVX Sandboxes"))),
+			ui.Tab("Docker", widget.Padding(dockerImagesView(m), 12, 0, 0, 0)).
+				Header(tabHeader(dockerIcon, "Docker")),
+			ui.Tab(tr("Local Registry"), widget.Padding(localRegistryImagesView(m), 12, 0, 0, 0)).
+				Header(tabHeader(lucide.Warehouse, tr("Local Registry"))),
+		).Name(tr("Image sources"))
+	})
 	return page(header, tabs)
+}
+
+type cachedImageRow struct {
+	docker   DockerImageRow
+	gvx      rungv.Image
+	fromGVX  bool
+	sizeText string
+}
+
+func (r cachedImageRow) Key() string {
+	if r.fromGVX {
+		return r.gvx.Key()
+	}
+	return r.docker.Key()
+}
+
+func (r cachedImageRow) Ref() string {
+	if r.fromGVX {
+		return r.gvx.Ref()
+	}
+	return r.docker.Ref()
+}
+
+func useDockerForCachedImages(open bool, dl Listing[dockerapi.Image], gl Listing[rungv.Image]) bool {
+	return open && dl.Loaded && dl.Err == "" && (len(dl.Items) > 0 || !gl.Loaded || len(gl.Items) == 0)
+}
+
+func gvxToCachedRow(img rungv.Image) cachedImageRow {
+	dangling := img.Repository == "" || img.Repository == "<none>" || img.Tag == "" || img.Tag == "<none>"
+	shortID := strings.TrimPrefix(img.ID, "sha256:")
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
+	}
+	return cachedImageRow{
+		docker: DockerImageRow{
+			ID:         img.ID,
+			ShortID:    shortID,
+			Repository: img.Repository,
+			Tag:        img.Tag,
+			Digest:     img.Digest,
+			Dangling:   dangling,
+		},
+		gvx:      img,
+		fromGVX:  true,
+		sizeText: formatSize(img.Size),
+	}
+}
+
+func filterCachedImages(rows []cachedImageRow, q string) []cachedImageRow {
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return rows
+	}
+	var out []cachedImageRow
+	for _, r := range rows {
+		d := r.docker
+		if strings.Contains(strings.ToLower(d.Repository+":"+d.Tag+" "+d.Arch+" "+d.ShortID+" "+d.ID), q) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// cachedImagesView is the unified shared-cache image view shown in the default
+// Sandbox Engine mode, combining GVX sandbox actions and Docker/Kubernetes
+// actions in one table without requiring the Docker API to browse local cache.
+func cachedImagesView(m *Model) ggui.Widget {
+	all := ggui.Derived(func() []cachedImageRow {
+		open := m.ContainersOpen.Get()
+		dl := m.DockerImages.Get()
+		gl := m.Images.Get()
+		if useDockerForCachedImages(open, dl, gl) {
+			drows := dockerImageRows(dl.Items)
+			out := make([]cachedImageRow, len(drows))
+			for i, d := range drows {
+				out[i] = cachedImageRow{docker: d, sizeText: formatBytes(d.Size)}
+			}
+			return out
+		}
+		out := make([]cachedImageRow, len(gl.Items))
+		for i, g := range gl.Items {
+			out[i] = gvxToCachedRow(g)
+		}
+		return out
+	}).WithEqual(nil)
+	visible := ggui.Combine(all, m.ImageQuery, filterCachedImages).WithEqual(nil)
+
+	explore := func(row cachedImageRow, tab int) {
+		if row.fromGVX {
+			m.ExploreGVXImage(row.gvx, tab)
+		} else {
+			m.ExploreDockerImage(row.docker, tab)
+		}
+	}
+	removeRow := func(row cachedImageRow) {
+		if row.fromGVX {
+			users := sandboxImageUsers(ggui.Peek(m.Rows), row.docker)
+			m.AskRemoveImageWithUsers(row.gvx, users)
+		} else {
+			m.AskRemoveCachedImage(row.docker)
+		}
+	}
+
+	table := ui.Table(visible, cachedImageRow.Key,
+		ui.Col(tr("Repository"), func(r ggui.Readable[cachedImageRow]) ggui.Widget {
+			type repoCell struct {
+				repo    string
+				users   string
+				arch    string
+				foreign bool
+			}
+			return ggui.View(ggui.Derived(func() repoCell {
+				row := r.Get()
+				ctrs := m.DockerContainers.Get()
+				users := dockerImageAllUsers(ctrs.Items, m.Rows.Get(), true, row.docker)
+				return repoCell{
+					repo:    row.docker.Repository,
+					users:   strings.Join(users, ", "),
+					arch:    row.docker.Arch,
+					foreign: row.docker.ForeignArch(),
+				}
+			}), func(info repoCell) ggui.Widget {
+				parts := []ggui.Widget{
+					glyph(lucide.Layers, 16).Color(colorGray),
+					widget.Flexible(widget.Text(info.repo).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
+				}
+				if info.foreign {
+					parts = append(parts, tip(ui.Badge(info.arch).Outline(), tr("Built for linux/%s; cannot be run in a sandbox yet.", info.arch)))
+				}
+				if info.users != "" {
+					parts = append(parts, tip(ui.Badge(tr("In use")).Outline(), tr("Used by %s", info.users)))
+				}
+				return widget.Row(parts...).Gap(8).Align(widget.AlignCenter)
+			})
+		}).Grow(3),
+		ui.Col(tr("Tag"), func(r ggui.Readable[cachedImageRow]) ggui.Widget {
+			return ui.MonoOf(ggui.Map(r, func(row cachedImageRow) string { return row.docker.Tag })).Size(12).NoWrap().Ellipsis()
+		}).Grow(1),
+		ui.Col(tr("Image ID"), func(r ggui.Readable[cachedImageRow]) ggui.Widget {
+			return ui.MonoOf(ggui.Map(r, func(row cachedImageRow) string { return row.docker.ShortID })).Size(12)
+		}).W(130),
+		ui.Col(tr("Created"), func(r ggui.Readable[cachedImageRow]) ggui.Widget {
+			return ui.CaptionOf(ggui.Combine(r, m.Now, func(row cachedImageRow, now time.Time) string {
+				if row.fromGVX {
+					return imageAge(row.gvx, now)
+				}
+				if row.docker.Created == 0 {
+					return "—"
+				}
+				return since(time.Unix(row.docker.Created, 0), now)
+			})).Size(12).NoWrap()
+		}).W(130),
+		ui.TextCol(tr("Size"), func(row cachedImageRow) string { return row.sizeText }).W(96).Right(),
+		ui.Col("", func(r ggui.Readable[cachedImageRow]) ggui.Widget {
+			type actState struct {
+				row            cachedImageRow
+				busy           bool
+				containersOpen bool
+			}
+			return ggui.View(ggui.Derived(func() actState {
+				row := r.Get()
+				b := m.BusyOps.Get()
+				busy := b["dimg:"+row.docker.Key()]
+				if row.fromGVX {
+					busy = b["img:"+row.gvx.Key()]
+				}
+				return actState{row: row, busy: busy, containersOpen: m.ContainersOpen.Get()}
+			}), func(st actState) ggui.Widget {
+				row := st.row
+				img := row.docker
+				ref := row.Ref()
+				canRun := img.Pullable() && !img.ForeignArch()
+				entries := []ggui.Widget{
+					ui.MenuItem(tr("Browse files"), func() { explore(row, ExploreFiles) }),
+					ui.MenuItem(tr("Run…"), func() { m.NewSandbox(ref) }).Disabled(!canRun),
+					ui.MenuItem(tr("Inspect"), func() { explore(row, ExploreInspect) }),
+					ui.MenuItem(tr("Pull again"), func() {
+						if row.fromGVX || !st.containersOpen {
+							m.OpenPull(ref)
+						} else {
+							m.OpenDockerPull(ref)
+						}
+						m.Pull()
+					}).Disabled(!img.Pullable()),
+					ui.MenuDivider(),
+					ui.MenuItem(tr("Load into cluster"), func() { m.LoadIntoCluster(img) }).Disabled(!canRun || !st.containersOpen),
+					ui.MenuItem(tr("Push to local registry"), func() { m.PushToRegistry(img) }).Disabled(!img.Pullable() || !st.containersOpen),
+					ui.MenuDivider(),
+					ui.MenuItem(tr("Copy reference"), func() { m.Copy(ref, ref) }),
+					ui.MenuItem(tr("Copy ID"), func() { m.Copy(img.ID, img.ShortID) }),
+				}
+				if !img.ForeignArch() {
+					entries = append(entries, ui.MenuItem(tr("Copy docker run command"), func() { m.Copy("docker run --rm -it "+ref, "docker run") }))
+				}
+				entries = append(entries,
+					ui.MenuDivider(),
+					ui.MenuItem(tr("Remove…"), func() { removeRow(row) }).Destructive().Disabled(st.busy),
+				)
+				return widget.Row(
+					tip(iconButton(lucide.FolderSearch, tr("Browse files of %s", ref), func() { explore(row, ExploreFiles) }), tr("Browse files")),
+					tip(iconButton(lucide.Play, tr("Run %s", ref), func() { m.NewSandbox(ref) }).Disabled(!canRun), tr("Run in a new sandbox")),
+					moreMenu(tr("More actions for %s", ref), entries...),
+				).Gap(2).Justify(widget.JustifyEnd)
+			})
+		}).W(112).Identified("actions"),
+	).BindSelected(m.SelectedImage).RowName(cachedImageRow.Ref).RowHeight(tableRow).OnSelect(func(row cachedImageRow) { explore(row, ExploreFiles) })
+
+	type cachedViewState struct {
+		state int // 0: table, 1: empty, 2: error, 3: loading
+		err   string
+	}
+	state := ggui.Derived(func() cachedViewState {
+		open := m.ContainersOpen.Get()
+		dl := m.DockerImages.Get()
+		gl := m.Images.Get()
+		if useDockerForCachedImages(open, dl, gl) {
+			if len(dl.Items) == 0 {
+				return cachedViewState{state: 1}
+			}
+			return cachedViewState{state: 0}
+		}
+		switch {
+		case gl.Err != "":
+			return cachedViewState{state: 2, err: gl.Err}
+		case len(gl.Items) > 0:
+			return cachedViewState{state: 0}
+		case gl.Loaded:
+			if open && dl.Err != "" {
+				return cachedViewState{state: 2, err: dl.Err}
+			}
+			return cachedViewState{state: 1}
+		case open && dl.Err != "":
+			return cachedViewState{state: 2, err: dl.Err}
+		default:
+			return cachedViewState{state: 3}
+		}
+	})
+	return ggui.View(state, func(st cachedViewState) ggui.Widget {
+		switch st.state {
+		case 1:
+			return ui.Empty(tr("No images cached"), tr("Pull an image, or start a sandbox: a missing image is pulled on first run.")).
+				Media(glyph(lucide.Layers, 32).Color(colorGray)).
+				Action(ui.Button(tr("Pull an image"), func() {
+					if ggui.Peek(m.ContainersOpen) {
+						m.OpenDockerPull("")
+					} else {
+						m.OpenPull("")
+					}
+				}).Icon(glyph(lucide.Download, 16))).Outline()
+		case 2:
+			return ui.Alert(tr("Could not list images"), st.err).Destructive().Icon(icons.Alert)
+		case 3:
+			return widget.Row(ui.Spinner(), ui.Caption(tr("Reading the image cache…"))).Gap(8)
+		}
+		count := ggui.Combine(visible, all, func(v, a []cachedImageRow) string { return showing(len(v), len(a)) })
+		return tableCard(table.Toolbar(filterBar(m.ImageQuery, tr("Filter images"), count)))
+	})
 }
 
 func tabHeader(icon *icons.Glyph, label string) ggui.Widget {
@@ -563,7 +887,7 @@ func localRegistryImagesView(m *Model) ggui.Widget {
 			pushCmd := "docker push " + recipes.RegistryLocal() + "/myapp:dev"
 			return ui.Empty(
 				tr("No images in the local registry"),
-				tr("Push from Images → Docker → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.", recipes.RegistryLocal()),
+				tr("Push from Images → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.", recipes.RegistryLocal()),
 			).Media(glyph(lucide.Warehouse, 32).Color(colorGray)).
 				Action(ui.Button(tr("Copy push command"), func() { m.Copy(pushCmd, pushCmd) }).Outline().Icon(glyph(lucide.Copy, 16))).Outline()
 		case 2:

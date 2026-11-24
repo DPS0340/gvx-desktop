@@ -1461,7 +1461,7 @@ var simplifiedChinese = &i18n.Catalog{
 		"Filter local registry images":     "筛选本地镜像仓库镜像",
 		"Host CLI":                         "主机 CLI",
 		"Legacy registry sandbox (paused)": "旧版镜像仓库沙盒（已暂停）",
-		"Load them directly into the cluster's nodes (Images → Docker → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "使用非 latest 标签将它们直接加载到集群节点（镜像 → Docker → 加载到集群）。若需使用 docker push、buildx --push、Tilt/Skaffold 或 :latest 标签，请推送到内置本地镜像仓库（%s / %s），它会随 Docker 或 Kubernetes 自动启动。",
+		"Load them directly into the cluster's nodes (Images → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "使用非 latest 标签将它们直接加载到集群节点（镜像 → 加载到集群）。若需使用 docker push、buildx --push、Tilt/Skaffold 或 :latest 标签，请推送到内置本地镜像仓库（%s / %s），它会随 Docker 或 Kubernetes 自动启动。",
 		"Local Registry":                  "本地镜像仓库",
 		"Local registry":                  "本地镜像仓库",
 		"Local registry is off":           "本地镜像仓库已关闭",
@@ -1474,7 +1474,7 @@ var simplifiedChinese = &i18n.Catalog{
 		"Open in Images":                  "在“镜像”中打开",
 		"Platform":                        "平台",
 		"Prune local registry?":           "要清理本地镜像仓库吗？",
-		"Push from Images → Docker → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "从 镜像 → Docker → 推送到本地镜像仓库 推送，或运行 docker push %s/myapp:dev。如需在不打标签的情况下一次性加载到 k3s，请使用“加载到集群”。",
+		"Push from Images → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "从 镜像 → 推送到本地镜像仓库 推送，或运行 docker push %s/myapp:dev。如需在不打标签的情况下一次性加载到 k3s，请使用“加载到集群”。",
 		"Push to local registry":                          "推送到本地镜像仓库",
 		"Reading local registry…":                         "正在读取本地镜像仓库…",
 		"Refresh local registry":                          "刷新本地镜像仓库",
@@ -1493,6 +1493,13 @@ var simplifiedChinese = &i18n.Catalog{
 		"Unreferenced manifests and blobs in the local registry are deleted.":                  "将删除本地镜像仓库中未被引用的清单和 Blob。",
 		"Unreferenced manifests and blobs in the local registry are deleted (%s reclaimable).": "将删除本地镜像仓库中未被引用的清单和 Blob（可回收 %s）。",
 		"Updated": "更新时间",
+
+		// Unified cached images view in Sandbox Engine mode.
+		". Shared by GVX sandboxes and Docker; layers are read-only EROFS files.": "。由 GVX 沙盒和 Docker 共享；镜像层为只读 EROFS 文件。",
+		"Cached Images": "已缓存镜像",
+		"Used by %s. Sandboxes pull it again at their next start; force removing untags or deletes the image from the cache (%s).": "正被 %s 使用。沙盒会在下次启动时重新拉取；强制移除将从缓存中取消标签或删除镜像（%s）。",
+		"Used by running container %s. Stop it first before removing this image.":                                                  "正被运行中的容器 %s 使用。移除此镜像前请先停止该容器。",
+		"Used by sandbox %s. Remove it from Cached Images if you want to re-pull it later.":                                        "正被沙盒 %s 使用。如果希望稍后重新拉取，请在“已缓存镜像”中移除。",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d custom": {Other: "自定义 %d 个"},

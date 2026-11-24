@@ -1455,7 +1455,7 @@ var hindi = &i18n.Catalog{
 		"Filter local registry images":     "लोकल रजिस्ट्री इमेज फ़िल्टर करें",
 		"Host CLI":                         "होस्ट CLI",
 		"Legacy registry sandbox (paused)": "लिगेसी रजिस्ट्री सैंडबॉक्स (पॉज़)",
-		"Load them directly into the cluster's nodes (Images → Docker → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "इन्हें सीधे क्लस्टर के नोड्स में लोड करें (इमेज → Docker → क्लस्टर में लोड करें) और latest के अलावा किसी टैग का उपयोग करें। docker push, buildx --push, Tilt/Skaffold, या :latest टैग के लिए बिल्ट-इन लोकल रजिस्ट्री (%s / %s) में पुश करें, जो Docker या Kubernetes के साथ स्वतः शुरू होती है।",
+		"Load them directly into the cluster's nodes (Images → Load into cluster) with a tag other than latest. For docker push, buildx --push, Tilt/Skaffold, or :latest tags, push to the built-in local registry (%s / %s), which starts automatically with Docker or Kubernetes.": "इन्हें सीधे क्लस्टर के नोड्स में लोड करें (इमेज → क्लस्टर में लोड करें) और latest के अलावा किसी टैग का उपयोग करें। docker push, buildx --push, Tilt/Skaffold, या :latest टैग के लिए बिल्ट-इन लोकल रजिस्ट्री (%s / %s) में पुश करें, जो Docker या Kubernetes के साथ स्वतः शुरू होती है।",
 		"Local Registry":                  "लोकल रजिस्ट्री",
 		"Local registry":                  "लोकल रजिस्ट्री",
 		"Local registry is off":           "लोकल रजिस्ट्री बंद है",
@@ -1468,7 +1468,7 @@ var hindi = &i18n.Catalog{
 		"Open in Images":                  "इमेज में खोलें",
 		"Platform":                        "प्लेटफ़ॉर्म",
 		"Prune local registry?":           "लोकल रजिस्ट्री साफ़ करें?",
-		"Push from Images → Docker → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "इमेज → Docker → लोकल रजिस्ट्री में पुश करें से पुश करें, या docker push %s/myapp:dev चलाएँ। बिना टैग किए k3s में एक बार लोड करने के लिए, \"क्लस्टर में लोड करें\" का उपयोग करें।",
+		"Push from Images → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.": "इमेज → लोकल रजिस्ट्री में पुश करें से पुश करें, या docker push %s/myapp:dev चलाएँ। बिना टैग किए k3s में एक बार लोड करने के लिए, \"क्लस्टर में लोड करें\" का उपयोग करें।",
 		"Push to local registry":                          "लोकल रजिस्ट्री में पुश करें",
 		"Reading local registry…":                         "लोकल रजिस्ट्री पढ़ी जा रही है…",
 		"Refresh local registry":                          "लोकल रजिस्ट्री रीफ़्रेश करें",
@@ -1487,6 +1487,13 @@ var hindi = &i18n.Catalog{
 		"Unreferenced manifests and blobs in the local registry are deleted.":                  "लोकल रजिस्ट्री में बिना संदर्भ वाले मेनिफ़ेस्ट और ब्लॉब मिटा दिए जाएँगे।",
 		"Unreferenced manifests and blobs in the local registry are deleted (%s reclaimable).": "लोकल रजिस्ट्री में बिना संदर्भ वाले मेनिफ़ेस्ट और ब्लॉब मिटा दिए जाएँगे (%s वापस पाया जा सकता है)।",
 		"Updated": "अपडेट किया गया",
+
+		// Unified cached images view in Sandbox Engine mode.
+		". Shared by GVX sandboxes and Docker; layers are read-only EROFS files.": "। GVX सैंडबॉक्स और Docker द्वारा साझा; लेयर केवल-पढ़ने योग्य EROFS फ़ाइलें हैं।",
+		"Cached Images": "कैश्ड इमेज",
+		"Used by %s. Sandboxes pull it again at their next start; force removing untags or deletes the image from the cache (%s).": "%s द्वारा उपयोग में है। सैंडबॉक्स अगली बार शुरू होने पर इसे फिर से पुल कर लेंगे; ज़बरदस्ती हटाने से कैश से इमेज का टैग हट जाएगा या वह मिट जाएगी (%s)।",
+		"Used by running container %s. Stop it first before removing this image.":                                                  "चल रहे कंटेनर %s द्वारा उपयोग में है। इस इमेज को हटाने से पहले उसे रोकें।",
+		"Used by sandbox %s. Remove it from Cached Images if you want to re-pull it later.":                                        "सैंडबॉक्स %s द्वारा उपयोग में है। यदि बाद में दोबारा पुल करना है, तो इसे कैश्ड इमेज से हटाएँ।",
 	},
 	Plurals: map[string]i18n.Forms{
 		"%d custom": {One: "%d कस्टम", Other: "%d कस्टम"},

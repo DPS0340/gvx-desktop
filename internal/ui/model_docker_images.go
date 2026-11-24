@@ -199,6 +199,17 @@ func dockerImageUsers(containers []dockerapi.Container, row DockerImageRow) []st
 	return names
 }
 
+// dockerImageRunningUsers returns the names of running containers referencing row.
+func dockerImageRunningUsers(containers []dockerapi.Container, row DockerImageRow) []string {
+	var running []dockerapi.Container
+	for _, c := range containers {
+		if strings.EqualFold(c.State, "running") {
+			running = append(running, c)
+		}
+	}
+	return dockerImageUsers(running, row)
+}
+
 // sandboxImageUsers returns the names of user sandboxes referencing row.
 // Sandboxes run only native host-architecture images, so foreign-arch rows
 // never match.
@@ -355,7 +366,7 @@ func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 		if sbs := sandboxImageUsers(ggui.Peek(m.Rows), img); len(sbs) > 0 {
 			m.Toasts.Push(ui.Toast(
 				tr("Cannot remove %s", ref),
-				tr("Used by sandbox %s. Remove it from the GVX Sandboxes tab instead if you want to re-pull it later.", strings.Join(sbs, ", ")),
+				tr("Used by sandbox %s. Remove it from Cached Images if you want to re-pull it later.", strings.Join(sbs, ", ")),
 			).Warning().Duration(8 * time.Second))
 			return
 		}
@@ -395,6 +406,112 @@ func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 			}
 		})
 	})
+}
+
+// AskRemoveCachedImage confirms and removes an image from the unified shared
+// image cache in Sandbox Engine mode. Images referenced only by containers or
+// foreign-arch namespaces go through the Docker API; images also referenced by
+// GVX sandboxes warn explicitly and remove via rungv's cache (unless a running
+// Docker container currently uses them).
+func (m *Model) AskRemoveCachedImage(img DockerImageRow) {
+	sbs := sandboxImageUsers(ggui.Peek(m.Rows), img)
+	if len(sbs) == 0 {
+		m.AskRemoveDockerImage(img)
+		return
+	}
+	ref := img.Ref()
+	busyKey := "dimg:" + img.Key()
+	if m.isBusy(busyKey) {
+		return
+	}
+	ctrs := ggui.Peek(m.DockerContainers).Items
+	if running := dockerImageRunningUsers(ctrs, img); len(running) > 0 {
+		m.Toasts.Push(ui.Toast(
+			tr("Cannot remove %s", ref),
+			tr("Used by running container %s. Stop it first before removing this image.", strings.Join(running, ", ")),
+		).Warning().Duration(8 * time.Second))
+		return
+	}
+	ctrUsers := dockerImageUsers(ctrs, img)
+	var text string
+	if len(ctrUsers) > 0 {
+		allUsers := slices.Clone(sbs)
+		for _, cu := range ctrUsers {
+			if !slices.Contains(allUsers, cu) {
+				allUsers = append(allUsers, cu)
+			}
+		}
+		text = tr("Used by %s. Sandboxes pull it again at their next start; force removing untags or deletes the image from the cache (%s).", strings.Join(allUsers, ", "), formatBytes(img.Size))
+	} else {
+		text = tr("Used by %s. They pull it again at their next start.", strings.Join(sbs, ", ")) + " " +
+			tr("The image record is removed and layers no other image uses are deleted (%s).", formatBytes(img.Size))
+	}
+	m.Confirm(tr("Remove %s?", ref), text, tr("Remove image"), func() {
+		if m.isBusy(busyKey) {
+			return
+		}
+		m.setBusy(busyKey, true)
+		c := m.Client()
+		m.async(func(ctx context.Context) error {
+			return c.RemoveImage(ctx, img.Target(), true)
+		}, func(err error) {
+			m.setBusy(busyKey, false)
+			if err != nil {
+				m.toastError(tr("Could not remove %s", ref), err)
+			} else {
+				m.toastOK(tr("Removed %s", ref), "")
+			}
+			m.LoadImages()
+			m.LoadDockerImages()
+			m.LoadDocker()
+			m.LoadDisk()
+		})
+	})
+}
+
+// AskPruneCachedImages prunes dangling images from the unified shared image
+// cache in Sandbox Engine mode, preferring the Sandbox Engine's prune endpoint
+// (which protects user sandboxes, containers, and builder images) when open.
+func (m *Model) AskPruneCachedImages() {
+	if !ggui.Peek(m.ContainersOpen) {
+		m.AskPruneImages()
+		return
+	}
+	const busyKey = "dimg:prune"
+	if m.isBusy(busyKey) {
+		return
+	}
+	m.Confirm(tr("Remove unused images?"),
+		tr("Dangling images and orphaned layer files are deleted."),
+		tr("Prune images"), func() {
+			if m.isBusy(busyKey) {
+				return
+			}
+			m.setBusy(busyKey, true)
+			host := m.dockerBackendHost()
+			var res dockerapi.PruneResult
+			m.async(func(ctx context.Context) error {
+				c, err := dockerapi.New(host)
+				if err != nil {
+					return err
+				}
+				defer c.Close()
+				ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				defer cancel()
+				res, err = c.PruneImages(ctx, false)
+				return err
+			}, func(err error) {
+				m.setBusy(busyKey, false)
+				if err != nil {
+					m.toastError(tr("Prune failed"), err)
+				} else {
+					m.toastOK(tr("Images pruned"), tr("Reclaimed %s.", formatBytes(res.SpaceReclaimed)))
+				}
+				m.LoadDockerImages()
+				m.LoadImages()
+				m.LoadDisk()
+			})
+		})
 }
 
 // AskPruneDockerImages removes dangling images from the Docker Engine.

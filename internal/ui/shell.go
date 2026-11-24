@@ -533,10 +533,7 @@ func pullDialog(m *Model) ggui.Widget {
 		return ui.CodeBlockOf(m.PullLog).Height(180).Small().CopyButton(false)
 	})
 	heading := ui.HeadingOf(ggui.Combine(m.PullTarget, m.Settings, func(t int, s storeSettings) string {
-		if t == PullTargetDocker {
-			if s.SandboxEngine {
-				return tr("Pull an image into Docker")
-			}
+		if t == PullTargetDocker && !s.SandboxEngine {
 			return tr("Pull an image into Docker Engine")
 		}
 		return tr("Pull an image")
@@ -715,19 +712,35 @@ func palette(m *Model) ggui.Widget {
 		if st.sandboxEngine {
 			dockerAction = ui.CommandItem(tr("Open Docker"), close(m.OpenDocker)).Icon(ic(dockerIcon)).Group(tr("Recipes")).Keywords("docker engine sandbox")
 		}
+		imagesNav := []ui.CommandEntry{
+			ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Shortcut("cmd+3").Keywords("docker images rmi pull cache"),
+		}
+		if !st.sandboxEngine {
+			imagesNav = []ui.CommandEntry{
+				ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Shortcut("cmd+3"),
+				ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Keywords("docker images rmi pull"),
+			}
+		}
 		out := []ui.CommandEntry{
 			ui.CommandItem(tr("New sandbox"), close(func() { m.NewSandbox("") })).Icon(ic(lucide.Plus)).Group(tr("Sandboxes")).Shortcut("cmd+n").Keywords("create run"),
 			ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Icon(ic(lucide.Square)).Group(tr("Sandboxes")).Disabled(st.active == 0),
 			ui.CommandItem(tr("Pull image"), close(func() { m.OpenPull("") })).Icon(ic(lucide.Download)).Group(tr("Images")).Shortcut("cmd+shift+p").Keywords("download"),
-			ui.CommandItem(tr("Prune images"), close(m.AskPruneImages)).Icon(ic(lucide.Eraser)).Group(tr("Images")).Keywords("clean unused"),
+			ui.CommandItem(tr("Prune images"), close(func() {
+				if ggui.Peek(m.Settings).SandboxEngine {
+					m.AskPruneCachedImages()
+				} else {
+					m.AskPruneImages()
+				}
+			})).Icon(ic(lucide.Eraser)).Group(tr("Images")).Keywords("clean unused"),
 			dockerAction,
 			ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Icon(ic(lucide.ShipWheel)).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
 			ui.CommandItem(tr("Create volume"), close(m.OpenVolumeDialog)).Icon(ic(lucide.HardDrive)).Group(tr("Volumes")),
 			ui.CommandItem(tr("Prune volumes"), close(m.AskPruneVolumes)).Icon(ic(lucide.Eraser)).Group(tr("Volumes")).Keywords("clean unused"),
 			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Icon(ic(lucide.LayoutDashboard)).Group(tr("Go to")).Shortcut("cmd+1"),
 			ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Icon(ic(lucide.Box)).Group(tr("Go to")).Shortcut("cmd+2"),
-			ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Shortcut("cmd+3"),
-			ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Keywords("docker images rmi pull"),
+		}
+		out = append(out, imagesNav...)
+		out = append(out,
 			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Icon(ic(lucide.HardDrive)).Group(tr("Go to")).Shortcut("cmd+4"),
 			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Icon(ic(lucide.Camera)).Group(tr("Go to")).Shortcut("cmd+5"),
 			ui.CommandItem("Docker", close(func() { m.Go(PageDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Shortcut("cmd+6").Keywords("docker engine dind dockerd"),
@@ -740,7 +753,7 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Icon(ic(lucide.Waypoints)).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!st.pods),
 			ui.CommandItem(tr("Local registry"), close(m.OpenRegistry)).Icon(ic(lucide.Warehouse)).Group(tr("Go to")).Keywords("registry local push images cluster 5001"),
 			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Icon(ic(lucide.Settings)).Group(tr("Go to")).Shortcut("cmd+,"),
-		}
+		)
 		if LabsSupported() {
 			out = append(out, ui.CommandItem(tr("Labs"), close(func() { m.Go(PageLabs) })).Icon(ic(lucide.FlaskConical)).Group(tr("Go to")))
 		}

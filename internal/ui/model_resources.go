@@ -114,7 +114,11 @@ func (m *Model) Pull() {
 				return
 			}
 			m.PullOpen.Set(false)
-			m.toastOK(tr("Pulled %s", ref), tr("The image is ready in the Docker Engine."))
+			if ggui.Peek(m.Settings).SandboxEngine {
+				m.toastOK(tr("Pulled %s", ref), tr("The image layers are compiled to EROFS and cached."))
+			} else {
+				m.toastOK(tr("Pulled %s", ref), tr("The image is ready in the Docker Engine."))
+			}
 			m.LoadDockerImages()
 			if ggui.Peek(m.Settings).SandboxEngine {
 				m.LoadImages()
@@ -866,7 +870,8 @@ func (m *Model) followDocker() {
 		}
 		switch m.Page.Get() {
 		case PageImages:
-			if m.ImageView.Get() == ImagesDocker {
+			v := m.ImageView.Get()
+			if v == ImagesDocker || (m.Settings.Get().SandboxEngine && v != ImagesRegistry) {
 				return 3 * time.Second
 			}
 			return 0

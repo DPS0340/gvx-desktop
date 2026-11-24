@@ -33,7 +33,7 @@ func serviceLBPorts() []string {
 
 // k3sCommand is the server's command line. traefik is always off, and
 // ServiceLB is unless serviceLB says otherwise. Its nodes pull the images
-// of the image registry recipe as registries.yaml says.
+// of the local image registry as registries.yaml says.
 func k3sCommand(serviceLB bool) string {
 	disable := "traefik,servicelb"
 	if serviceLB {

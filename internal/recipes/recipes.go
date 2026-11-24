@@ -1,6 +1,5 @@
 // Package recipes holds presets for the workloads gvx documents: a Docker
-// Engine (docker:dind), a Kubernetes node (rancher/k3s), and an image
-// registry (registry:2) between the two.
+// Engine (docker:dind) and a Kubernetes node (rancher/k3s).
 package recipes
 
 import (
@@ -285,18 +284,6 @@ func All() []Recipe {
 				"Cluster state persists in the k3s volume",
 			},
 			New: KubernetesNode,
-		},
-		{
-			Key:     Registry,
-			Title:   "Image registry",
-			Summary: "A registry on this computer: push images from the Docker Engine, and run them in the cluster.",
-			Image:   RegistryImage,
-			Highlights: []string{
-				"Push to host.docker.internal:5001 from the Docker Engine",
-				"Pods pull localhost:5001/NAME:TAG and host.docker.internal:5001/NAME:TAG",
-				"Images persist in the gvx-registry volume",
-			},
-			New: ImageRegistry,
 		},
 	}
 }

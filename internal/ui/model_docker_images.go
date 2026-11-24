@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"slices"
 	"strings"
@@ -14,13 +15,16 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
+	"github.com/ironpark/gvx-desktop/internal/store"
 )
 
 // The views of the Images page: gvx's own EROFS layer cache for sandboxes,
-// and the images stored inside the Docker Engine sandbox.
+// the images stored inside the Docker Engine, and the built-in local OCI
+// registry.
 const (
 	ImagesGVX = iota
 	ImagesDocker
+	ImagesRegistry
 )
 
 // The targets of the pull dialog: gvx's image cache, or the Docker Engine.
@@ -258,7 +262,7 @@ func dockerImagesTotalSize(images []dockerapi.Image) int64 {
 	return total
 }
 
-// GoImages opens the Images page on a view (ImagesGVX or ImagesDocker).
+// GoImages opens the Images page on a view (ImagesGVX, ImagesDocker, or ImagesRegistry).
 func (m *Model) GoImages(view int) {
 	m.ImageView.Set(view)
 	m.Go(PageImages)
@@ -452,38 +456,61 @@ func RegistryRef(img DockerImageRow) string {
 	return recipes.RegistryHost() + "/" + registryPath(img.Repository) + ":" + img.Tag
 }
 
-// PushToRegistry tags an image of the Docker Engine for the image registry
-// recipe and pushes it there, for the cluster to run. While the registry is
-// not running it offers to start it instead.
+// PushToRegistry tags an image of the Docker Engine for the local registry
+// (or an active legacy registry:2 sandbox) and pushes it there for the cluster
+// and local tools. When the built-in local registry is turned off, it offers a
+// one-click confirmation to enable it and push immediately.
 func (m *Model) PushToRegistry(img DockerImageRow) {
 	if !img.Pullable() {
 		return
 	}
-	row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Registry)
-	switch {
-	case !ok:
-		m.Offer(tr("Set up the image registry?"),
-			tr("Images reach the cluster through a registry on this computer, which runs in a sandbox of its own. Set it up and start it, then push again once it is ready."),
-			tr("Set up and start"), func() { m.CreateFromRecipe(recipes.Registry) })
-		return
-	case row.State.Status == sandbox.Starting:
-		m.Toasts.Push(ui.Toast(tr("The image registry is starting"), tr("Push again once it is ready.")).Info())
-		return
-	case row.State.Status == sandbox.Running && row.State.Paused:
-		m.Offer(tr("Resume the image registry?"),
-			tr("Images reach the cluster through the registry, which is paused. Resume it, then push again."),
-			tr("Resume"), func() { m.ResumeSandbox(row.Spec.ID) })
-		return
-	case row.State.Status != sandbox.Running:
-		m.Offer(tr("Start the image registry?"),
-			tr("Images reach the cluster through the registry, which is not running. Start it, then push again once it is ready."),
-			tr("Start"), func() { m.StartSandbox(row.Spec.ID) })
+	if row, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Registry); ok && row.State.Status.Active() {
+		switch {
+		case row.State.Status == sandbox.Starting:
+			m.Toasts.Push(ui.Toast(tr("The image registry is starting"), tr("Push again once it is ready.")).Info())
+			return
+		case row.State.Paused:
+			m.Offer(tr("Resume the image registry?"),
+				tr("Images reach the cluster through the registry, which is paused. Resume it, then push again."),
+				tr("Resume"), func() { m.ResumeSandbox(row.Spec.ID) })
+			return
+		case row.State.Status == sandbox.Running:
+			m.pushImageToRegistry(img, false)
+			return
+		}
 		return
 	}
+
+	st := ggui.Peek(m.LocalRegistry)
+	mode := ggui.Peek(m.Settings).LocalRegistryMode()
+	if mode == store.LocalRegistryOff && !st.Running {
+		m.Offer(
+			tr("Enable local registry?"),
+			tr("The built-in local registry is turned off. Enable it on %s and push %s now?", recipes.RegistryLocal(), img.Ref()),
+			tr("Enable and push"),
+			func() {
+				m.SetLocalRegistryMode(store.LocalRegistryAuto)
+				m.pushImageToLocalRegistry(img)
+			},
+		)
+		return
+	}
+	m.pushImageToLocalRegistry(img)
+}
+
+func (m *Model) pushImageToLocalRegistry(img DockerImageRow) {
+	m.pushImageToRegistry(img, true)
+}
+
+func (m *Model) pushImageToRegistry(img DockerImageRow, builtin bool) {
 	ref := RegistryRef(img)
 	repo, tag := splitRepoTag(ref)
 	title := tr("Pushing %s", img.Ref())
 	toast := m.Toasts.Push(ui.Toast(title, tr("To %s, through the Docker Engine…", recipes.RegistryHost())).Loading())
+	offline := m.Offline
+	if offline && m.dockerBackend == "" {
+		return
+	}
 	// The last line of the push's progress shows in its toast.
 	var mu sync.Mutex
 	var last string
@@ -497,6 +524,11 @@ func (m *Model) PushToRegistry(img DockerImageRow) {
 	}
 	host := m.dockerBackendHost()
 	m.async(func(ctx context.Context) error {
+		if builtin && !offline {
+			if err := m.ensureLocalRegistryStarted(); err != nil {
+				return errors.New(tr("Could not start on %s: %s", recipes.RegistryLocal(), err.Error()))
+			}
+		}
 		c, err := dockerapi.New(host)
 		if err != nil {
 			return err
@@ -519,9 +551,17 @@ func (m *Model) PushToRegistry(img DockerImageRow) {
 		if err != nil {
 			m.Toasts.Update(toast, ui.Toast(tr("Could not push %s", img.Ref()), err.Error()).Error().Duration(10*time.Second))
 		} else {
-			m.Toasts.Update(toast, ui.Toast(tr("Pushed %s", img.Ref()), tr("Pods run it as %s.", ref)).Success().Duration(12*time.Second).
-				Action(tr("Copy reference"), func() { m.Copy(ref, ref) }))
+			done := ui.Toast(tr("Pushed %s", img.Ref()), tr("Pods run it as %s.", ref)).Success().Duration(12 * time.Second)
+			if builtin {
+				done = done.Action(tr("Open Local Registry"), m.OpenRegistry)
+			} else {
+				done = done.Action(tr("Copy reference"), func() { m.Copy(ref, ref) })
+			}
+			m.Toasts.Update(toast, done)
 		}
 		m.LoadDockerImages()
+		if builtin {
+			m.LoadLocalRegistry()
+		}
 	})
 }

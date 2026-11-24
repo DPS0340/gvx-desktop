@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image/color"
 	"runtime"
 	"slices"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
+	"github.com/ironpark/gvx-desktop/internal/store"
 )
 
 // settingRow is one setting: what it is and what it does at the left, its
@@ -137,6 +139,7 @@ func settingsPage(m *Model) ggui.Widget {
 		),
 		dockerSettings(m),
 		kubeSettings(m),
+		localRegistrySettings(m),
 		rungvSettings(m, path, cache),
 		appUpdateSettings(m),
 		settingsGroup(lucide.Download, tr("rungv updates"),
@@ -599,7 +602,7 @@ func dockerConfigDialog(m *Model) ggui.Widget {
 	field := ui.TextField(m.DockerConfigText).NoWrap().Lines(16).Name(tr("daemon.json")).
 		OnChange(func(string) { m.DockerConfigErr.Set("") })
 	return ui.Dialog(m.DockerConfigOpen, widget.Column(
-		ui.Caption(tr("Saved to %s. %s stays among the insecure registries, so the engine can push to the image registry recipe.", tildePath(recipes.DockerConfigFile()), recipes.RegistryHost())),
+		ui.Caption(tr("Saved to %s. %s stays among the insecure registries, so the engine can push to the built-in local registry.", tildePath(recipes.DockerConfigFile()), recipes.RegistryHost())),
 		field,
 		errText,
 		ui.Caption(tr("dockerd applies debug, labels, registry-mirrors, insecure-registries, max-concurrent-downloads and a few more on the fly; any other change takes a restart of the engine.")),
@@ -1049,6 +1052,100 @@ func kubeSettings(m *Model) ggui.Widget {
 				recipes.ServiceLBHTTPPort, recipes.ServiceLBHTTPSPort),
 			ui.Switch(serviceLB, "").Name(tr("Service load balancer"))),
 	)
+}
+
+func localRegistryModeName(mode string) string {
+	switch mode {
+	case store.LocalRegistryOn:
+		return tr("Always on")
+	case store.LocalRegistryOff:
+		return tr("Off")
+	default:
+		return tr("Auto")
+	}
+}
+
+func localRegistryShortModeName(mode string) string {
+	switch mode {
+	case store.LocalRegistryOn:
+		return tr("On")
+	case store.LocalRegistryOff:
+		return tr("Off")
+	default:
+		return tr("Auto")
+	}
+}
+
+// localRegistrySettings configures GVX Desktop's built-in local OCI image
+// registry mode and displays its status and storage usage.
+func localRegistrySettings(m *Model) ggui.Widget {
+	mode := ggui.Bind(func() string {
+		return m.Settings.Get().LocalRegistryMode()
+	}, m.SetLocalRegistryMode)
+	modeRow := settingRow(
+		tr("Built-in OCI registry"),
+		tr("Auto runs the local registry on %s whenever Docker or Kubernetes is active. Pods pull from %s.", recipes.RegistryLocal(), recipes.RegistryHost()),
+		ui.ToggleGroup(mode).
+			Options([]string{store.LocalRegistryAuto, store.LocalRegistryOn, store.LocalRegistryOff}).
+			Format(localRegistryModeName).
+			Outline().Spacing(0).
+			Name(tr("Built-in OCI registry")),
+	)
+	type statusView struct {
+		st        LocalRegistryState
+		mode      string
+		busyPrune bool
+	}
+	sv := ggui.Derived(func() statusView {
+		return statusView{
+			st:        m.LocalRegistry.Get(),
+			mode:      m.Settings.Get().LocalRegistryMode(),
+			busyPrune: m.BusyOps.Get()["lreg:prune"],
+		}
+	})
+	statusRow := ggui.View(sv, func(v statusView) ggui.Widget {
+		st := v.st
+		var dotColor color.Color = colorGray
+		stateText := tr("Stopped · starts automatically with Docker or Kubernetes")
+		switch {
+		case st.LegacyActive:
+			dotColor = colorAmber
+			if st.LegacyPaused {
+				stateText = tr("Legacy registry sandbox (paused)")
+			} else {
+				stateText = tr("Served by legacy registry sandbox on %s.", recipes.RegistryLocal())
+			}
+		case st.Err != "":
+			dotColor = colorRed
+			stateText = tr("Could not start on %s: %s", recipes.RegistryLocal(), st.Err)
+		case st.Running:
+			dotColor = colorGreen
+			stateText = tr("Running on %s", recipes.RegistryLocal())
+		case v.mode == store.LocalRegistryOff:
+			dotColor = colorGray
+			stateText = tr("Off")
+		}
+		storageText := tr("%d images · %s on disk", st.ImageCount, formatBytes(st.TotalBytes))
+		if st.ReclaimableBytes > 0 {
+			storageText = tr("%d images · %s on disk · %s reclaimable", st.ImageCount, formatBytes(st.TotalBytes), formatBytes(st.ReclaimableBytes))
+		}
+		var actions []ggui.Widget
+		if st.Err != "" {
+			actions = append(actions, ui.Button(tr("Retry"), m.RetryLocalRegistry).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.RefreshCw, 14)))
+		}
+		if st.ReclaimableBytes > 0 {
+			actions = append(actions, ui.Button(tr("Prune"), m.AskPruneLocalRegistry).Outline().Size(ui.ButtonSmall).Disabled(v.busyPrune))
+		}
+		actions = append(actions, ui.Button(tr("Open in Images"), m.OpenRegistry).Outline().Size(ui.ButtonSmall))
+		return widget.Row(
+			widget.Expanded(widget.Column(
+				widget.Row(dot(dotColor, 7), widget.Expanded(widget.Text(stateText).Size(13).Weight(ggui.WeightMedium))).Gap(8).Align(widget.AlignCenter),
+				ui.Caption(storageText).Size(12),
+			).Gap(3).Stretch()),
+			widget.Row(actions...).Gap(8).Align(widget.AlignCenter),
+		).Gap(16).Align(widget.AlignCenter)
+	})
+	return settingsGroup(lucide.Warehouse, tr("Local registry"), modeRow, statusRow)
 }
 
 // dockerEndpointName words an endpoint of the Docker Engine's API.

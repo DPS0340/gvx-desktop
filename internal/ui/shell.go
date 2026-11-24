@@ -151,15 +151,7 @@ func LabsSupported() bool {
 // sidebarFor is the sidebar with Docker's Networks/Containers and
 // Kubernetes's Pods/Workloads/Services nested under their engine while it runs.
 func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
-	// The image registry has no page of its own: its entry opens its
-	// sandbox, or offers to set it up.
-	nav := ggui.Bind(m.Page.Get, func(key string) {
-		if key == navRegistry {
-			m.OpenRegistry()
-			return
-		}
-		m.Go(key)
-	})
+	nav := ggui.Bind(m.Page.Get, m.Go)
 	item := func(key, label string, g *icons.Glyph) ui.SidebarEntry {
 		return ui.SidebarItem(key, label).Leading(glyph(g, 16)).Tooltip(label)
 	}
@@ -199,8 +191,6 @@ func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
 		ui.SidebarSeparator(),
 		docker,
 		kube,
-		ui.SidebarSection(tr("Recipes")),
-		item(navRegistry, tr("Image registry"), recipeIcon(recipes.Registry)),
 	}
 	brandTop := 4.0
 	if TitlebarHidden {
@@ -732,7 +722,6 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Prune images"), close(m.AskPruneImages)).Icon(ic(lucide.Eraser)).Group(tr("Images")).Keywords("clean unused"),
 			dockerAction,
 			ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Icon(ic(lucide.ShipWheel)).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
-			ui.CommandItem(tr("Start the image registry"), close(func() { m.CreateFromRecipe(recipes.Registry); m.OpenRecipe(recipes.Registry) })).Icon(ic(recipeIcon(recipes.Registry))).Group(tr("Recipes")).Keywords("registry push images cluster"),
 			ui.CommandItem(tr("Create volume"), close(m.OpenVolumeDialog)).Icon(ic(lucide.HardDrive)).Group(tr("Volumes")),
 			ui.CommandItem(tr("Prune volumes"), close(m.AskPruneVolumes)).Icon(ic(lucide.Eraser)).Group(tr("Volumes")).Keywords("clean unused"),
 			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Icon(ic(lucide.LayoutDashboard)).Group(tr("Go to")).Shortcut("cmd+1"),
@@ -749,7 +738,7 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Pods"), close(func() { m.GoKube(KubePods) })).Icon(ic(lucide.Hexagon)).Group(tr("Go to")).Shortcut("cmd+9").Keywords("kubectl get pods k8s").Disabled(!st.pods),
 			ui.CommandItem(tr("Workloads"), close(func() { m.GoKube(KubeWorkloads) })).Icon(ic(lucide.Boxes)).Group(tr("Go to")).Keywords("k8s deployments statefulsets daemonsets jobs").Disabled(!st.pods),
 			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Icon(ic(lucide.Waypoints)).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!st.pods),
-			ui.CommandItem(tr("Image registry"), close(m.OpenRegistry)).Icon(ic(recipeIcon(recipes.Registry))).Group(tr("Go to")).Keywords("registry"),
+			ui.CommandItem(tr("Local registry"), close(m.OpenRegistry)).Icon(ic(lucide.Warehouse)).Group(tr("Go to")).Keywords("registry local push images cluster 5001"),
 			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Icon(ic(lucide.Settings)).Group(tr("Go to")).Shortcut("cmd+,"),
 		}
 		if LabsSupported() {
@@ -809,6 +798,7 @@ func (m *Model) RefreshAll() {
 	m.DetectEngine(nil)
 	m.LoadDocker()
 	m.LoadDockerImages()
+	m.LoadLocalRegistry()
 	m.LoadPods()
 	switch ggui.Peek(m.Page) {
 	case PageContainers:

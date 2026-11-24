@@ -15,6 +15,13 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
+// Local registry modes for Settings.LocalRegistry.
+const (
+	LocalRegistryAuto = "auto" // default: runs automatically while Docker or Kubernetes is active
+	LocalRegistryOn   = "on"   // always running while GVX Desktop is open
+	LocalRegistryOff  = "off"  // disabled
+)
+
 // Settings are the app's preferences.
 type Settings struct {
 	RungvPath      string `json:"rungvPath,omitempty"` // empty: locate automatically
@@ -78,6 +85,23 @@ type Settings struct {
 	// at /run/host-services/ssh-auth.sock via rungv v0.21+ --unix-forward
 	// (opt-in; defaults to false).
 	DockerSSHAgent bool `json:"docker_ssh_agent,omitempty"`
+	// LocalRegistry controls the built-in OCI image registry on 127.0.0.1:5001:
+	// "auto" (default: starts automatically when Docker or Kubernetes is used),
+	// "on" (always running), or "off" (disabled).
+	LocalRegistry string `json:"localRegistry,omitempty"`
+}
+
+// LocalRegistryMode returns the normalized local registry mode
+// (LocalRegistryAuto, LocalRegistryOn, or LocalRegistryOff).
+func (s Settings) LocalRegistryMode() string {
+	switch s.LocalRegistry {
+	case LocalRegistryOn:
+		return LocalRegistryOn
+	case LocalRegistryOff:
+		return LocalRegistryOff
+	default:
+		return LocalRegistryAuto
+	}
 }
 
 // Equal makes Settings comparable for signals, which a list in it keeps

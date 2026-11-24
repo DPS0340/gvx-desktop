@@ -14,12 +14,12 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
-// Registry is the key of the image registry recipe.
+// Registry is the key of the legacy image registry sandbox recipe.
 const Registry = "registry"
 
-// The image registry recipe runs registry:2 with its images in the volume
-// gvx-registry, published on this computer's port 5001: 5000 is AirPlay's
-// on macOS.
+// RegistryPort is this computer's port (5001, since 5000 is AirPlay's on macOS)
+// used by GVX Desktop's built-in local OCI image registry as well as the legacy
+// registry:2 sandbox recipe (which stores its images in the gvx-registry volume).
 const (
 	RegistryImage     = "registry:2"
 	RegistryVolume    = "gvx-registry"
@@ -28,7 +28,7 @@ const (
 )
 
 // A guest reaches this computer's loopback address as host.docker.internal,
-// and its own as localhost. So the registry is
+// and its own as localhost. So the local registry is
 //
 //   - host.docker.internal:5001 to the Docker Engine, which pushes to it,
 //     and to the cluster's nodes, which pull from it;
@@ -38,14 +38,16 @@ const (
 // The cluster reaches it over plain HTTP, and the engine is told to push to
 // it so.
 
-// RegistryHost is the registry as sandboxes name it.
+// RegistryHost is the local registry as sandboxes name it.
 func RegistryHost() string { return fmt.Sprintf("host.docker.internal:%d", RegistryPort) }
 
-// RegistryLocal is the registry as this computer names it.
+// RegistryLocal is the local registry as this computer names it.
 func RegistryLocal() string { return fmt.Sprintf("localhost:%d", RegistryPort) }
 
-// ImageRegistry runs a registry that the Docker Engine pushes images built
-// on this computer to and the cluster pulls them from.
+// ImageRegistry builds a spec for the legacy registry:2 sandbox recipe.
+// GVX Desktop's built-in local OCI registry now serves the same port (5001),
+// so ImageRegistry is omitted from All() and kept for backwards compatibility
+// with existing saved registry sandboxes.
 func ImageRegistry() sandbox.Spec {
 	return sandbox.Spec{
 		ID:           sandbox.NewID(),
@@ -70,13 +72,14 @@ const registriesFile = "/output/registries.yaml"
 // privateRegistry is the k3s flag that names the file.
 func privateRegistry() string { return "--private-registry=" + registriesFile }
 
-// RegistriesYAML is the node's registries.yaml: both names of the registry
-// lead to it over HTTP. It does nothing while the registry is not running
-// but fail the pulls of its images.
+// RegistriesYAML is the node's registries.yaml: both names of GVX Desktop's
+// built-in local OCI registry (serving port 5001) lead to it over HTTP.
+// It does nothing while the registry is not running but fail the pulls of
+// its images.
 func RegistriesYAML() string {
 	endpoint := "http://" + RegistryHost()
 	var b strings.Builder
-	b.WriteString("# Written by GVX Desktop at each start of the cluster: the image registry\n# recipe, as the cluster's nodes reach it.\nmirrors:\n")
+	b.WriteString("# Written by GVX Desktop at each start of the cluster: the local image\n# registry, as the cluster's nodes reach it.\nmirrors:\n")
 	for _, name := range []string{RegistryLocal(), RegistryHost()} {
 		fmt.Fprintf(&b, "  %q:\n    endpoint:\n      - %q\n", name, endpoint)
 	}

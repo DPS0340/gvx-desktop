@@ -79,7 +79,7 @@ func parseDockerConfig[V any](data []byte) (map[string]V, error) {
 }
 
 // NormalizeDockerConfig is a daemon.json as the engine's sandbox needs it:
-// with the image registry recipe among its insecure registries, unless
+// with the local image registry among its insecure registries, unless
 // the command line names them. It returns data itself when nothing is
 // missing, so the user's own layout stays.
 func NormalizeDockerConfig(spec sandbox.Spec, data []byte) ([]byte, error) {

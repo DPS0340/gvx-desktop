@@ -14,7 +14,15 @@ import (
 )
 
 func TestRecipesValidate(t *testing.T) {
-	for _, r := range All() {
+	all := All()
+	wantKeys := []string{Docker, Kubernetes}
+	if len(all) != len(wantKeys) {
+		t.Fatalf("len(All()) = %d, want %d", len(all), len(wantKeys))
+	}
+	for i, r := range all {
+		if r.Key != wantKeys[i] {
+			t.Errorf("All()[%d].Key = %q, want %q", i, r.Key, wantKeys[i])
+		}
 		if err := r.New().Validate(); err != nil {
 			t.Errorf("%s: %v", r.Key, err)
 		}

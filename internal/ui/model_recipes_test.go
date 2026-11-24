@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -256,33 +259,75 @@ func TestOldRecipesAreUpgradedAtLoad(t *testing.T) {
 	}
 }
 
-// Without the registry, pushing offers to set it up, and doing so makes
-// its sandbox.
+// With the built-in local registry turned off, pushing offers a one-click
+// confirmation to enable it and push; in Auto mode it pushes without
+// confirmation; dangling images are ignored.
 func TestPushOffersTheRegistry(t *testing.T) {
 	m, p, st := recipeModel(t)
 	SetLanguage(LangEnglish) // the model speaks the system's
+
+	var mu sync.Mutex
+	var pushCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tag"):
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/push"):
+			mu.Lock()
+			pushCalls++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"status":"Pushed"}` + "\n"))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+	m.dockerBackend = "tcp://" + strings.TrimPrefix(srv.URL, "http://")
+
+	waitPushes := func(want int) {
+		t.Helper()
+		settle(t, p, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return pushCalls >= want
+		}, "mock docker push")
+	}
+
 	img := DockerImageRow{ID: "sha256:1", Repository: "app", Tag: "dev"}
-	m.PushToRegistry(img)
-	if !ggui.Peek(m.ConfirmOpen) || ggui.Peek(m.ConfirmTitle) != "Set up the image registry?" {
-		t.Fatalf("asked %q", ggui.Peek(m.ConfirmTitle))
-	}
-	m.RunConfirmed()
+
+	// Mode Off: offers to enable local registry and push.
+	m.SetLocalRegistryMode(store.LocalRegistryOff)
 	p.Frame()
-	saved, _ := st.Sandboxes()
-	if len(saved) != 1 || saved[0].Recipe != recipes.Registry || saved[0].Image != "registry:2" {
-		t.Fatalf("saved %+v", saved)
+	m.PushToRegistry(img)
+	if !ggui.Peek(m.ConfirmOpen) || ggui.Peek(m.ConfirmTitle) != "Enable local registry?" {
+		t.Fatalf("asked %q, want Enable local registry?", ggui.Peek(m.ConfirmTitle))
 	}
-	// Made, and stopped: pushing offers to start it.
+	m.ConfirmOpen.Set(false)
+	m.RunConfirmed()
+	waitPushes(1)
+	if saved, _ := st.Settings(); saved.LocalRegistryMode() != store.LocalRegistryAuto {
+		t.Fatalf("saved LocalRegistry = %q, want auto", saved.LocalRegistry)
+	}
+
+	// Mode Auto: pushes immediately without confirmation.
 	m.ConfirmOpen.Set(false)
 	m.PushToRegistry(img)
-	if !ggui.Peek(m.ConfirmOpen) || ggui.Peek(m.ConfirmTitle) != "Start the image registry?" {
-		t.Errorf("asked %q", ggui.Peek(m.ConfirmTitle))
+	if ggui.Peek(m.ConfirmOpen) {
+		t.Fatalf("Auto mode unexpectedly asked %q", ggui.Peek(m.ConfirmTitle))
 	}
+	waitPushes(2)
+
 	// A dangling image has nothing to push.
 	m.ConfirmOpen.Set(false)
 	m.PushToRegistry(DockerImageRow{ID: "sha256:2", Repository: "<none>", Tag: "<none>", Dangling: true})
 	if ggui.Peek(m.ConfirmOpen) {
 		t.Error("a dangling image was offered a push")
+	}
+	mu.Lock()
+	gotPushes := pushCalls
+	mu.Unlock()
+	if gotPushes != 2 {
+		t.Errorf("dangling image triggered push: count=%d, want 2", gotPushes)
 	}
 }
 

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 	"time"
 
@@ -12,15 +13,56 @@ import (
 	"github.com/ironpark/ggui/widget"
 
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
+	"github.com/ironpark/gvx-desktop/internal/localreg"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
+	"github.com/ironpark/gvx-desktop/internal/store"
 )
 
 // ---- Images -------------------------------------------------------------
 
 func imagesPage(m *Model) ggui.Widget {
 	header := ggui.View(m.ImageView, func(view int) ggui.Widget {
+		if view == ImagesRegistry {
+			summary := ui.CaptionOf(ggui.Derived(func() string {
+				st := m.LocalRegistry.Get()
+				l := m.LocalRegistryImages.Get()
+				mode := m.Settings.Get().LocalRegistryMode()
+				imgCount := st.ImageCount
+				if imgCount == 0 && len(l.Items) > 0 {
+					imgCount = len(l.Items)
+				}
+				totalBytes := st.TotalBytes
+				if totalBytes == 0 && len(l.Items) > 0 {
+					for _, e := range l.Items {
+						totalBytes += e.Size
+					}
+				}
+				switch {
+				case st.LegacyActive:
+					return tr("Served by legacy registry sandbox on %s.", recipes.RegistryLocal())
+				case st.Err != "":
+					return tr("Could not start on %s: %s", recipes.RegistryLocal(), st.Err)
+				case st.Running:
+					if st.ReclaimableBytes > 0 {
+						return tr("Running on %s · %d images · %s · %s reclaimable", recipes.RegistryLocal(), imgCount, formatBytes(totalBytes), formatBytes(st.ReclaimableBytes))
+					}
+					return tr("Running on %s · %d images · %s", recipes.RegistryLocal(), imgCount, formatBytes(totalBytes))
+				case mode == store.LocalRegistryOff:
+					return tr("Disabled · %d images · %s on disk", imgCount, formatBytes(totalBytes))
+				default:
+					return tr("Stopped · starts automatically with Docker or Kubernetes · %d images · %s", imgCount, formatBytes(totalBytes))
+				}
+			}))
+			return pageHeader(tr("Images"), summary,
+				tip(iconButton(lucide.RefreshCw, tr("Refresh local registry"), m.LoadLocalRegistry), tr("Refresh")),
+				ui.Button(tr("Prune"), m.AskPruneLocalRegistry).Outline().Icon(glyph(lucide.Eraser, 16)).BindDisabled(ggui.Derived(func() bool {
+					return m.BusyOps.Get()["lreg:prune"] || m.LocalRegistry.Get().ReclaimableBytes == 0
+				})),
+				ui.Button(tr("Copy address"), func() { m.Copy(recipes.RegistryLocal(), recipes.RegistryLocal()) }).Outline().Icon(glyph(lucide.Copy, 16)),
+			)
+		}
 		if view == ImagesDocker {
 			summary := ui.CaptionOf(ggui.Derived(func() string {
 				open, l, se := m.ContainersOpen.Get(), m.DockerImages.Get(), m.Settings.Get().SandboxEngine
@@ -64,6 +106,8 @@ func imagesPage(m *Model) ggui.Widget {
 			Header(tabHeader(lucide.Box, tr("GVX Sandboxes"))),
 		ui.Tab("Docker", widget.Padding(dockerImagesView(m), 12, 0, 0, 0)).
 			Header(tabHeader(dockerIcon, "Docker")),
+		ui.Tab(tr("Local Registry"), widget.Padding(localRegistryImagesView(m), 12, 0, 0, 0)).
+			Header(tabHeader(lucide.Warehouse, tr("Local Registry"))),
 	).Name(tr("Image sources"))
 	return page(header, tabs)
 }
@@ -270,8 +314,8 @@ func dockerImagesView(m *Model) ggui.Widget {
 					ui.MenuItem(tr("Browse files"), func() { m.ExploreDockerImage(img, ExploreFiles) }),
 					ui.MenuItem(tr("Inspect"), func() { m.ExploreDockerImage(img, ExploreInspect) }),
 					ui.MenuItem(tr("Pull again"), func() { m.OpenDockerPull(ref); m.Pull() }).Disabled(!img.Pullable()),
-					ui.MenuItem(tr("Push to cluster registry"), func() { m.PushToRegistry(img) }).Disabled(!img.Pullable()),
 					ui.MenuItem(tr("Load into cluster"), func() { m.LoadIntoCluster(img) }).Disabled(!img.Pullable() || img.ForeignArch()),
+					ui.MenuItem(tr("Push to local registry"), func() { m.PushToRegistry(img) }).Disabled(!img.Pullable()),
 					ui.MenuItem(tr("Copy reference"), func() { m.Copy(ref, ref) }),
 					ui.MenuItem(tr("Copy ID"), func() { m.Copy(img.ID, img.ShortID) }),
 				}
@@ -331,6 +375,214 @@ func dockerImagesView(m *Model) ggui.Widget {
 		count := ggui.Combine(visible, all, func(v, a []DockerImageRow) string { return showing(len(v), len(a)) })
 		return tableCard(table.Toolbar(filterBar(m.DockerImageQuery, tr("Filter Docker images"), count)))
 	})
+}
+
+func localRegistryImagesView(m *Model) ggui.Widget {
+	type cardState struct {
+		mode         string
+		running      bool
+		legacyActive bool
+		legacyPaused bool
+		err          string
+	}
+	cs := ggui.Derived(func() cardState {
+		st := m.LocalRegistry.Get()
+		return cardState{
+			mode:         m.Settings.Get().LocalRegistryMode(),
+			running:      st.Running,
+			legacyActive: st.LegacyActive,
+			legacyPaused: st.LegacyPaused,
+			err:          st.Err,
+		}
+	})
+	modeBind := ggui.Bind(func() string {
+		return m.Settings.Get().LocalRegistryMode()
+	}, m.SetLocalRegistryMode)
+
+	endpointPill := func(label, addr string) ggui.Widget {
+		return tip(
+			ui.ButtonOf(widget.Row(
+				ui.Caption(label).Size(11).NoWrap(),
+				ui.Mono(addr).Size(12).NoWrap(),
+				glyph(lucide.Copy, 12).Color(colorGray),
+			).Gap(6).Align(widget.AlignCenter), func() {
+				m.Copy(addr, addr)
+			}).Outline().Size(ui.ButtonExtraSmall).Name(tr("Copy %s", addr)),
+			tr("Copy %s", addr),
+		)
+	}
+
+	statusCard := ggui.View(cs, func(st cardState) ggui.Widget {
+		var dotColor color.Color = colorGray
+		statusTitle := tr("Stopped (starts automatically)")
+		switch {
+		case st.legacyActive:
+			dotColor = colorAmber
+			if st.legacyPaused {
+				statusTitle = tr("Legacy registry sandbox (paused)")
+			} else {
+				statusTitle = tr("Served by legacy registry sandbox")
+			}
+		case st.err != "":
+			dotColor = colorRed
+			statusTitle = tr("Could not start local registry")
+		case st.running:
+			dotColor = colorGreen
+			statusTitle = tr("Running on %s", recipes.RegistryLocal())
+		case st.mode == store.LocalRegistryOff:
+			dotColor = colorGray
+			statusTitle = tr("Local registry is off")
+		}
+
+		var controls []ggui.Widget
+		if st.err != "" {
+			controls = append(controls, ui.Button(tr("Retry"), m.RetryLocalRegistry).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.RefreshCw, 14)))
+		}
+		if st.legacyActive {
+			controls = append(controls, ui.Button(tr("Open sandbox"), func() {
+				if r, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Registry); ok {
+					m.ShowSandbox(r.Spec.ID, connectTab)
+				}
+			}).Outline().Size(ui.ButtonSmall))
+		}
+		controls = append(controls, ui.ToggleGroup(modeBind).
+			Options([]string{store.LocalRegistryAuto, store.LocalRegistryOn, store.LocalRegistryOff}).
+			Format(localRegistryShortModeName).
+			Outline().Size(ui.ButtonSmall).Spacing(0).
+			Name(tr("Local registry mode")))
+
+		rows := []ggui.Widget{
+			widget.Row(
+				dot(dotColor, 8),
+				widget.Expanded(widget.Text(statusTitle).Size(14).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
+				widget.Row(controls...).Gap(8).Align(widget.AlignCenter),
+			).Gap(10).Align(widget.AlignCenter),
+		}
+		if st.err != "" {
+			rows = append(rows, widget.Row(
+				glyph(lucide.TriangleExclamationPoint, 13).Color(colorRed),
+				widget.Expanded(ui.Caption(st.err).Size(12).Color(colorRed)),
+			).Gap(8).Align(widget.AlignStart))
+		} else if st.legacyActive {
+			rows = append(rows, ui.Caption(tr("The built-in registry yields %s while the legacy registry sandbox is active.", recipes.RegistryLocal())).Size(12))
+		}
+		rows = append(rows, widget.Wrap(
+			endpointPill(tr("Host CLI"), recipes.RegistryLocal()),
+			endpointPill(tr("Cluster / Docker"), recipes.RegistryHost()),
+		).Gap(8))
+
+		return ui.Card(widget.Column(rows...).Gap(10).Stretch())
+	})
+
+	visible := ggui.Combine(m.LocalRegistryImages, m.LocalRegistryQuery, func(l Listing[localreg.ImageEntry], q string) []localreg.ImageEntry {
+		return filterLocalRegistryImages(l.Items, q)
+	}).WithEqual(nil)
+
+	table := ui.Table(visible, localreg.ImageEntry.Key,
+		ui.Col(tr("Repository"), func(r ggui.Readable[localreg.ImageEntry]) ggui.Widget {
+			return widget.Row(
+				glyph(lucide.Layers, 16).Color(colorGray),
+				widget.Flexible(widget.TextOf(ggui.Map(r, func(e localreg.ImageEntry) string { return e.Repository })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
+			).Gap(10).Align(widget.AlignCenter)
+		}).Grow(3),
+		ui.Col(tr("Tag"), func(r ggui.Readable[localreg.ImageEntry]) ggui.Widget {
+			return ui.MonoOf(ggui.Map(r, func(e localreg.ImageEntry) string { return e.Tag })).Size(12).NoWrap().Ellipsis()
+		}).Grow(1),
+		ui.Col(tr("Digest"), func(r ggui.Readable[localreg.ImageEntry]) ggui.Widget {
+			return ui.MonoOf(ggui.Map(r, func(e localreg.ImageEntry) string { return e.ShortDigest() })).Size(12)
+		}).W(130),
+		ui.Col(tr("Platform"), func(r ggui.Readable[localreg.ImageEntry]) ggui.Widget {
+			return ui.CaptionOf(ggui.Map(r, func(e localreg.ImageEntry) string {
+				if len(e.Platforms) == 0 {
+					return "—"
+				}
+				return strings.Join(e.Platforms, ", ")
+			})).Size(12).NoWrap().Ellipsis()
+		}).W(140),
+		ui.Col(tr("Updated"), func(r ggui.Readable[localreg.ImageEntry]) ggui.Widget {
+			return ui.CaptionOf(ggui.Combine(r, m.Now, func(e localreg.ImageEntry, now time.Time) string {
+				if e.UpdatedAt.IsZero() {
+					return "—"
+				}
+				return since(e.UpdatedAt, now)
+			})).Size(12).NoWrap()
+		}).W(120),
+		ui.TextCol(tr("Size"), func(e localreg.ImageEntry) string { return formatBytes(e.Size) }).W(96).Right(),
+		ui.Col("", func(r ggui.Readable[localreg.ImageEntry]) ggui.Widget {
+			type lregActState struct {
+				img  localreg.ImageEntry
+				busy bool
+			}
+			return ggui.View(ggui.Combine(r, m.BusyOps, func(img localreg.ImageEntry, b map[string]bool) lregActState {
+				return lregActState{img: img, busy: b["lreg:"+img.Key()]}
+			}), func(st lregActState) ggui.Widget {
+				img := st.img
+				key := img.Key()
+				clusterRef := img.Ref(recipes.RegistryHost())
+				localRef := img.Ref(recipes.RegistryLocal())
+				return widget.Row(
+					tip(iconButton(lucide.Copy, tr("Copy %s", clusterRef), func() { m.Copy(clusterRef, clusterRef) }), tr("Copy cluster reference")),
+					tip(iconButton(lucide.Trash, tr("Delete %s", key), func() { m.AskDeleteLocalRegistryImage(img) }).Disabled(st.busy), tr("Delete")),
+					moreMenu(tr("More actions for %s", key),
+						ui.MenuItem(tr("Copy cluster reference"), func() { m.Copy(clusterRef, clusterRef) }),
+						ui.MenuItem(tr("Copy local reference"), func() { m.Copy(localRef, localRef) }),
+						ui.MenuItem(tr("Copy docker pull command"), func() { m.Copy("docker pull "+localRef, "docker pull") }),
+						ui.MenuItem(tr("Copy digest"), func() { m.Copy(img.Digest, img.ShortDigest()) }),
+						ui.MenuDivider(),
+						ui.MenuItem(tr("Delete…"), func() { m.AskDeleteLocalRegistryImage(img) }).Destructive().Disabled(st.busy),
+					),
+				).Gap(2).Justify(widget.JustifyEnd)
+			})
+		}).W(112).Identified("actions"),
+	).BindSelected(m.SelectedLocalRegistryImage).RowName(localreg.ImageEntry.Key).RowHeight(tableRow)
+
+	type lregBodyState struct {
+		state int // 0: table, 1: empty, 2: error, 3: loading, 4: off-empty
+		err   string
+	}
+	bodyState := ggui.Derived(func() lregBodyState {
+		l := m.LocalRegistryImages.Get()
+		reg := m.LocalRegistry.Get()
+		mode := m.Settings.Get().LocalRegistryMode()
+		switch {
+		case l.Err != "":
+			return lregBodyState{state: 2, err: l.Err}
+		case len(l.Items) > 0:
+			return lregBodyState{state: 0}
+		case !l.Loaded && l.Loading:
+			return lregBodyState{state: 3}
+		case mode == store.LocalRegistryOff && !reg.LegacyActive:
+			return lregBodyState{state: 4}
+		default:
+			return lregBodyState{state: 1}
+		}
+	})
+	body := ggui.View(bodyState, func(st lregBodyState) ggui.Widget {
+		switch st.state {
+		case 1:
+			pushCmd := "docker push " + recipes.RegistryLocal() + "/myapp:dev"
+			return ui.Empty(
+				tr("No images in the local registry"),
+				tr("Push from Images → Docker → Push to local registry, or run docker push %s/myapp:dev. For one-off loads into k3s without tagging, use Load into cluster.", recipes.RegistryLocal()),
+			).Media(glyph(lucide.Warehouse, 32).Color(colorGray)).
+				Action(ui.Button(tr("Copy push command"), func() { m.Copy(pushCmd, pushCmd) }).Outline().Icon(glyph(lucide.Copy, 16))).Outline()
+		case 2:
+			return ui.Alert(tr("Could not list local registry images"), st.err).Destructive().Icon(icons.Alert)
+		case 3:
+			return widget.Row(ui.Spinner(), ui.Caption(tr("Reading local registry…"))).Gap(8)
+		case 4:
+			return ui.Empty(
+				tr("Local registry is off"),
+				tr("Enable it to push images with docker push %s/… and pull them from Kubernetes pods.", recipes.RegistryLocal()),
+			).Media(glyph(lucide.Warehouse, 32).Color(colorGray)).
+				Action(ui.Button(tr("Enable (Auto)"), func() { m.SetLocalRegistryMode(store.LocalRegistryAuto) })).Outline()
+		}
+		count := ggui.Combine(visible, m.LocalRegistryImages, func(v []localreg.ImageEntry, l Listing[localreg.ImageEntry]) string {
+			return showing(len(v), len(l.Items))
+		})
+		return tableCard(table.Toolbar(filterBar(m.LocalRegistryQuery, tr("Filter local registry images"), count)))
+	})
+	return widget.Column(statusCard, body).Gap(12).Stretch()
 }
 
 // ---- Volumes ------------------------------------------------------------

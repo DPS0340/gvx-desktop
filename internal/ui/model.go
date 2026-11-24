@@ -26,6 +26,7 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/imagefs"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
+	"github.com/ironpark/gvx-desktop/internal/localreg"
 	"github.com/ironpark/gvx-desktop/internal/nodenet"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/registry"
@@ -158,12 +159,17 @@ type Model struct {
 	AddingNode      *ggui.StateValue[bool]
 	BusyOps         *ggui.StateValue[map[string]bool]
 
-	// ImageView chooses between gvx's own image cache (ImagesGVX) and the
-	// images inside the Docker Engine sandbox (ImagesDocker).
-	ImageView           *ggui.StateValue[int]
-	DockerImages        *ggui.StateValue[Listing[dockerapi.Image]]
-	DockerImageQuery    *ggui.StateValue[string]
-	SelectedDockerImage *ggui.StateValue[string]
+	// ImageView chooses between gvx's own image cache (ImagesGVX), the
+	// images inside the Docker Engine (ImagesDocker), and the built-in
+	// local OCI registry (ImagesRegistry).
+	ImageView                  *ggui.StateValue[int]
+	DockerImages               *ggui.StateValue[Listing[dockerapi.Image]]
+	DockerImageQuery           *ggui.StateValue[string]
+	SelectedDockerImage        *ggui.StateValue[string]
+	LocalRegistry              *ggui.StateValue[LocalRegistryState]
+	LocalRegistryImages        *ggui.StateValue[Listing[localreg.ImageEntry]]
+	LocalRegistryQuery         *ggui.StateValue[string]
+	SelectedLocalRegistryImage *ggui.StateValue[string]
 
 	DockerContainers *ggui.StateValue[Listing[dockerapi.Container]]
 	DockerVersion    *ggui.StateValue[dockerapi.Version]
@@ -385,6 +391,17 @@ type Model struct {
 	keepImages                                 atomic.Pointer[[]string]
 	buildCancelMu                              sync.Mutex
 	buildCancel                                context.CancelFunc
+	localRegMu                                 sync.Mutex
+	localRegOpMu                               sync.Mutex
+	localReg                                   *localreg.Server
+	localRegPort                               int // 0 -> recipes.RegistryPort (5001); <0 -> ephemeral 127.0.0.1:0 (tests)
+	localRegDesired                            bool
+	localRegWant                               bool
+	localRegInFlight                           string
+	localRegSyncGen                            int
+	localRegLoading                            bool
+	localRegAgain                              bool
+	localRegChangePending                      atomic.Bool
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -439,17 +456,21 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Detail:            ggui.State(0),
 		Query:             ggui.State(""),
 
-		Images:              ggui.State(Listing[rungv.Image]{}).WithEqual(nil),
-		Volumes:             ggui.State(Listing[rungv.Volume]{}).WithEqual(nil),
-		Disk:                ggui.State([]rungv.DiskUsage(nil)).WithEqual(slices.Equal[[]rungv.DiskUsage]),
-		Snapshots:           ggui.State([]sandbox.Snapshot(nil)).WithEqual(slices.Equal[[]sandbox.Snapshot]),
-		SnapshotsLoaded:     ggui.State(false),
-		AddingNode:          ggui.State(false),
-		BusyOps:             ggui.State(map[string]bool{}).WithEqual(maps.Equal[map[string]bool]),
-		ImageView:           ggui.State(ImagesGVX),
-		DockerImages:        ggui.State(Listing[dockerapi.Image]{}).WithEqual(nil),
-		DockerImageQuery:    ggui.State(""),
-		SelectedDockerImage: ggui.State(""),
+		Images:                     ggui.State(Listing[rungv.Image]{}).WithEqual(nil),
+		Volumes:                    ggui.State(Listing[rungv.Volume]{}).WithEqual(nil),
+		Disk:                       ggui.State([]rungv.DiskUsage(nil)).WithEqual(slices.Equal[[]rungv.DiskUsage]),
+		Snapshots:                  ggui.State([]sandbox.Snapshot(nil)).WithEqual(slices.Equal[[]sandbox.Snapshot]),
+		SnapshotsLoaded:            ggui.State(false),
+		AddingNode:                 ggui.State(false),
+		BusyOps:                    ggui.State(map[string]bool{}).WithEqual(maps.Equal[map[string]bool]),
+		ImageView:                  ggui.State(ImagesGVX),
+		DockerImages:               ggui.State(Listing[dockerapi.Image]{}).WithEqual(nil),
+		DockerImageQuery:           ggui.State(""),
+		SelectedDockerImage:        ggui.State(""),
+		LocalRegistry:              ggui.State(LocalRegistryState{Mode: settings.LocalRegistryMode()}).WithEqual(LocalRegistryState.Equal),
+		LocalRegistryImages:        ggui.State(Listing[localreg.ImageEntry]{}).WithEqual(localRegistryImagesEqual),
+		LocalRegistryQuery:         ggui.State(""),
+		SelectedLocalRegistryImage: ggui.State(""),
 
 		DockerContainers:    ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
 		DockerVersion:       ggui.State(dockerapi.Version{}),
@@ -561,6 +582,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 	m.dockerExposeLAN.Store(settings.DockerExposeLAN)
 	m.dockerSSHAgent.Store(settings.DockerSSHAgent)
 	ggui.OnCleanup(m.Toasts.Close)
+	ggui.OnCleanup(m.CloseLocalRegistry)
 	m.nodes = &nodenet.Network{Dir: filepath.Join(dataDir, "nodes"), Client: m.Client}
 	m.sup = &sandbox.Supervisor{
 		Client:    m.Client,
@@ -843,6 +865,7 @@ func (m *Model) Go(page string) {
 	case PageImages:
 		m.LoadImages()
 		m.LoadDockerImages()
+		m.LoadLocalRegistry()
 	case PageVolumes:
 		m.LoadVolumes()
 	case PageSnapshots:
@@ -851,6 +874,7 @@ func (m *Model) Go(page string) {
 		m.LoadDisk()
 	case PageSettings:
 		m.LoadDisk()
+		m.LoadLocalRegistry()
 	case PageLabs:
 		m.CheckAmd64()
 		m.refreshAmd64State()
@@ -897,6 +921,7 @@ func (m *Model) Start() {
 	m.syncBundledDocker()
 	m.refreshRungvPathState()
 	m.startDockerProxy()
+	m.followLocalRegistry()
 	m.followDocker()
 	m.followPods()
 	m.followForwards()
@@ -1706,25 +1731,6 @@ func (m *Model) OpenRecipe(key string) {
 			m.ShowSandbox(r.Spec.ID, connectTab)
 		}
 	}
-}
-
-// navRegistry is the sidebar entry of the image registry, which is not a
-// page.
-const navRegistry = "registry"
-
-// OpenRegistry shows the image registry's sandbox, and offers to set it up
-// when there is none.
-func (m *Model) OpenRegistry() {
-	if _, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Registry); ok {
-		m.OpenRecipe(recipes.Registry)
-		return
-	}
-	m.Offer(tr("Set up the image registry?"),
-		tr("A registry on this computer: push images from the Docker Engine, and run them in the cluster."),
-		tr("Set up and start"), func() {
-			m.CreateFromRecipe(recipes.Registry)
-			m.OpenRecipe(recipes.Registry)
-		})
 }
 
 // RecipeSandbox returns the sandbox made from a preset.

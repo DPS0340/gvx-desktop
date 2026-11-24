@@ -1119,6 +1119,7 @@ func (m *Model) stopAll(closeEngine bool, then func()) {
 		wg.Go(func() { m.sup.StopAll(timeout) })
 		if closeEngine {
 			wg.Go(func() { m.CloseSandboxEngine(timeout) })
+			wg.Go(func() { m.CloseLocalRegistry() })
 		} else {
 			wg.Go(func() { m.StopSandboxEngineContainers(timeout) })
 		}

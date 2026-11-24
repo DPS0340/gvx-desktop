@@ -12,8 +12,14 @@ import (
 
 func TestImageRegistry(t *testing.T) {
 	r := ImageRegistry()
+	if err := r.Validate(); err != nil {
+		t.Errorf("legacy registry spec invalid: %v", err)
+	}
 	if r.Ports[0] != "127.0.0.1:5001:5000" || r.Volumes()[0] != "gvx-registry" || r.Recipe != Registry {
 		t.Errorf("registry %+v", r)
+	}
+	if RegistryPort != 5001 || RegistryHost() != "host.docker.internal:5001" || RegistryLocal() != "localhost:5001" {
+		t.Errorf("registry coords: port=%d host=%q local=%q", RegistryPort, RegistryHost(), RegistryLocal())
 	}
 	if addr, ok := HostAddress(r, 5000); !ok || addr != "127.0.0.1:5001" {
 		t.Errorf("reached at %q", addr)
@@ -24,8 +30,8 @@ func TestImageRegistry(t *testing.T) {
 	if got := KubernetesNode().Command; !strings.HasSuffix(got, " --private-registry=/output/registries.yaml") {
 		t.Errorf("k3s %q", got)
 	}
-	want := `# Written by GVX Desktop at each start of the cluster: the image registry
-# recipe, as the cluster's nodes reach it.
+	want := `# Written by GVX Desktop at each start of the cluster: the local image
+# registry, as the cluster's nodes reach it.
 mirrors:
   "localhost:5001":
     endpoint:
@@ -36,6 +42,9 @@ mirrors:
 `
 	if got := RegistriesYAML(); got != want {
 		t.Errorf("registries.yaml\n%s", got)
+	}
+	if _, changed := Upgrade(r); changed {
+		t.Error("legacy registry spec was unexpectedly changed by Upgrade")
 	}
 }
 

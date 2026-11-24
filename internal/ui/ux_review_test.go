@@ -356,10 +356,10 @@ func TestSidebarHoverDoesNotBleedIntoSnapshots(t *testing.T) {
 		assertOnlyCustomHovered(tc.key)
 	}
 
-	// Hovering Image registry hovers a native SidebarItem distinct from Snapshots.
-	p.Move(findTab("Image registry").Center())
+	// Hovering Volumes hovers a native SidebarItem distinct from Snapshots.
+	p.Move(findTab("Volumes").Center())
 	p.Frame()
 	if got := sidebarHover(); got < 0 || got == snapHover {
-		t.Errorf("when hovering Image registry: SidebarWidget.hover=%d, want >=0 and != %d", got, snapHover)
+		t.Errorf("when hovering Volumes: SidebarWidget.hover=%d, want >=0 and != %d", got, snapHover)
 	}
 }

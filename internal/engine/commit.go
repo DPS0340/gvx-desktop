@@ -170,6 +170,12 @@ func applyChanges(cfg *ContainerConfig, changes []string) error {
 				cfg.WorkingDir = path.Clean(rest)
 			case "STOPSIGNAL":
 				cfg.StopSignal = rest
+			case "HEALTHCHECK":
+				hc, err := parseHealthcheckChange(rest)
+				if err != nil {
+					return err
+				}
+				cfg.Healthcheck = hc
 			default:
 				return errInvalid("%s is not a valid change command", word)
 			}

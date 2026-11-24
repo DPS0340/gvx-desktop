@@ -371,7 +371,7 @@ func TestContainerImageConfigMerge(t *testing.T) {
 		})
 	}
 
-	// Env override, bare KEY dropping, default PATH, WorkingDir, User, Labels, Hostname, Healthcheck warning.
+	// Env override, bare KEY dropping, default PATH, WorkingDir, User, Labels, Hostname, Healthcheck.
 	var req containerCreateRequest
 	raw := `{
 		"Image": "img",
@@ -382,7 +382,7 @@ func TestContainerImageConfigMerge(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &req); err != nil {
 		t.Fatal(err)
 	}
-	cfg, _, warnings, err := mergeContainerConfig(id, &req, img)
+	cfg, _, _, err := mergeContainerConfig(id, &req, img)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,8 +396,8 @@ func TestContainerImageConfigMerge(t *testing.T) {
 	if cfg.Labels["img"] != "yes" || cfg.Labels["shared"] != "from-req" || cfg.Labels["extra"] != "1" {
 		t.Fatalf("unexpected labels: %v", cfg.Labels)
 	}
-	if len(warnings) == 0 || !strings.Contains(warnings[0], "Healthcheck") {
-		t.Fatalf("expected healthcheck warning, got %v", warnings)
+	if hc, herr := parseHealthConfig(cfg.Healthcheck); herr != nil || !hc.enabled() || !slices.Equal(hc.Test, []string{"CMD", "true"}) {
+		t.Fatalf("unexpected merged healthcheck: %s (err=%v)", cfg.Healthcheck, herr)
 	}
 
 	// Empty image WorkingDir defaults to "/".

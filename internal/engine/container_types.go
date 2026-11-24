@@ -69,6 +69,9 @@ func (c *Container) clone() Container {
 	cp.Mounts = slices.Clone(c.Mounts)
 	cp.AnonymousVolumes = slices.Clone(c.AnonymousVolumes)
 	cp.Spec = c.Spec.Clone()
+	if c.State.Health != nil {
+		cp.State.Health = c.State.Health.clone()
+	}
 	if c.Ports != nil {
 		cp.Ports = make(map[string][]PortBinding, len(c.Ports))
 		for k, v := range c.Ports {
@@ -89,16 +92,64 @@ const (
 	StatusDead       = "dead"
 )
 
+// Health statuses, as docker names them.
+const (
+	HealthNone      = "none"
+	HealthStarting  = "starting"
+	HealthHealthy   = "healthy"
+	HealthUnhealthy = "unhealthy"
+)
+
+// HealthConfig is Docker's container Healthcheck configuration.
+// Duration fields are encoded as int64 nanoseconds, matching Docker Engine API.
+type HealthConfig struct {
+	Test          []string      `json:"Test,omitempty"`
+	Interval      time.Duration `json:"Interval,omitempty"`
+	Timeout       time.Duration `json:"Timeout,omitempty"`
+	StartPeriod   time.Duration `json:"StartPeriod,omitempty"`
+	StartInterval time.Duration `json:"StartInterval,omitempty"`
+	Retries       int           `json:"Retries,omitempty"`
+}
+
+// HealthcheckResult stores the outcome of a single healthcheck probe.
+type HealthcheckResult struct {
+	Start    time.Time `json:"Start"`
+	End      time.Time `json:"End"`
+	ExitCode int       `json:"ExitCode"`
+	Output   string    `json:"Output"`
+}
+
+// ContainerHealth is the live health state reported in State.Health.
+type ContainerHealth struct {
+	Status        string              `json:"Status"`
+	FailingStreak int                 `json:"FailingStreak"`
+	Log           []HealthcheckResult `json:"Log"`
+}
+
+func (h *ContainerHealth) clone() *ContainerHealth {
+	if h == nil {
+		return nil
+	}
+	cp := *h
+	if h.Log != nil {
+		cp.Log = slices.Clone(h.Log)
+	} else {
+		cp.Log = []HealthcheckResult{}
+	}
+	return &cp
+}
+
 // ContainerState is where a container is in its life.
 type ContainerState struct {
-	Status     string    `json:"status"` // relied on: one of the Status constants
-	ExitCode   int       `json:"exitCode"`
-	Error      string    `json:"error,omitempty"`
-	StartedAt  time.Time `json:"startedAt"`
-	FinishedAt time.Time `json:"finishedAt"`
-	OOMKilled  bool      `json:"oomKilled,omitempty"`
-	Paused     bool      `json:"-"`
-	Pid        int       `json:"-"`
+	Status     string           `json:"status"` // relied on: one of the Status constants
+	ExitCode   int              `json:"exitCode"`
+	Error      string           `json:"error,omitempty"`
+	StartedAt  time.Time        `json:"startedAt"`
+	FinishedAt time.Time        `json:"finishedAt"`
+	OOMKilled  bool             `json:"oomKilled,omitempty"`
+	Paused     bool             `json:"-"`
+	Pid        int              `json:"-"`
+	Health     *ContainerHealth `json:"health,omitempty"`
 	// StoppedByUser is set by stop and kill, and cleared by start: the
 	// restart policies leave such a container stopped.
 	StoppedByUser bool `json:"stoppedByUser,omitempty"`
@@ -392,17 +443,18 @@ type containerInspectResponse struct {
 }
 
 type inspectState struct {
-	Status     string `json:"Status"`
-	Running    bool   `json:"Running"`
-	Paused     bool   `json:"Paused"`
-	Restarting bool   `json:"Restarting"`
-	OOMKilled  bool   `json:"OOMKilled"`
-	Dead       bool   `json:"Dead"`
-	Pid        int    `json:"Pid"`
-	ExitCode   int    `json:"ExitCode"`
-	Error      string `json:"Error"`
-	StartedAt  string `json:"StartedAt"`
-	FinishedAt string `json:"FinishedAt"`
+	Status     string           `json:"Status"`
+	Running    bool             `json:"Running"`
+	Paused     bool             `json:"Paused"`
+	Restarting bool             `json:"Restarting"`
+	OOMKilled  bool             `json:"OOMKilled"`
+	Dead       bool             `json:"Dead"`
+	Pid        int              `json:"Pid"`
+	ExitCode   int              `json:"ExitCode"`
+	Error      string           `json:"Error"`
+	StartedAt  string           `json:"StartedAt"`
+	FinishedAt string           `json:"FinishedAt"`
+	Health     *ContainerHealth `json:"Health,omitempty"`
 }
 
 type inspectGraphDriver struct {

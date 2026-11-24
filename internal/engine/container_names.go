@@ -118,6 +118,16 @@ func containerStatusText(st ContainerState, now time.Time) string {
 		} else {
 			s = "Up " + humanDuration(now.Sub(st.StartedAt))
 		}
+		if st.Health != nil {
+			switch st.Health.Status {
+			case HealthStarting:
+				s += " (health: starting)"
+			case HealthHealthy:
+				s += " (healthy)"
+			case HealthUnhealthy:
+				s += " (unhealthy)"
+			}
+		}
 		if st.Paused {
 			s += " (Paused)"
 		}

@@ -4,9 +4,7 @@ package engine
 // mount resolution.
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -116,15 +114,9 @@ func mergeContainerConfig(id string, req *containerCreateRequest, img ImageInspe
 		stopSignal = img.Config.StopSignal
 	}
 
-	var healthcheck json.RawMessage
-	if trimmed := bytes.TrimSpace(req.Healthcheck); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
-		healthcheck = slices.Clone(trimmed)
-		var hc struct {
-			Test []string `json:"Test"`
-		}
-		if json.Unmarshal(trimmed, &hc) == nil && len(hc.Test) > 0 && hc.Test[0] != "NONE" {
-			warnings = append(warnings, "Healthcheck is ignored by GVX Desktop's experimental sandbox engine")
-		}
+	healthcheck, _, err := mergeHealthConfig(img.Config.Healthcheck, req.Healthcheck)
+	if err != nil {
+		return ContainerConfig{}, nil, nil, err
 	}
 
 	cfg := ContainerConfig{

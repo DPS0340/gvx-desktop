@@ -219,6 +219,9 @@ func (e *Engine) containerEvent(ev sandbox.Event) {
 			c.State.Paused = false
 			c.State.FinishedAt = finishedAt
 			c.State.Exits++
+			if c.State.Health != nil {
+				c.State.Health.Status = HealthUnhealthy
+			}
 
 			if c.startEmittedGen < c.runGen {
 				c.startEmittedGen = c.runGen
@@ -260,6 +263,7 @@ func (e *Engine) containerEvent(ev sandbox.Event) {
 		if !found {
 			return
 		}
+		e.stopHealthMonitor(ev.ID)
 		e.onContainerExitedExecs(ev.ID)
 		if needStartEmit {
 			e.emit(Event{Type: "container", Action: "start", ID: ev.ID, Attributes: startAttrs})
@@ -393,6 +397,9 @@ func (e *Engine) loadContainers() error {
 				c.State.ExitCode = 255
 			}
 			c.State.FinishedAt = now
+			if c.State.Health != nil {
+				c.State.Health.Status = HealthUnhealthy
+			}
 			dirty = true
 		}
 		cCopy := c
@@ -594,14 +601,18 @@ func (e *Engine) startContainer(id string) error {
 	prevStartedAt := c.State.StartedAt
 	prevFinishedAt := c.State.FinishedAt
 	prevPorts := c.Ports
+	prevHealth := c.State.Health.clone()
 	e.ctr.mu.Unlock()
 
 	resolvedPorts, specPorts, err := resolveStartPorts(&snapshot, usedByOthers, allowLAN)
 	if err != nil {
 		e.ctr.portMu.Unlock()
-		e.handleStartFailure(id, 0, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, err)
+		e.handleStartFailure(id, 0, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, prevHealth, err)
 		return err
 	}
+
+	hc, _ := parseHealthConfig(snapshot.Config.Healthcheck)
+	runHealth := hc.enabled() && e.runner.Features().Control
 
 	spec := snapshot.Spec.Clone()
 	spec.Name = snapshot.Name
@@ -616,6 +627,7 @@ func (e *Engine) startContainer(id string) error {
 	// Mark running and record reserved ports BEFORE releasing portMu and
 	// before calling runner.Start, so concurrent starts see these ports and
 	// an instantaneous EventExited cannot be overwritten.
+	startedAt := time.Now().UTC()
 	e.ctr.mu.Lock()
 	c, ok = e.ctr.byID[id]
 	if !ok {
@@ -637,10 +649,18 @@ func (e *Engine) startContainer(id string) error {
 	gen := c.runGen
 	c.State.Status = StatusRunning
 	c.State.Paused = false
-	c.State.StartedAt = time.Now().UTC()
+	c.State.StartedAt = startedAt
 	c.State.FinishedAt = time.Time{}
 	c.State.Error = ""
 	c.State.StoppedByUser = false
+	if runHealth {
+		c.State.Health = &ContainerHealth{
+			Status: HealthStarting,
+			Log:    []HealthcheckResult{},
+		}
+	} else {
+		c.State.Health = nil
+	}
 	c.Ports = resolvedPorts
 	e.ctr.mu.Unlock()
 
@@ -650,7 +670,7 @@ func (e *Engine) startContainer(id string) error {
 
 	if err := e.runner.Start(spec); err != nil {
 		e.leaveOverlay(id)
-		e.handleStartFailure(id, gen, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, err)
+		e.handleStartFailure(id, gen, prevStatus, prevStartedAt, prevFinishedAt, prevPorts, prevHealth, err)
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "volume") && (strings.Contains(msg, "in use") || strings.Contains(msg, "locked")) {
 			return errConflict("%s", err.Error())
@@ -664,17 +684,20 @@ func (e *Engine) startContainer(id string) error {
 
 	st := e.runner.State(id)
 	var (
-		emitStart bool
-		attrs     map[string]string
+		emitStart       bool
+		stillRunningGen bool
+		attrs           map[string]string
 	)
 	e.ctr.mu.Lock()
 	if c := e.ctr.byID[id]; c != nil && c.runGen == gen {
 		if c.State.Status == StatusRunning {
+			stillRunningGen = true
 			if st.PID != 0 {
 				c.State.Pid = st.PID
 			}
 			if !st.StartedAt.IsZero() {
-				c.State.StartedAt = st.StartedAt.UTC()
+				startedAt = st.StartedAt.UTC()
+				c.State.StartedAt = startedAt
 			}
 		}
 		if c.startEmittedGen < gen {
@@ -686,6 +709,9 @@ func (e *Engine) startContainer(id string) error {
 	}
 	e.ctr.mu.Unlock()
 
+	if runHealth && stillRunningGen {
+		e.startHealthMonitor(id, gen, hc, startedAt)
+	}
 	if emitStart {
 		e.emit(Event{Type: "container", Action: "start", ID: id, Attributes: attrs})
 	}
@@ -696,7 +722,8 @@ func (e *Engine) startContainer(id string) error {
 // handleStartFailure records startErr on the container and, when AutoRemove
 // is set, removes the container and its anonymous volumes so wait?condition=removed
 // and attach do not hang.
-func (e *Engine) handleStartFailure(id string, gen uint64, prevStatus string, prevStartedAt, prevFinishedAt time.Time, prevPorts map[string][]PortBinding, startErr error) {
+func (e *Engine) handleStartFailure(id string, gen uint64, prevStatus string, prevStartedAt, prevFinishedAt time.Time, prevPorts map[string][]PortBinding, prevHealth *ContainerHealth, startErr error) {
+	e.stopHealthMonitor(id)
 	var (
 		autoRemove bool
 		anonVols   []string
@@ -709,6 +736,7 @@ func (e *Engine) handleStartFailure(id string, gen uint64, prevStatus string, pr
 		c.State.Error = startErr.Error()
 		c.State.Pid = 0
 		c.Ports = prevPorts
+		c.State.Health = prevHealth
 		if c.HostConfig.AutoRemove && !e.ctr.closing {
 			c.State.Status = StatusRemoving
 			c.State.StoppedByUser = true
@@ -822,6 +850,7 @@ func (e *Engine) waitNotRunning(ctx context.Context, id string) {
 // removeContainerCleanup finishes removing a container whose status is already
 // StatusRemoving.
 func (e *Engine) removeContainerCleanup(ctx context.Context, id string, stopFirst, removeVols bool, anonVols []string, attrs map[string]string) {
+	e.stopHealthMonitor(id)
 	if stopFirst {
 		_ = e.runner.Shutdown(id, "SIGKILL", 0)
 		e.waitNotRunning(ctx, id)
@@ -908,6 +937,9 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, r, err)
 		return
+	}
+	if hc, _ := parseHealthConfig(cfg.Healthcheck); hc.enabled() && !e.runner.Features().Control {
+		warnings = append(warnings, "Healthcheck requires rungv 0.20 and is ignored by GVX Desktop's experimental sandbox engine")
 	}
 
 	hc := req.HostConfig
@@ -1317,6 +1349,15 @@ func matchContainerFilters(c Container, f filters, nameRegexes []*regexp.Regexp)
 	}) {
 		return false
 	}
+	if !f.matchAny("health", func(v string) bool {
+		cur := HealthNone
+		if c.State.Health != nil && c.State.Health.Status != "" {
+			cur = c.State.Health.Status
+		}
+		return cur == v
+	}) {
+		return false
+	}
 	return true
 }
 
@@ -1501,6 +1542,7 @@ func (e *Engine) containerInspect(w http.ResponseWriter, r *http.Request) {
 			Error:      c.State.Error,
 			StartedAt:  formatInspectTime(c.State.StartedAt),
 			FinishedAt: formatInspectTime(c.State.FinishedAt),
+			Health:     c.State.Health.clone(),
 		},
 		Image:        c.ImageID,
 		LogPath:      logPath,

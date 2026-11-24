@@ -244,7 +244,9 @@ func matchEvent(ev Event, f filters) bool {
 	if !f.matchAny("type", func(v string) bool { return ev.Type == v }) {
 		return false
 	}
-	if !f.matchAny("event", func(v string) bool { return ev.Action == v }) {
+	if !f.matchAny("event", func(v string) bool {
+		return ev.Action == v || strings.HasPrefix(ev.Action, v+":")
+	}) {
 		return false
 	}
 	if !f.matchAny("container", func(v string) bool {

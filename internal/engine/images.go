@@ -62,6 +62,7 @@ type ImageConfig struct {
 	Volumes      map[string]struct{} `json:"Volumes,omitempty"`
 	Labels       map[string]string   `json:"Labels,omitempty"`
 	StopSignal   string              `json:"StopSignal,omitempty"`
+	Healthcheck  json.RawMessage     `json:"Healthcheck,omitempty"`
 }
 
 type imageSummary struct {
@@ -104,7 +105,12 @@ type imageInspectResponse struct {
 // imageConfig inspects the cached host-architecture image ref. An image that
 // is not cached is a 404 "No such image: ref", which makes the CLI pull it.
 func (e *Engine) imageConfig(ctx context.Context, ref string) (ImageInspect, error) {
-	return e.lookupImageInArch(ctx, hostImageArch, ref)
+	img, err := e.lookupImageInArch(ctx, hostImageArch, ref)
+	if err != nil {
+		return ImageInspect{}, err
+	}
+	e.enrichImageHealthcheck(ctx, &img)
+	return img, nil
 }
 
 // resolvedCacheRef picks the reference that rungv run -pull never accepts for
@@ -685,6 +691,7 @@ func (e *Engine) imageInspect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	e.enrichImageHealthcheck(r.Context(), &img)
 	tags := slices.Clone(img.RepoTags)
 	if tags == nil {
 		tags = []string{}

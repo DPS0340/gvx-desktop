@@ -104,6 +104,7 @@ type Engine struct {
 	amd amd64State     // amd64.go (the amd64 builder, workstream C)
 	ovl overlayState   // overlay.go (networks between containers)
 	exc execState      // exec.go (rungv v0.20 exec instances)
+	hlt healthState    // healthcheck.go (container healthcheck monitors)
 }
 
 // New returns an engine over cfg.Runner. It serves nothing until Open.
@@ -136,6 +137,7 @@ func (e *Engine) Open(ctx context.Context) error {
 	e.sweepTmp()
 	e.reconcileEndpoints()
 	e.openExecs()
+	e.openHealthMonitors()
 	e.openStreams()
 	if err := e.openBuilder(); err != nil {
 		e.closeStreams()
@@ -164,6 +166,7 @@ func (e *Engine) Close(timeout time.Duration) error {
 	e.opened = false
 	e.closeAmd64(timeout)
 	e.closeBuilder(timeout)
+	e.closeHealthMonitors()
 	e.closeExecs()
 	e.stopContainers(timeout)
 	e.closeOverlay()

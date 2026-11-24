@@ -188,6 +188,19 @@ func findGVXImageRecord(cacheDir, imageID, imageDigest string) (gvxImageRecord, 
 	return gvxImageRecord{}, errors.New("image metadata was not found in the layer cache")
 }
 
+// ReadGVXImageConfig returns the raw OCI image config JSON for imageID from
+// rungv's cache without opening any EROFS layer files.
+func ReadGVXImageConfig(cacheDir, imageID string) ([]byte, error) {
+	if cacheDir == "" {
+		return nil, errors.New("layer cache directory is unknown")
+	}
+	rec, err := findGVXImageRecord(cacheDir, imageID, "")
+	if err != nil {
+		return nil, err
+	}
+	return rec.Config, nil
+}
+
 func (f *gvxFS) Layers() []Layer {
 	out := make([]Layer, len(f.layers))
 	copy(out, f.layers)

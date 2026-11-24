@@ -28,7 +28,7 @@ const network = "k3s-nodes"
 // Network is the nodes' overlay. The zero value is not usable: set Dir and
 // Client.
 type Network struct {
-	// Dir is where netinit is written for the sandboxes to mount.
+	// Dir is where netinit's mount directory is written for the sandboxes to mount.
 	Dir string
 	// Client is the rungv the sandboxes run with.
 	Client func() *rungv.Client

@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/ironpark/gvx-desktop/internal/imagefs"
+	"github.com/ironpark/gvx-desktop/internal/overlay/guestcfg"
 )
 
 // openImage opens the image with ID id in rungv's cache.
@@ -141,7 +142,8 @@ func (e *Engine) containerChanges(w http.ResponseWriter, r *http.Request) {
 }
 
 // mountSkip leaves out what c's mounts hold, as docker export does: their
-// mount points stay, empty.
+// mount points stay, empty. The engine's internal netinit mount is omitted
+// completely.
 func mountSkip(c Container) func(name string) bool {
 	var dsts []string // each with a trailing slash
 	for _, m := range c.Mounts {
@@ -149,7 +151,11 @@ func mountSkip(c Container) func(name string) bool {
 			dsts = append(dsts, d+"/")
 		}
 	}
+	netinitDir := layerName(guestcfg.MountDir)
 	return func(name string) bool {
+		if name == ".gvx-netinit" || (netinitDir != "" && under(name, netinitDir)) {
+			return true
+		}
 		for _, d := range dsts {
 			if strings.HasPrefix(name, d) {
 				return true

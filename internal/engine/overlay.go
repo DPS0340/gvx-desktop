@@ -103,8 +103,8 @@ func (e *Engine) startedWithNetinit(id string) bool {
 	return e.ovl.netinit[id]
 }
 
-// netinitPath writes netinit into the engine's directory, once, for the
-// sandboxes to mount.
+// netinitPath writes netinit and its hostfs .gvx_meta into the engine's
+// directory, once, for the sandboxes to bind-mount read-only.
 func (e *Engine) netinitPath() (string, error) {
 	e.ovl.binOnce.Do(func() {
 		bin, err := netinit()

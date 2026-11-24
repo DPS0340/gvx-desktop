@@ -16,8 +16,27 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+
+	"github.com/ironpark/gvx-desktop/internal/overlay/guestcfg"
 )
+
+const (
+	// installDirName is the subdirectory created inside dir to hold netinit
+	// and its hostfs .gvx_meta sidecar for read-only directory bind mounting.
+	installDirName = "netinit.d"
+
+	// hostfsMetaFile is rungv hostfs's workspace metadata sidecar filename.
+	hostfsMetaFile = ".gvx_meta"
+
+	// hostfsMetaMode is S_IFREG | 0o755 (0o100755 == 33261), the POSIX mode
+	// recorded in .gvx_meta so Windows sandboxes (where NTFS has no execute
+	// bit) expose netinit as an executable regular file.
+	hostfsMetaJSON = `{"version":2,"entries":{"` + guestcfg.BinaryName + `":{"mode":33261,"uid":0,"gid":0}}}` + "\n"
+)
+
+var hostfsMetaBytes = []byte(hostfsMetaJSON)
 
 // ErrUnavailable reports that this build of the app has no netinit for its
 // architecture.
@@ -47,25 +66,66 @@ func Netinit() ([]byte, error) {
 	return binary, extractE
 }
 
-// Install writes bin, netinit, to dir/netinit for sandboxes to mount, unless
-// it is there already, and returns its path.
+// Install writes bin (netinit) and a hostfs .gvx_meta sidecar into
+// dir/netinit.d for sandboxes to bind-mount read-only at guestcfg.MountDir,
+// unless they are already up to date, and returns the directory path.
 func Install(dir string, bin []byte) (string, error) {
-	p := filepath.Join(dir, "netinit")
-	if cur, err := os.ReadFile(p); err == nil && bytes.Equal(cur, bin) {
-		return p, nil
+	mountDir := filepath.Join(dir, installDirName)
+	binPath := filepath.Join(mountDir, guestcfg.BinaryName)
+	metaPath := filepath.Join(mountDir, hostfsMetaFile)
+
+	binOK := fileMatches(binPath, bin, true)
+	metaOK := fileMatches(metaPath, hostfsMetaBytes, false)
+	if binOK && metaOK {
+		return mountDir, nil
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	tmp, err := os.CreateTemp(dir, ".netinit-*")
+	if err := os.MkdirAll(mountDir, 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(mountDir, 0o755); err != nil {
+		return "", err
+	}
+	if !binOK {
+		if err := writeFileAtomic(mountDir, guestcfg.BinaryName, ".netinit-*", bin, 0o755); err != nil {
+			return "", err
+		}
+	}
+	if !metaOK {
+		if err := writeFileAtomic(mountDir, hostfsMetaFile, ".gvx_meta.tmp.*", hostfsMetaBytes, 0o644); err != nil {
+			return "", err
+		}
+	}
+	return mountDir, nil
+}
+
+func fileMatches(path string, want []byte, wantExec bool) bool {
+	cur, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(cur, want) {
+		return false
+	}
+	if wantExec && runtime.GOOS != "windows" {
+		fi, err := os.Stat(path)
+		if err != nil || fi.Mode().Perm()&0o111 != 0o111 {
+			return false
+		}
+	}
+	return true
+}
+
+func writeFileAtomic(dir, name, tempPattern string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(dir, tempPattern)
 	if err != nil {
-		return "", err
+		return err
 	}
-	_, werr := tmp.Write(bin)
+	tmpName := tmp.Name()
+	_, werr := tmp.Write(data)
 	cerr := tmp.Close()
-	if err := errors.Join(werr, cerr, os.Chmod(tmp.Name(), 0o755), os.Rename(tmp.Name(), p)); err != nil {
-		os.Remove(tmp.Name())
-		return "", err
+	if err := errors.Join(werr, cerr, os.Chmod(tmpName, perm), os.Rename(tmpName, filepath.Join(dir, name))); err != nil {
+		os.Remove(tmpName)
+		return err
 	}
-	return p, nil
+	return nil
 }

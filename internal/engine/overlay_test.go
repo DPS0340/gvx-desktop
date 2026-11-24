@@ -32,12 +32,12 @@ func TestWithOverlayRunsNetinitInFront(t *testing.T) {
 	}
 	cfg := guestcfg.Config{PrivateKey: make([]byte, 32), HubPublicKey: make([]byte, 32), Endpoint: "10.0.2.2:5000", Addresses: []string{"10.89.1.2/24"}}
 	// Extra hosts alone: netinit runs, with no DNS server.
-	hostsOnly, err := overlay.WithNetinit(spec, guestcfg.Config{Hosts: []string{"10.0.0.5\tdb"}}, "/data/netinit", netip.AddrPort{})
+	hostsOnly, err := overlay.WithNetinit(spec, guestcfg.Config{Hosts: []string{"10.0.0.5\tdb"}}, "/data/netinit.d", netip.AddrPort{})
 	if err != nil || hostsOnly.ExtraArgs != "-read-only" || hostsOnly.Entrypoint != guestcfg.Path {
 		t.Fatalf("hosts only = %+v, %v", hostsOnly, err)
 	}
 
-	out, err := overlay.WithNetinit(spec, cfg, "/data/netinit", netip.MustParseAddrPort("127.0.0.1:5353"))
+	out, err := overlay.WithNetinit(spec, cfg, "/data/netinit.d", netip.MustParseAddrPort("127.0.0.1:5353"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestWithOverlayRunsNetinitInFront(t *testing.T) {
 		t.Fatalf("config = %+v, %v", got, err)
 	}
 	last := out.Mounts[len(out.Mounts)-1]
-	if last.Source != "/data/netinit" || last.Target != guestcfg.Path || !last.ReadOnly || last.Type != sandbox.MountBind {
+	if last.Source != "/data/netinit.d" || last.Target != guestcfg.MountDir || !last.ReadOnly || last.Type != sandbox.MountBind {
 		t.Fatalf("mount = %+v", last)
 	}
 	if out.ExtraArgs != "-read-only -host-dns 127.0.0.1:5353" {
@@ -138,6 +138,22 @@ func TestContainersOnUserNetworksJoinTheOverlay(t *testing.T) {
 	}
 	if p := specs[plain.ID]; p.Entrypoint == guestcfg.Path || strings.Contains(p.ExtraArgs, "host-dns") {
 		t.Fatalf("a container on the default bridge joined the overlay: %+v", p)
+	}
+	// Verify the netinit mount is a read-only directory holding netinit + .gvx_meta.
+	var netMount *sandbox.Mount
+	for i := range specs[web.ID].Mounts {
+		if specs[web.ID].Mounts[i].Target == guestcfg.MountDir {
+			netMount = &specs[web.ID].Mounts[i]
+			break
+		}
+	}
+	if netMount == nil || netMount.Type != sandbox.MountBind || !netMount.ReadOnly {
+		t.Fatalf("web netinit mount = %+v", netMount)
+	}
+	for _, name := range []string{guestcfg.BinaryName, ".gvx_meta"} {
+		if _, err := os.Stat(filepath.Join(netMount.Source, name)); err != nil {
+			t.Fatalf("netinit mount dir missing %s: %v", name, err)
+		}
 	}
 
 	fab := te.ovl.fab

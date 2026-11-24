@@ -21,8 +21,16 @@ import (
 // EnvVar is the environment variable that carries the Config.
 const EnvVar = "GVX_NET"
 
-// Path is where the engine mounts netinit in the container.
-const Path = "/.gvx-netinit"
+// MountDir is the read-only directory where the engine mounts netinit in the
+// container. Mounting a directory rather than a single file lets rungv's
+// hostfs load .gvx_meta on Windows, where NTFS carries no POSIX execute bit.
+const MountDir = "/.gvx-netinit.d"
+
+// BinaryName is the netinit executable file name inside MountDir.
+const BinaryName = "netinit"
+
+// Path is the netinit executable path inside the container.
+const Path = MountDir + "/" + BinaryName
 
 // ApplyArg is argv[1] for netinit's live reconcile mode (docker network
 // connect/disconnect on a running container via rungv exec).

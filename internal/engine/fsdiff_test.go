@@ -220,6 +220,7 @@ func TestLayerTreeMerge(t *testing.T) {
 func TestFilterUpper(t *testing.T) {
 	in := tarOf(t,
 		[2]string{"etc/", "dir"}, [2]string{"etc/hosts", "h"}, [2]string{"etc/hostname", "n"}, [2]string{"etc/resolv.conf", "r"},
+		[2]string{".gvx-netinit", ""}, [2]string{".gvx-netinit.d/", "dir"}, [2]string{".gvx-netinit.d/.wh..wh..opq", "wh"},
 		[2]string{"workspace/", "dir"}, [2]string{"workspace/.wh..wh..opq", "wh"},
 		[2]string{"usr/", "dir"}, [2]string{"usr/bin/", "dir"}, [2]string{"usr/bin/.wh..wh..opq", "wh"},
 		[2]string{"root/", "dir"}, [2]string{"root/.wh..wh..opq", "wh"}, [2]string{"root/kept", "k"},
@@ -441,6 +442,7 @@ func TestExportRunning(t *testing.T) {
 	te, ctl := newFixtureEngine(t)
 	full := tarOf(t,
 		[2]string{"etc/", "dir"}, [2]string{"etc/motd", "m"},
+		[2]string{".gvx-netinit.d/", "dir"}, [2]string{".gvx-netinit.d/netinit", "elf"},
 		[2]string{"data/", "dir"}, [2]string{"data/in-volume", "v"}, [2]string{"data/sub/", "dir"},
 	)
 	ctl.exportFn = func(ctx context.Context, path string, upperOnly bool) (io.ReadCloser, error) {

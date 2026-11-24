@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/ironpark/gvx-desktop/internal/ext4lite"
+	"github.com/ironpark/gvx-desktop/internal/overlay/guestcfg"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
 
@@ -74,20 +75,23 @@ func (e *Engine) sweepRootfs() {
 	}
 }
 
-// runtimeFiles are what rungv writes into every guest at its start: they
-// stay out of diff and commit, as docker's init layer keeps its own out.
+// runtimeFiles are what rungv (or older netinit single-file mounts) writes
+// into a guest at its start: they stay out of diff and commit, as docker's
+// init layer keeps its own out.
 var runtimeFiles = map[string]bool{
 	"etc/hosts":       true,
 	"etc/hostname":    true,
 	"etc/resolv.conf": true,
+	".gvx-netinit":    true,
 }
 
 // runtimeDirs are the directories rungv makes at a guest's start when the
-// image has none. One the layer holds nothing under but runtime files is
-// left out.
+// image has none (including the netinit mountpoint). One the layer holds
+// nothing under but runtime files is left out.
 var runtimeDirs = map[string]bool{
 	"proc": true, "sys": true, "dev": true, "etc": true, "root": true,
 	"workspace": true, "tmp": true, "bin": true, "usr": true, "usr/bin": true,
+	strings.TrimPrefix(guestcfg.MountDir, "/"): true,
 }
 
 // filterUpper copies an upper layer from r to tw without what rungv put

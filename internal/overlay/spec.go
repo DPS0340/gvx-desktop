@@ -12,10 +12,10 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
-// WithNetinit returns spec running netinit (mounted from bin) with cfg in
-// front of its command, as root, and with the DNS server dns when it is
-// valid.
-func WithNetinit(spec sandbox.Spec, cfg guestcfg.Config, bin string, dns netip.AddrPort) (sandbox.Spec, error) {
+// WithNetinit returns spec running netinit (mounted read-only from binDir at
+// guestcfg.MountDir) with cfg in front of its command, as root, and with the
+// DNS server dns when it is valid.
+func WithNetinit(spec sandbox.Spec, cfg guestcfg.Config, binDir string, dns netip.AddrPort) (sandbox.Spec, error) {
 	if !spec.SetEntrypoint || spec.Entrypoint == "" {
 		return spec, errors.New("the container has no command")
 	}
@@ -42,8 +42,8 @@ func WithNetinit(spec sandbox.Spec, cfg guestcfg.Config, bin string, dns netip.A
 	}), guestcfg.EnvVar+"="+enc)
 	out.Mounts = append(slices.Clone(spec.Mounts), sandbox.Mount{
 		Type:     sandbox.MountBind,
-		Source:   bin,
-		Target:   guestcfg.Path,
+		Source:   binDir,
+		Target:   guestcfg.MountDir,
 		ReadOnly: true,
 	})
 	if dns.IsValid() || cfg.HasLink() {

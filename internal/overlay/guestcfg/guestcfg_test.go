@@ -15,6 +15,7 @@ func TestEncodeDecode(t *testing.T) {
 		Addresses:    []string{"10.89.1.2/24"},
 		Routes:       []string{"10.89.0.0/16"},
 		User:         "app:app",
+		DNS:          "10.0.2.3",
 	}
 	s, err := c.Encode()
 	if err != nil {
@@ -24,7 +25,7 @@ func TestEncodeDecode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Endpoint != c.Endpoint || !slices.Equal(got.Addresses, c.Addresses) || got.User != c.User || !bytes.Equal(got.PrivateKey, c.PrivateKey) {
+	if got.Endpoint != c.Endpoint || !slices.Equal(got.Addresses, c.Addresses) || got.User != c.User || got.DNS != c.DNS || !bytes.Equal(got.PrivateKey, c.PrivateKey) {
 		t.Fatalf("round trip = %+v", got)
 	}
 	if _, err := Decode("bm90LWpzb24"); err == nil {
@@ -73,6 +74,29 @@ func TestResolveUser(t *testing.T) {
 		}
 		if got.UID != tc.want.UID || got.GID != tc.want.GID || got.Home != tc.want.Home || !slices.Equal(got.Groups, tc.want.Groups) {
 			t.Errorf("%s = %+v, want %+v", tc.spec, got, tc.want)
+		}
+	}
+}
+
+func TestResolvConf(t *testing.T) {
+	const relay = "10.0.2.3"
+	for _, c := range []struct {
+		name, current string
+		replace       bool
+	}{
+		// Debian's base image ships this one.
+		{"the image's", "# https://1.1.1.1 (privacy-focused, highly-available DNS service)\nnameserver 1.1.1.1\nnameserver 1.0.0.1\n", true},
+		{"the relay and another", "nameserver 10.0.2.3\nnameserver 8.8.8.8\n", true},
+		{"none", "", true},
+		{"no nameserver", "search example.com\n", true},
+		{"the relay commented out", "# nameserver 10.0.2.3\nnameserver 1.1.1.1\n", true},
+		// rungv's own, with the host's search and options.
+		{"rungv's", "nameserver 10.0.2.3\nsearch tail1234.ts.net\noptions ndots:1\n", false},
+		{"rungv's without a newline", "nameserver 10.0.2.3", false},
+	} {
+		got, replace := ResolvConf(c.current, relay)
+		if got != "nameserver 10.0.2.3\n" || replace != c.replace {
+			t.Errorf("%s: ResolvConf = %q, %v; want replace %v", c.name, got, replace, c.replace)
 		}
 	}
 }

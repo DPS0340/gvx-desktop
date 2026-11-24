@@ -282,6 +282,46 @@ func TestExtraHostsAndInternalNetworks(t *testing.T) {
 	}
 }
 
+// A container on a user network has netinit make /etc/resolv.conf name the
+// DNS relay, which knows the other containers' names: an image may ship a
+// resolv.conf of its own (Debian's names 1.1.1.1), and rungv keeps it. A
+// container that mounts its own resolv.conf, or a directory over /etc, keeps
+// what it mounted, and netinit must not write through to the host.
+func TestUserNetworksNameTheDNSRelay(t *testing.T) {
+	te := newTestEngine(t)
+	te.fake.addImage("alpine:latest", ImageConfig{Cmd: []string{"sh"}})
+	if st, body := te.do(t, http.MethodPost, "/networks/create", map[string]any{"Name": "gvxd-dns"}); st != http.StatusCreated {
+		t.Fatalf("network create = %d %s", st, body)
+	}
+	own := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(own, []byte("nameserver 192.0.2.1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	etc := t.TempDir()
+	for _, c := range []struct {
+		name string
+		hc   map[string]any
+		want string
+	}{
+		{"gvxd-dns-net", map[string]any{"NetworkMode": "gvxd-dns"}, overlay.DNSRelay},
+		{"gvxd-dns-own", map[string]any{"NetworkMode": "gvxd-dns", "Binds": []string{own + ":/etc/resolv.conf:ro"}}, ""},
+		{"gvxd-dns-etc", map[string]any{"NetworkMode": "gvxd-dns", "Binds": []string{etc + ":/etc/"}}, ""},
+		// No user network, so no DNS server of its own for the relay to ask.
+		{"gvxd-dns-hosts", map[string]any{"ExtraHosts": []string{"db:10.0.0.5"}}, ""},
+	} {
+		st, ctr, raw := createTestContainer(t, te, c.name, map[string]any{"Image": "alpine", "Cmd": []string{"sleep", "100"}, "HostConfig": c.hc})
+		if st != http.StatusCreated {
+			t.Fatalf("create %s = %d %s", c.name, st, raw)
+		}
+		if st, body := te.do(t, http.MethodPost, "/containers/"+ctr.ID+"/start", nil); st != http.StatusNoContent {
+			t.Fatalf("start %s = %d %s", c.name, st, body)
+		}
+		if _, cfg, ok := startedConfig(t, te, ctr.ID); !ok || cfg.DNS != c.want {
+			t.Errorf("%s: DNS = %q (netinit %v), want %q", c.name, cfg.DNS, ok, c.want)
+		}
+	}
+}
+
 // A rungv without -tune keeps eth0 at 1500, so the link stays at 1420.
 func TestOverlayWithoutTune(t *testing.T) {
 	te := newTestEngine(t)

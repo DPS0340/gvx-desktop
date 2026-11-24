@@ -29,6 +29,10 @@ var Pool = netip.MustParsePrefix("10.89.0.0/16")
 // connects there reaches the host's 127.0.0.1.
 const HostGateway = "10.0.2.2"
 
+// DNSRelay is rungv's DNS relay as a guest reaches it. Given -host-dns, it
+// sends every query to the container's DNS server.
+const DNSRelay = "10.0.2.3"
+
 // keepalive keeps each sandbox's NAT entry for the hub open, in seconds.
 const keepalive = 25
 

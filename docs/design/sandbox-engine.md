@@ -612,15 +612,18 @@ no names on Docker either.
   `127.0.0.1:<port>`. The sandbox then runs **netinit**: the engine mounts it read-only at
   `/.gvx-netinit`, makes it the entrypoint with the container's argv after it, passes its
   config in `GVX_NET` (keys, hub endpoint `10.0.2.2:<port>`, addresses, the route
-  `10.89.0.0/16` and any custom subnet, MTU, keepalive 25 s, the container's user), clears
-  the spec's user, and adds `-host-dns 127.0.0.1:<port>` and `-tune net.nat.mtu=<MTU+80>`. The container's record and inspect
+  `10.89.0.0/16` and any custom subnet, MTU, keepalive 25 s, the container's user, and the DNS
+  relay `10.0.2.3` unless a mount covers `/etc/resolv.conf` or `/etc`), runs the sandbox as
+  root (`0:0`), and adds `-host-dns 127.0.0.1:<port>` and `-tune net.nat.mtu=<MTU+80>`. The container's record and inspect
   are untouched.
 - **netinit** (`internal/overlay/netinit`, static Linux binary, no dependencies) runs as root:
   it creates `gvx0` with rtnetlink (`IFLA_LINKINFO` without `NLA_F_NESTED`, which gVisor
   refuses), sets the key and the hub peer through the `wireguard` generic netlink family,
   adds the addresses, brings the link up, adds the routes, appends the extra hosts to
-  `/etc/hosts`, takes the default route away from an isolated container, drops to the
-  container's user
+  `/etc/hosts`, makes `/etc/resolv.conf` name the relay alone when it names another (rungv
+  writes its own only when the image has none, and Debian's base image ships one naming
+  `1.1.1.1`, which would skip the relay and so the containers' names), takes the default
+  route away from an isolated container, drops to the container's user
   (docker's rules: a name must exist, a bare uid gets gid 0, supplementary groups from
   `/etc/group`, HOME from passwd unless the container set it), removes `GVX_NET`, and
   executes the command, which becomes the sandbox's first process as before. A link that

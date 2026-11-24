@@ -632,12 +632,21 @@
 
     Write-StepPending (T 'step_extract' @($dir))
     if ($useSetup) {
-      $setupArgs = @('--silent', '--dir', $dir, '--no-launch')
+      # Start-Process joins -ArgumentList without quoting arguments that contain
+      # spaces (such as "...\Programs\GVX Desktop"), so quote --dir explicitly.
+      $quotedDir = '"' + ($dir.TrimEnd('\') -replace '"', '\"') + '"'
+      $setupArgs = @('--silent', '--dir', $quotedDir, '--no-launch')
       if (-not $makeStartMenu) { $setupArgs += '--no-start-menu' }
       if (-not $makeDesktop) { $setupArgs += '--no-desktop-shortcut' }
-      $proc = Start-Process -FilePath $pkgFile -ArgumentList $setupArgs -Wait -PassThru
+      $errFile = Join-Path $tmp 'setup-stderr.txt'
+      $proc = Start-Process -FilePath $pkgFile -ArgumentList ($setupArgs -join ' ') -Wait -PassThru -RedirectStandardError $errFile
       if ($proc.ExitCode -ne 0) {
-        throw "Installer exited with code $($proc.ExitCode)."
+        $errMsg = ''
+        if (Test-Path $errFile) {
+          $rawErr = Get-Content -Path $errFile -Raw -ErrorAction SilentlyContinue
+          if ($rawErr) { $errMsg = ' ' + $rawErr.Trim() }
+        }
+        throw "Installer exited with code $($proc.ExitCode).$errMsg"
       }
       if (-not (Test-Path $exe)) {
         throw (T 'no_exe' @($app))

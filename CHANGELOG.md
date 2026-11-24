@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - On macOS, quitting with ⌘Q, the Dock's **Quit**, or a quit Apple event now quits the app as the tray's **Quit** does, instead of only hiding it to the tray while **Keep running when the window closes** is on. A quit asked again while the sandboxes stop adds no second stop ([#7](https://github.com/ironpark/gvx-desktop/issues/7)).
 - The Homebrew cask quits the running app before an upgrade or uninstall replaces it, so the old version no longer keeps running after `brew upgrade`. The app's update notice for a Homebrew install and the README now say `brew update && brew upgrade --cask gvx-desktop`, since `brew upgrade` alone may not see a release for up to a day ([#7](https://github.com/ironpark/gvx-desktop/issues/7)).
 - Fixed Sandbox Engine containers whose image sets a non-root `USER` failing on user-defined and Compose networks with `netinit: setgroups: operation not permitted` (exit 126) by running the `netinit` wrapper as `0:0` before dropping to the container's configured user ([#9](https://github.com/ironpark/gvx-desktop/pull/9)).
+- Fixed the Windows PowerShell installer (`install.ps1`) passing an unquoted `--dir` path containing spaces (`...\Programs\GVX Desktop`) to `gvx-desktop-*-setup.exe`, causing silent setup installs to exit with code 1.
 
 ## [0.9.0] - 2026-11-24
 

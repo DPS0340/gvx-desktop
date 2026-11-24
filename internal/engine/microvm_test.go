@@ -1067,10 +1067,17 @@ func TestMicroVMArm64NativeAndAmd64RosettaLifecycle(t *testing.T) {
 	}
 
 	// 2. amd64 auto-Rosetta (enable RosettaReady=true).
+	// On arm64 hosts linux/amd64 auto-dispatches to microvm without specifying
+	// Runtime; on amd64 hosts request microvm explicitly so the Rosetta boot
+	// spec is still exercised.
 	getClients, _ = setupFakeMicroVM(t, te, true, nil)
-	st, body = te.do(t, http.MethodPost, "/containers/create?name=amd-mvm&platform=linux/amd64", map[string]any{
+	amdReq := map[string]any{
 		"Image": "alpine:amd64",
-	})
+	}
+	if hostImageArch == "amd64" {
+		amdReq["HostConfig"] = map[string]any{"Runtime": "microvm"}
+	}
+	st, body = te.do(t, http.MethodPost, "/containers/create?name=amd-mvm&platform=linux/amd64", amdReq)
 	if st != http.StatusCreated {
 		t.Fatalf("create amd-mvm = %d %s", st, body)
 	}
@@ -1081,6 +1088,9 @@ func TestMicroVMArm64NativeAndAmd64RosettaLifecycle(t *testing.T) {
 		t.Fatalf("start amd-mvm = %d %s", st, body)
 	}
 	clients = getClients()
+	if len(clients) != 1 {
+		t.Fatalf("launched %d helpers for amd-mvm, want 1", len(clients))
+	}
 	fc = clients[0]
 	fc.mu.Lock()
 	amdSpec := fc.vmSpec

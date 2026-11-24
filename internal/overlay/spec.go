@@ -12,9 +12,16 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
+// NetinitUser is the user that the sandbox of a container started with
+// netinit runs as: root, named outright. rungv runs a sandbox given no user
+// as its image's USER, and netinit, run as a user such as that, can set up
+// no network and switch to no user (setgroups: operation not permitted).
+const NetinitUser = "0:0"
+
 // WithNetinit returns spec running netinit (mounted read-only from binDir at
 // guestcfg.MountDir) with cfg in front of its command, as root, and with the
-// DNS server dns when it is valid.
+// DNS server dns when it is valid. netinit drops to the spec's user (the
+// container's, or else its image's) once the network is up.
 func WithNetinit(spec sandbox.Spec, cfg guestcfg.Config, binDir string, dns netip.AddrPort) (sandbox.Spec, error) {
 	if !spec.SetEntrypoint || spec.Entrypoint == "" {
 		return spec, errors.New("the container has no command")
@@ -35,7 +42,7 @@ func WithNetinit(spec sandbox.Spec, cfg guestcfg.Config, binDir string, dns neti
 	out := spec.Clone()
 	out.Entrypoint = guestcfg.Path
 	out.Command = rungv.FormatArgs(append([]string{spec.Entrypoint}, args...))
-	out.User = ""
+	out.User = NetinitUser
 	out.Env = append(slices.DeleteFunc(slices.Clone(spec.Env), func(kv string) bool {
 		k, _, _ := strings.Cut(kv, "=")
 		return k == guestcfg.EnvVar

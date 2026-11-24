@@ -22,6 +22,13 @@ macOS 13 이상이 설치된 Apple Silicon Mac에서 [Homebrew](https://brew.sh)
 brew install --cask ironpark/tap/gvx-desktop
 ```
 
+업데이트할 때는 먼저 `brew update`를 실행합니다. Homebrew는 서드파티 tap을 `HOMEBREW_AUTO_UPDATE_SECS`(기본 24시간)마다 한 번만 새로 받으므로, `brew upgrade`만으로는 새 릴리스가 아직 보이지 않을 수 있습니다. cask는 실행 중인 앱을 종료한 뒤 교체하고, Homebrew가 새 버전을 다시 엽니다. 0.9.0 이하에서 업그레이드하면 Homebrew가 이미 설치된 cask를 따르므로 예전 버전이 계속 실행됩니다. 이때는 트레이 메뉴에서 종료한 뒤 앱을 다시 엽니다.
+
+```sh
+brew update
+brew upgrade --cask ironpark/tap/gvx-desktop
+```
+
 직접 설치하려면 [릴리스 페이지](https://github.com/ironpark/gvx-desktop/releases)에서 `gvx-desktop-<version>-macos-arm64.dmg`와 함께 게시된 `.sha256` 파일을 다운로드합니다. 두 파일이 있는 폴더에서 체크섬을 확인한 다음 DMG를 열어 **GVX Desktop**을 **응용 프로그램** 폴더로 옮깁니다.
 
 ```sh

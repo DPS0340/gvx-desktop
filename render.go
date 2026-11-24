@@ -467,7 +467,7 @@ func demoAppUpdate(m *ui.Model, method appupdate.Method, change func(*ui.AppUpda
 	u := ui.AppUpdate{Tag: "v0.6.0", Page: page, Install: appupdate.Install{Method: method, Path: "/Applications/GVX Desktop.app"}}
 	switch method {
 	case appupdate.Homebrew:
-		u.Command = "brew upgrade --cask gvx-desktop"
+		u.Command = u.Install.CommandForVersion("v0.6.0")
 	case appupdate.Deb:
 		u.Install.Path = "/usr/bin/gvx-desktop"
 		dl := appupdate.ReleasesURL + "/download/v0.6.0/gvx-desktop_0.6.0_amd64.deb"

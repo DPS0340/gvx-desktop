@@ -84,7 +84,7 @@ func TestAppUpdateActionFollowsTheInstall(t *testing.T) {
 	}{
 		{AppUpdate{Install: appupdate.Install{Method: appupdate.Bundle}}, "Update"},
 		{AppUpdate{Install: appupdate.Install{Method: appupdate.Program}, Ready: true}, "Restart to update"},
-		{AppUpdate{Install: appupdate.Install{Method: appupdate.Homebrew}, Command: "brew upgrade --cask gvx-desktop"}, "Copy command"},
+		{AppUpdate{Install: appupdate.Install{Method: appupdate.Homebrew}, Command: "brew update && brew upgrade --cask gvx-desktop"}, "Copy command"},
 		{AppUpdate{Install: appupdate.Install{Method: appupdate.Deb}}, "Open the release page"}, // no package to name
 		{AppUpdate{Install: appupdate.Install{Method: appupdate.Manual}}, "Open the release page"},
 	} {
@@ -98,7 +98,7 @@ func TestAppUpdateActionFollowsTheInstall(t *testing.T) {
 			t.Errorf("%v: no %q in the window", c.u.Install.Method, c.verb)
 		}
 	}
-	if !strings.Contains(appUpdateText(AppUpdate{Install: appupdate.Install{Method: appupdate.Homebrew}, Command: "brew upgrade --cask gvx-desktop"}), "brew upgrade --cask gvx-desktop") {
+	if !strings.Contains(appUpdateText(AppUpdate{Install: appupdate.Install{Method: appupdate.Homebrew}, Command: "brew update && brew upgrade --cask gvx-desktop"}), "brew update && brew upgrade --cask gvx-desktop") {
 		t.Error("Homebrew's banner does not name the command")
 	}
 }
@@ -287,7 +287,7 @@ func TestAppUpdateControllerSignedFeedAndHooks(t *testing.T) {
 	waitFor(func() bool { return ggui.Peek(m.UpdateCtrl.Phase) == updater.PhaseAvailable }, "homebrew manual check available")
 	p.Frame()
 	sem := p.Semantics().String()
-	if !strings.Contains(sem, "brew upgrade --cask gvx-desktop") {
+	if !strings.Contains(sem, "brew update && brew upgrade --cask gvx-desktop") {
 		t.Errorf("Homebrew updater dialog should show brew command:\n%s", sem)
 	}
 	if !strings.Contains(sem, "Copy command") {

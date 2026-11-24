@@ -6,10 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-24
+
+### Added
+
+- **Labs: Per-container Linux micro-VM runtime** (Apple silicon macOS, `--runtime=microvm` / Compose `runtime: microvm`):
+  - Automatically runs `linux/amd64` containers inside a lightweight per-container Apple Virtualization.framework Linux micro-VM with Rosetta for Linux (`x86_64`), and optionally runs `linux/arm64` containers on a real Linux 6.18.64 kernel (no Rosetta required) for workloads that hit gVisor compatibility limits (`io_uring`, `iptables`/`nftables`, `FUSE`, `--privileged` VPNs, etc.).
+  - Shares `rungv`'s EROFS image cache directly via zero-copy `virtio-blk` / `erofs` layer mounts, with persistent per-container `ext4` writable layers, `ext4lite` named volume sharing with host `flock` locking, directory and single-file bind mounts, `tmpfs`, cgroup v2 CPU/memory/PID limits, TCP port forwarding (`-p`/`-P`, Labs `*.localhost`, MCP), and full container controls (`exec`, TTY/Terminal, `top`, `stats`, `pause`/`unpause`, `cp`, `diff`, `export`, `commit`).
+  - Adds per-VM resource controls in **Labs → Cross-architecture & micro-VMs** (`apple/container`-aligned defaults: 4 vCPUs clamped to host CPUs, 1024 MiB RAM), plus `micro-VM` and `amd64` badges in **Containers** and **Images** across all 7 languages.
+- **Mixed Compose overlay networking (`gvx ↔ microvm`)**: micro-VM containers join user-defined Docker and Compose networks via vsock `gvx0` TUN and an in-guest `127.0.0.11:53` DNS relay bridged directly into `overlay.Fabric`, enabling bidirectional `gvx ↔ microvm` and `microvm ↔ microvm` service-name communication, live `docker network connect`/`disconnect`, and `--internal` network isolation without extra host listeners.
+
+### Changed
+
+- Upgraded `github.com/ironpark/gvx-desktop-vm` to `v0.2.0` (`vm-assets-v2` kernel & initramfs with `erofs`, `loop`, `tun`, and `wireguard` modules, container runtime RPCs, and vsock overlay transport).
+
 ### Fixed
 
 - On macOS, quitting with ⌘Q, the Dock's **Quit**, or a quit Apple event now quits the app as the tray's **Quit** does, instead of only hiding it to the tray while **Keep running when the window closes** is on. A quit asked again while the sandboxes stop adds no second stop ([#7](https://github.com/ironpark/gvx-desktop/issues/7)).
 - The Homebrew cask quits the running app before an upgrade or uninstall replaces it, so the old version no longer keeps running after `brew upgrade`. The app's update notice for a Homebrew install and the README now say `brew update && brew upgrade --cask gvx-desktop`, since `brew upgrade` alone may not see a release for up to a day ([#7](https://github.com/ironpark/gvx-desktop/issues/7)).
+- Fixed Sandbox Engine containers whose image sets a non-root `USER` failing on user-defined and Compose networks with `netinit: setgroups: operation not permitted` (exit 126) by running the `netinit` wrapper as `0:0` before dropping to the container's configured user ([#9](https://github.com/ironpark/gvx-desktop/pull/9)).
 
 ## [0.9.0] - 2026-11-24
 
@@ -133,7 +148,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial release of GVX Desktop for Apple silicon macOS with Homebrew cask distribution.
 - Sandbox management, image registry search (Docker Hub & Quay), `ext4lite`/`hostfs` volumes, checkpoint snapshots, `rungv` installer/updater, and English & Korean UI.
 
-[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/ironpark/gvx-desktop/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ironpark/gvx-desktop/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ironpark/gvx-desktop/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ironpark/gvx-desktop/compare/v0.6.0...v0.7.0

@@ -64,7 +64,7 @@ irm https://raw.githubusercontent.com/ironpark/gvx-desktop/main/install.ps1 | ie
 스크립트는 영어·한국어·일본어 TUI(설정 또는 Windows 로캘에서 자동 감지, 실행 중 `L` 키로 전환)를 제공하며, 실행 중인 앱 확인, SHA-256 체크섬 검증 후 릴리스에 설치 프로그램(`.exe`)이 있으면 이를 실행하고 이전 릴리스에서는 포터블 ZIP으로 자동 폴백합니다.
 
 - **업데이트**: 같은 명령을 다시 실행합니다.
-- **특정 버전 설치**: `$env:GVX_DESKTOP_VERSION = '0.9.0'`
+- **특정 버전 설치**: `$env:GVX_DESKTOP_VERSION = '0.10.0'`
 - **설치 언어 지정**: `$env:GVX_DESKTOP_LANG = 'ko'` (`en`, `ko`, `ja`)
 - **비대화형 설치**: `$env:GVX_DESKTOP_NONINTERACTIVE = '1'`
 - **바탕 화면 바로가기 제어**: `$env:GVX_DESKTOP_DESKTOP_SHORTCUT = '0'` (또는 `'1'`)
@@ -90,7 +90,7 @@ sudo dnf install ./gvx-desktop-*.x86_64.rpm     # Fedora, RHEL
 모든 릴리스는 `SHA256SUMS`, 파일별 `.sha256`, `BUILD_INFO.txt`, 그리고 서명된 SLSA v1.0 빌드 프로비넌스 번들(`gvx-desktop-v<version>.sigstore.json`)을 함께 게시합니다. GitHub CLI로 다운로드한 파일을 검증할 수 있습니다.
 
 ```sh
-V=0.9.0  # 릴리스 버전
+V=0.10.0  # 릴리스 버전
 gh attestation verify "gvx-desktop-$V-macos-arm64.dmg" \
   --repo ironpark/gvx-desktop \
   --signer-workflow ironpark/gvx-desktop/.github/workflows/release.yml \
@@ -115,7 +115,7 @@ gh attestation verify "gvx-desktop-$V-macos-arm64.dmg" \
 | **볼륨 및 스냅샷** | `ext4lite` 또는 `hostfs` 볼륨을 생성·확인·정리합니다. 샌드박스 체크포인트를 켜면 실행 상태를 유지하거나 중지하면서 밀리초 단위의 gVisor 스냅샷을 저장하고 언제든 복원·삭제할 수 있습니다. |
 | **Docker** | 기본 **Sandbox Engine** 모드에서 각 컨테이너를 독립된 비특권 gvx 샌드박스로 직접 실행합니다. 번들 `docker`·`buildx`·`compose` CLI, Compose `service_healthy` 및 `Healthcheck`, 오버레이 네트워킹, 호스트 바인드 마운트, BuildKit 빌더, 선택적 LAN 포트 게시(`0.0.0.0`), 호스트 SSH 에이전트 포워딩을 지원합니다. 원본 `docker:dind`는 **설정 → Docker**의 **호환성** 모드에서 계속 사용할 수 있습니다. |
 | **Kubernetes (k3s)** | 단일 및 멀티 노드(에이전트 샌드박스) k3s 클러스터를 시작하고 `gvx-k3s` kubeconfig 컨텍스트를 구성합니다. **클러스터에 로드**로 이미지를 직접 가져오고, 내장 로컬 레지스트리와 연동하며, 파드·워크로드·서비스 관리, `kubectl` 없는 포트 포워딩, ServiceLB를 지원합니다. |
-| **실험실 (Labs)** | **로컬 HTTPS 라우팅 (`*.localhost`)**: `/etc/hosts` 수정 없이 실행 중인 컨테이너, Compose 서비스, 샌드박스, Kubernetes 포트 포워드를 루프백 HTTP/HTTPS 리버스 프록시(`:18080` / `:18443`)와 로컬 개발 CA·동적 TLS 인증서로 연결합니다. **AI 에이전트 MCP 서버**: 14개 도구(샌드박스, exec, 로그, 체크포인트 스냅샷·복원, 컨테이너, 이미지, 로컬 라우트)를 제공하는 내장 Streamable HTTP MCP 서버(`http://127.0.0.1:18787/mcp`)와 Claude Code·JSON 설정 원클릭 복사를 지원합니다. Apple Silicon macOS에서는 **Rosetta 기반 `amd64` 크로스 아키텍처 빌드**도 사용할 수 있습니다. |
+| **실험실 (Labs)** | **로컬 HTTPS 라우팅 (`*.localhost`)**: `/etc/hosts` 수정 없이 실행 중인 컨테이너, Compose 서비스, 샌드박스, Kubernetes 포트 포워드를 루프백 HTTP/HTTPS 리버스 프록시(`:18080` / `:18443`)와 로컬 개발 CA·동적 TLS 인증서로 연결합니다. **AI 에이전트 MCP 서버**: 14개 도구(샌드박스, exec, 로그, 체크포인트 스냅샷·복원, 컨테이너, 이미지, 로컬 라우트)를 제공하는 내장 Streamable HTTP MCP 서버(`http://127.0.0.1:18787/mcp`)와 Claude Code·JSON 설정 원클릭 복사를 지원합니다. **크로스 아키텍처 및 컨테이너별 마이크로 VM** (Apple Silicon macOS): Rosetta 기반 `linux/amd64` 이미지 빌드 및 컨테이너 실행, 전체 Linux 커널이 필요한 워크로드를 위한 `linux/arm64` 마이크로 VM 선택 실행(`--runtime=microvm` / Compose `runtime: microvm`), 제로카피 EROFS 이미지 캐시 공유, `gvx ↔ microvm` 혼합 Compose 오버레이 네트워킹을 지원합니다. |
 | **데스크톱 및 업데이트** | Zig 기반 네이티브 GPU 렌더러(`ggui v0.8.2`), macOS·Windows 트레이 모드, 7개 언어(`en`, `ko`, `ja`, `zh-Hans`, `zh-Hant`, `de`, `hi`), 명령 팔레트(`⌘K`) 및 페이지 단축키(`⌘1`–`⌘9`), `rungv` 및 앱 자동 업데이트(Sparkle 2 appcast + GitHub Releases 폴백), `rungv`와 번들 Docker CLI의 `~/.gvx/bin` 터미널 PATH 원클릭 등록을 지원합니다. |
 
 앱은 기본적으로 시스템 언어를 따릅니다. **설정 → 일반 → 언어**에서 언제든 바꿀 수 있습니다.

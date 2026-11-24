@@ -64,7 +64,7 @@ irm https://raw.githubusercontent.com/ironpark/gvx-desktop/main/install.ps1 | ie
 The script presents an interactive TUI in English, Korean, or Japanese (detected from your settings or Windows locale, or toggled with `L`), checks for running instances, verifies the SHA-256 checksum, and runs the Setup EXE when available (falling back to the portable ZIP for older releases).
 
 - **Update** by running the same command again.
-- **Install a specific version**: `$env:GVX_DESKTOP_VERSION = '0.9.0'`
+- **Install a specific version**: `$env:GVX_DESKTOP_VERSION = '0.10.0'`
 - **Choose installer language**: `$env:GVX_DESKTOP_LANG = 'en'` (`en`, `ko`, or `ja`)
 - **Non-interactive install**: `$env:GVX_DESKTOP_NONINTERACTIVE = '1'`
 - **Control Desktop shortcut**: `$env:GVX_DESKTOP_DESKTOP_SHORTCUT = '0'` (or `'1'`)
@@ -90,7 +90,7 @@ The packages add **GVX Desktop** to the application menu, install the `gvx-deskt
 Every release ships `SHA256SUMS`, per-file `.sha256` files, `BUILD_INFO.txt`, and a signed SLSA v1.0 build provenance bundle (`gvx-desktop-v<version>.sigstore.json`). Verify any downloaded artifact with the GitHub CLI:
 
 ```sh
-V=0.9.0  # release version
+V=0.10.0  # release version
 gh attestation verify "gvx-desktop-$V-macos-arm64.dmg" \
   --repo ironpark/gvx-desktop \
   --signer-workflow ironpark/gvx-desktop/.github/workflows/release.yml \
@@ -115,7 +115,7 @@ gh attestation verify "gvx-desktop-$V-macos-arm64.dmg" \
 | **Volumes & Snapshots** | Create, inspect, and prune `ext4lite` or `hostfs` volumes. Enable checkpointing on a sandbox to take millisecond gVisor snapshots (while keeping it running or stopping it) and restore or delete snapshots at any time. |
 | **Docker** | Runs in native **Sandbox Engine** mode by default: each container runs directly as its own unprivileged gvx sandbox with the bundled `docker`, `buildx`, and `compose` CLIs, Compose `service_healthy` & `Healthcheck`, overlay networking, host bind mounts, BuildKit builder, opt-in LAN port publishing (`0.0.0.0`), and host SSH agent forwarding. Unmodified `docker:dind` remains available as **Compatibility** mode under **Settings → Docker**. |
 | **Kubernetes (k3s)** | Launch single- or multi-node k3s clusters (with agent sandboxes), configure the `gvx-k3s` kubeconfig context, **Load into cluster** to import images directly, pull from the built-in local registry, manage Pods, Workloads, and Services, forward ports without `kubectl`, and enable ServiceLB. |
-| **Labs (Experimental)** | **Local HTTPS routing (`*.localhost`)**: built-in loopback HTTP/HTTPS reverse proxy (`:18080` / `:18443`) with a local dev CA and dynamic TLS certificates for running containers, Compose services, sandboxes, and Kubernetes port forwards — no `/etc/hosts` edits. **AI agent MCP server**: built-in Streamable HTTP MCP server (`http://127.0.0.1:18787/mcp`) exposing 14 tools (sandboxes, exec, logs, checkpoint snapshots & restore, containers, images, local routes) with one-click Claude Code and JSON config copy. **Cross-architecture `amd64` builds with Rosetta** on Apple silicon macOS. |
+| **Labs (Experimental)** | **Local HTTPS routing (`*.localhost`)**: built-in loopback HTTP/HTTPS reverse proxy (`:18080` / `:18443`) with a local dev CA and dynamic TLS certificates for running containers, Compose services, sandboxes, and Kubernetes port forwards — no `/etc/hosts` edits. **AI agent MCP server**: built-in Streamable HTTP MCP server (`http://127.0.0.1:18787/mcp`) exposing 14 tools (sandboxes, exec, logs, checkpoint snapshots & restore, containers, images, local routes) with one-click Claude Code and JSON config copy. **Cross-architecture & per-container micro-VMs** (Apple silicon macOS): `linux/amd64` builds and container runs via Rosetta, opt-in native `linux/arm64` micro-VMs (`--runtime=microvm` / Compose `runtime: microvm`) for workloads needing a full Linux kernel, shared zero-copy EROFS image cache, and mixed `gvx ↔ microvm` Compose overlay networking. |
 | **Desktop & Updates** | Native Zig-backed GPU renderer (`ggui v0.8.2`), tray mode on macOS and Windows, 7 languages (`en`, `ko`, `ja`, `zh-Hans`, `zh-Hant`, `de`, `hi`), Command Palette (`⌘K`) and page shortcuts (`⌘1`–`⌘9`), automatic `rungv` and app updates (Sparkle 2 appcast with GitHub Releases fallback), and one-click `~/.gvx/bin` terminal PATH setup for `rungv` and the bundled Docker CLI. |
 
 The app follows your system language by default. Change it anytime under **Settings → General → Language**.

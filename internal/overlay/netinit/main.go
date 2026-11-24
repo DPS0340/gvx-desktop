@@ -69,8 +69,8 @@ func main() {
 			if err := addHosts(cfg.Hosts); err != nil {
 				fmt.Fprintf(os.Stderr, "gvx: warning: extra hosts are not in /etc/hosts: %v\n", err)
 			}
-			if err := useDNS(cfg.DNS); err != nil {
-				fmt.Fprintf(os.Stderr, "gvx: warning: /etc/resolv.conf does not name %s, so container names may not resolve: %v\n", cfg.DNS, err)
+			if err := useDNS(resolvConf, resolvConfCopy, cfg.DNS); err != nil {
+				fmt.Fprintf(os.Stderr, "gvx: warning: %s does not name %s, so container names may not resolve: %v\n", resolvConf, cfg.DNS, err)
 			}
 			if cfg.Isolated {
 				if err := isolate(isolatedKeep); err != nil {
@@ -127,18 +127,26 @@ func addHosts(lines []string) error {
 	return errors.Join(werr, f.Close())
 }
 
-// resolvConf is where the container's resolver looks for its nameservers.
-const resolvConf = "/etc/resolv.conf"
+const (
+	// resolvConf is where the container's resolver looks for its
+	// nameservers.
+	resolvConf = "/etc/resolv.conf"
+	// resolvConfCopy holds the new resolv.conf when the root filesystem
+	// is read-only. /dev is a tmpfs, so it stays writable then.
+	resolvConfCopy = "/dev/.gvx-resolv.conf"
+)
 
-// useDNS makes /etc/resolv.conf name nameserver alone, unless it already
-// does (see guestcfg.ResolvConf). The new file takes the old one's place by
-// a rename, which replaces a symbolic link rather than writing where it
-// points.
-func useDNS(nameserver string) error {
+// useDNS makes the resolv.conf at path name nameserver alone, unless it
+// already does (see guestcfg.ResolvConf). The new file takes the old one's
+// place by a rename, which replaces a symbolic link rather than writing
+// where it points. On a read-only root filesystem (docker run --read-only,
+// Compose read_only) it is written to spare instead and bound over path, as
+// Docker binds its own resolv.conf over the image's.
+func useDNS(path, spare, nameserver string) error {
 	if nameserver == "" {
 		return nil
 	}
-	cur, err := os.ReadFile(resolvConf)
+	cur, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -146,11 +154,26 @@ func useDNS(nameserver string) error {
 	if !replace {
 		return nil
 	}
-	tmp := resolvConf + ".gvx-netinit"
-	if err := os.WriteFile(tmp, []byte(want), 0o644); err != nil {
+	err = replaceFile(path, []byte(want))
+	if !errors.Is(err, syscall.EROFS) {
 		return err
 	}
-	if err := os.Rename(tmp, resolvConf); err != nil {
+	if err := os.WriteFile(spare, []byte(want), 0o644); err != nil {
+		return err
+	}
+	if err := syscall.Mount(spare, path, "", syscall.MS_BIND, ""); err != nil {
+		return &os.PathError{Op: "bind " + spare + " over", Path: path, Err: err}
+	}
+	return nil
+}
+
+// replaceFile puts a file holding data at path by a rename.
+func replaceFile(path string, data []byte) error {
+	tmp := path + ".gvx-netinit"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return err
 	}

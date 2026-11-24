@@ -304,6 +304,8 @@ func TestUserNetworksNameTheDNSRelay(t *testing.T) {
 		want string
 	}{
 		{"gvxd-dns-net", map[string]any{"NetworkMode": "gvxd-dns"}, overlay.DNSRelay},
+		// netinit binds a copy over the read-only root's file.
+		{"gvxd-dns-ro", map[string]any{"NetworkMode": "gvxd-dns", "ReadonlyRootfs": true}, overlay.DNSRelay},
 		{"gvxd-dns-own", map[string]any{"NetworkMode": "gvxd-dns", "Binds": []string{own + ":/etc/resolv.conf:ro"}}, ""},
 		{"gvxd-dns-etc", map[string]any{"NetworkMode": "gvxd-dns", "Binds": []string{etc + ":/etc/"}}, ""},
 		// No user network, so no DNS server of its own for the relay to ask.

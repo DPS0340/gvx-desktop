@@ -28,8 +28,9 @@ type EngineState struct {
 // the same menus, so the menus are built again only when it changes: not
 // for a line of a log, nor for a container's uptime.
 type MenuState struct {
-	Docker, Kube  EngineState
-	SandboxEngine bool
+	Docker, Kube        EngineState
+	SandboxEngine       bool
+	SandboxEngineStatus SandboxEngineStatus
 	// Containers are the ones the Docker menu lists, running first, and
 	// More the number left out.
 	Containers []dockerapi.Container
@@ -58,7 +59,7 @@ type MenuPod struct {
 // Equal makes MenuState comparable for signals. Containers and pods are
 // equal when the menu tells the same of them.
 func (s MenuState) Equal(o MenuState) bool {
-	return s.Docker == o.Docker && s.Kube == o.Kube && s.SandboxEngine == o.SandboxEngine && s.More == o.More && s.Listed == o.Listed && s.ListErr == o.ListErr &&
+	return s.Docker == o.Docker && s.Kube == o.Kube && s.SandboxEngine == o.SandboxEngine && s.SandboxEngineStatus == o.SandboxEngineStatus && s.More == o.More && s.Listed == o.Listed && s.ListErr == o.ListErr &&
 		s.PodsMore == o.PodsMore && s.PodsListed == o.PodsListed && s.PodsErr == o.PodsErr && s.PodsWaiting == o.PodsWaiting &&
 		slices.EqualFunc(s.Pods, o.Pods, func(a, b MenuPod) bool {
 			return a.Pod.Key() == b.Pod.Key() && a.Status == b.Status && a.Health == b.Health
@@ -135,7 +136,18 @@ func (m *Model) RecipeMenu(recipe string, show func()) []ggui.MenuItem {
 	id := e.ID
 	var items []ggui.MenuItem
 	if recipe == recipes.Docker && s.SandboxEngine {
-		items = append(items, off(tr("Docker · Sandbox Engine")))
+		title = "Docker"
+		switch {
+		case s.SandboxEngineStatus.Opening:
+			items = append(items, off(tr("Docker · Sandbox Engine (starting…)")))
+		case s.SandboxEngineStatus.Err != "":
+			items = append(items,
+				off(tr("Docker · Sandbox Engine (failed)")),
+				ggui.MenuAction(tr("Retry Sandbox Engine"), "", m.RetrySandboxEngine),
+			)
+		default:
+			items = append(items, off(tr("Docker · Sandbox Engine")))
+		}
 	} else {
 		switch {
 		case id == "":

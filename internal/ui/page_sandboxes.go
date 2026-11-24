@@ -98,23 +98,35 @@ func sandboxesPage(m *Model) ggui.Widget {
 	).BindSelected(selected).RowName(func(r Row) string { return r.Spec.Name }).RowHeight(48).MaxRows(5).
 		Toolbar(toolbar)
 
-	empty := ui.Empty(tr("No sandboxes"), tr("A sandbox runs one OCI image in its own unprivileged process. Create one, or start the Docker Engine or Kubernetes recipe.")).
+	empty := ui.Empty(tr("No sandboxes"), tr("A sandbox runs one OCI image in its own unprivileged process. Create one, or open Docker or Kubernetes.")).
 		Media(glyph(lucide.Box, 32).Color(colorGray)).
 		Action(widget.Row(
 			ui.Button(tr("New sandbox"), func() { m.NewSandbox("") }).Icon(glyph(lucide.Plus, 16)),
-			ui.Button("Docker Engine", func() { m.CreateFromRecipe(recipes.Docker) }).Outline(),
+			ui.Button("Docker", m.OpenDocker).Outline(),
 		).Gap(8)).Outline()
+
+	hasVisible := ggui.Map(visible, func(v []Row) bool { return len(v) > 0 })
+	filteredEmpty := ggui.If(ggui.Not(hasVisible), func() ggui.Widget {
+		return widget.Padding(widget.Row(
+			ui.Caption(tr("No sandboxes match the current filter.")),
+			ui.Button(tr("Clear filter"), func() {
+				m.Query.Set("")
+				m.SandboxStatus.Set("all")
+			}).Outline().Size(ui.ButtonExtraSmall),
+		).Gap(10).Align(widget.AlignCenter).Justify(widget.JustifyCenter), 16, 12)
+	})
 
 	list := ggui.If(ggui.Map(m.Specs, func(s []sandbox.Spec) bool { return len(s) > 0 }), func() ggui.Widget {
 		return widget.Column(
-			tableCard(table),
-			detailPanel(m),
+			tableCard(widget.Column(table, filteredEmpty).Stretch()),
+			ggui.If(hasVisible, func() ggui.Widget { return detailPanel(m) }),
 		).Gap(16).Stretch()
 	}).Else(func() ggui.Widget { return empty })
 
 	return page(
 		pageHeader(tr("Sandboxes"), summary,
-			ui.Button(tr("New sandbox"), func() { m.NewSandbox("") }).Icon(glyph(lucide.Plus, 16)).Shortcut("cmd+n"),
+			tip(iconButton(lucide.RefreshCw, tr("Refresh sandboxes"), m.RefreshAll), tr("Refresh")),
+			ui.Button(tr("New sandbox"), func() { m.NewSandbox("") }).Icon(glyph(lucide.Plus, 16)),
 		),
 		list,
 	)
@@ -161,7 +173,6 @@ func sandboxPauseAction(st sandbox.State) string {
 
 func rowMenu(m *Model, r Row) ggui.Widget {
 	id := r.Spec.ID
-	active := r.State.Status.Active()
 	entries := []ggui.Widget{
 		ui.MenuItem(tr("Logs"), func() { m.ShowSandbox(id, 0) }),
 		ui.MenuItem(tr("Edit…"), func() { m.EditSandbox(id) }),
@@ -174,10 +185,10 @@ func rowMenu(m *Model, r Row) ggui.Widget {
 	case "resume":
 		entries = append(entries, ui.MenuItem(tr("Resume"), func() { m.ResumeSandbox(id) }))
 	}
-	if active {
+	if r.State.Status == sandbox.Running && !r.State.Paused {
 		entries = append(entries, ui.MenuItem(tr("Restart"), func() { m.RestartSandbox(id) }))
 	}
-	entries = append(entries, ui.MenuDivider(), ui.MenuItem(tr("Delete"), func() { m.AskDelete(id) }).Destructive())
+	entries = append(entries, ui.MenuDivider(), ui.MenuItem(tr("Delete…"), func() { m.AskDelete(id) }).Destructive())
 	return moreMenu(tr("More actions for %s", r.Spec.Name), entries...)
 }
 
@@ -242,7 +253,7 @@ func detailHeader(m *Model, r Row) ggui.Widget {
 		meta = append(meta, st.Platform)
 	}
 	if st.PID != 0 {
-		meta = append(meta, fmt.Sprintf("pid %d", st.PID))
+		meta = append(meta, tr("pid %d", st.PID))
 	}
 	if st.Restored != "" {
 		meta = append(meta, tr("restored from %s", shortPath(st.Restored)))
@@ -331,7 +342,12 @@ func logViewer(m *Model, lines ggui.Readable[[]sandbox.LogLine], empty string, a
 		each := widget.EachKeyed(shown, func(l sandbox.LogLine) int64 { return l.Seq }, func(row widget.EachItem[sandbox.LogLine]) ggui.Widget {
 			return makeRow(row.Item, wrapped)
 		}).Else(func() ggui.Widget {
-			return widget.Padding(ui.Caption(empty), 12)
+			return ggui.View(ggui.Map(filter, func(s string) bool { return strings.TrimSpace(s) != "" }), func(filtered bool) ggui.Widget {
+				if filtered {
+					return widget.Padding(ui.Caption(tr("No matching lines.")), 12)
+				}
+				return widget.Padding(ui.Caption(empty), 12)
+			})
 		})
 		if !wrapped {
 			each = each.ItemExtent(19)
@@ -530,10 +546,10 @@ func configView(m *Model, s sandbox.Spec) ggui.Widget {
 	}
 	limits := []string{}
 	if s.Memory != "" {
-		limits = append(limits, tr("memory ")+s.Memory)
+		limits = append(limits, tr("memory %s", s.Memory))
 	}
 	if s.CPUs != "" {
-		limits = append(limits, s.CPUs+tr(" CPUs"))
+		limits = append(limits, tr("%s CPUs", s.CPUs))
 	}
 	sec := tr("privileged inside the sandbox")
 	if s.Unprivileged {
@@ -599,32 +615,45 @@ func sandboxSnapshots(m *Model, r Row) ggui.Widget {
 			ui.Button(tr("Snapshot, keep running"), func() { m.Checkpoint(id, true) }).Outline().Disabled(!running),
 		).Gap(8),
 		ui.Caption(tr("A snapshot holds the task graph, memory pages, volumes and network namespaces. Restoring needs the same mounts, which this sandbox's settings provide.")),
-		snapshotList(m, snaps, false),
+		snapshotList(m, snaps, false, ggui.Const(tr("No snapshots yet."))),
 	).Gap(12).Stretch(), 8, 0)
 }
 
-func snapshotList(m *Model, snaps ggui.Readable[[]sandbox.Snapshot], showSandbox bool) ggui.Widget {
-	return widget.EachKeyed(snaps, func(s sandbox.Snapshot) string { return s.Dir }, func(row widget.EachItem[sandbox.Snapshot]) ggui.Widget {
-		s := row.Item
-		title := s.Time.Format(tr("Jan 2, 15:04:05"))
-		desc := formatBytes(s.Size)
-		if showSandbox {
-			if spec, ok := m.spec(s.SandboxID); ok {
-				title = spec.Name + " · " + title
-			} else {
-				title = tr("(deleted sandbox) · ") + title
+func snapshotList(m *Model, snaps ggui.Readable[[]sandbox.Snapshot], showSandbox bool, emptyText ggui.Readable[string]) ggui.Widget {
+	render := func(specNames map[string]string) ggui.Widget {
+		return widget.EachKeyed(snaps, func(s sandbox.Snapshot) string { return s.Dir }, func(row widget.EachItem[sandbox.Snapshot]) ggui.Widget {
+			s := row.Item
+			title := s.Time.Format(tr("Jan 2, 15:04:05"))
+			desc := formatBytes(s.Size)
+			if showSandbox {
+				if name, ok := specNames[s.SandboxID]; ok {
+					title = name + " · " + title
+				} else {
+					title = tr("(deleted sandbox) · ") + title
+				}
 			}
+			return ui.Item(title, desc+" · "+s.Dir).
+				Media(glyph(lucide.Camera, 18).Color(colorBlue)).
+				Action(widget.Row(
+					ui.Button(tr("Restore"), func() { m.Restore(s) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.RotateCcw, 14)),
+					tip(iconButton(lucide.FolderOpen, tr("Reveal"), func() { m.Open(s.Dir) }), tr("Reveal in file manager")),
+					tip(iconButton(lucide.Trash, tr("Delete snapshot"), func() { m.DeleteSnapshot(s) }), tr("Delete snapshot")),
+				).Gap(4).Align(widget.AlignCenter)).Outline().Small()
+		}).Gap(8).Else(func() ggui.Widget {
+			return ui.CaptionOf(emptyText)
+		})
+	}
+	if !showSandbox {
+		return render(nil)
+	}
+	names := ggui.Map(m.Specs, func(specs []sandbox.Spec) map[string]string {
+		out := make(map[string]string, len(specs))
+		for _, s := range specs {
+			out[s.ID] = s.Name
 		}
-		return ui.Item(title, desc+" · "+s.Dir).
-			Media(glyph(lucide.Camera, 18).Color(colorBlue)).
-			Action(widget.Row(
-				ui.Button(tr("Restore"), func() { m.Restore(s) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.RotateCcw, 14)),
-				iconButton(lucide.FolderOpen, tr("Reveal"), func() { m.Open(s.Dir) }),
-				iconButton(lucide.Trash, tr("Delete snapshot"), func() { m.DeleteSnapshot(s) }),
-			).Gap(4).Align(widget.AlignCenter)).Outline().Small()
-	}).Gap(8).Else(func() ggui.Widget {
-		return ui.Caption(tr("No snapshots yet."))
-	})
+		return out
+	}).WithEqual(nil)
+	return ggui.View(names, render)
 }
 
 // sandboxTerminal is a shell in the chosen sandbox, as rungv exec -it runs one.

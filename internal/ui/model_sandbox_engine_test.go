@@ -848,11 +848,15 @@ func TestSandboxEngineUIAndGating(t *testing.T) {
 		t.Errorf("Docker page missing sandbox engine view or builder state:\n%s", p.Semantics())
 	}
 
-	// Docker image explorer in sandbox-engine mode shows the unsupported message on Files tab.
+	// Docker image explorer in sandbox-engine mode opens with the Docker source
+	// and does not block browsing behind an unsupported placeholder.
 	m.ExploreDockerImage(DockerImageRow{ID: "sha256:1234", Repository: "nginx", Tag: "alpine"}, ExploreFiles)
 	p.Frame()
-	if !shows("Not supported in the sandbox engine") {
-		t.Errorf("Explorer Files tab missing unsupported message:\n%s", p.Semantics())
+	if !shows("Image explorer") || !shows("nginx:alpine") {
+		t.Errorf("Explorer did not open in sandbox-engine mode:\n%s", p.Semantics())
+	}
+	if shows("Not supported in the sandbox engine") {
+		t.Errorf("Explorer should not show unsupported message in sandbox-engine mode:\n%s", p.Semantics())
 	}
 
 	// Settings → Docker shows builder state (idle / running) and gvx-desktop builder status line.

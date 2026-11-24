@@ -562,17 +562,35 @@ func TestSaveDraftLiveApply(t *testing.T) {
 		t.Errorf("saved spec = %+v", spec)
 	}
 
-	// Failure still saves spec and surfaces error toast.
+	// SaveDraft(false) ("Save") saves without applying live to the running sandbox.
+	m.States.Set(map[string]sandbox.State{web.ID: {Status: sandbox.Running, Control: true}})
+	m.EditSandbox(web.ID)
+	m.Draft.Update(func(d Draft) Draft { d.Memory = "768m"; return d })
+	if !m.SaveDraft(false) {
+		t.Fatal("SaveDraft(false) failed")
+	}
+	p.Frame()
+	mu.Lock()
+	afterSaveOnly := len(applied)
+	mu.Unlock()
+	if afterSaveOnly != 1 {
+		t.Errorf("SaveDraft(false) should not call updateSandboxFn, got %d calls", afterSaveOnly)
+	}
+	if spec, ok := m.spec(web.ID); !ok || spec.Memory != "768m" {
+		t.Errorf("SaveDraft(false) did not save spec: %+v", spec)
+	}
+
+	// Failure on SaveDraft(true) ("Save and apply") still saves spec and surfaces error toast.
 	// (saveSpecs calls refreshStates which reads the empty real supervisor, so
-	// restore the simulated running+control state for the second edit.)
+	// restore the simulated running+control state for the next edit.)
 	m.States.Set(map[string]sandbox.State{web.ID: {Status: sandbox.Running, Control: true}})
 	mu.Lock()
 	updateErr = errors.New("memory below current use")
 	mu.Unlock()
 	m.EditSandbox(web.ID)
 	m.Draft.Update(func(d Draft) Draft { d.Memory = "64m"; return d })
-	if !m.SaveDraft(false) {
-		t.Fatal("SaveDraft(false) failed")
+	if !m.SaveDraft(true) {
+		t.Fatal("SaveDraft(true) failed")
 	}
 	settle(t, p, func() bool {
 		mu.Lock()
@@ -894,8 +912,9 @@ func TestPauseClosesTerminalAndDrainsSweeps(t *testing.T) {
 	cm.DockerAction("pause", ctr)
 	settle(t, cp, func() bool {
 		cmu.Lock()
-		defer cmu.Unlock()
-		return len(cevents) >= 2
+		n := len(cevents)
+		cmu.Unlock()
+		return n >= 2 && !cm.isBusy("ctr:c1")
 	}, "container pause ordering")
 	cmu.Lock()
 	gotCEvents := append([]string(nil), cevents...)

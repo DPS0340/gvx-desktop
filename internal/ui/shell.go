@@ -142,6 +142,12 @@ func sidebar(m *Model) ggui.Widget {
 	return ggui.View(open, func(o [2]bool) ggui.Widget { return sidebarFor(m, o[0], o[1]) })
 }
 
+// LabsSupported reports whether the current platform has any Labs features
+// (currently Rosetta amd64 builds on Apple silicon macOS).
+func LabsSupported() bool {
+	return runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
+}
+
 // sidebarFor is the sidebar with Docker's Networks/Containers and
 // Kubernetes's Pods/Workloads/Services nested under their engine while it runs.
 func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
@@ -161,21 +167,25 @@ func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
 	// views nest underneath in a compact collapsible group.
 	docker := item(PageDocker, "Docker", dockerIcon)
 	if containers {
+		dockerBadge := runningBadge(m.RunningContainers,
+			func(n int) string { return trn(n, "%d container running", "%d containers running") })
 		docker = ui.SidebarCustom(newSidebarTreeGroup(m,
 			sidebarNavItem{key: PageDocker, label: "Docker", icon: dockerIcon},
 			m.DockerNavOpen,
+			runningBadge(m.RunningContainers, func(n int) string { return trn(n, "%d container running", "%d containers running") }),
 			sidebarNavItem{key: PageNetworks, label: tr("Networks"), icon: lucide.Network},
-			sidebarNavItem{key: PageContainers, label: tr("Containers"), icon: lucide.Container, action: runningBadge(m.RunningContainers,
-				func(n int) string { return trn(n, "%d container running", "%d containers running") })},
+			sidebarNavItem{key: PageContainers, label: tr("Containers"), icon: lucide.Container, action: dockerBadge},
 		))
 	}
 	kube := item(PageKubernetes, "Kubernetes", lucide.ShipWheel)
 	if pods {
+		kubeBadge := runningBadge(m.RunningPods,
+			func(n int) string { return trn(n, "%d pod running", "%d pods running") })
 		kube = ui.SidebarCustom(newSidebarTreeGroup(m,
 			sidebarNavItem{key: PageKubernetes, label: "Kubernetes", icon: lucide.ShipWheel},
 			m.KubeNavOpen,
-			sidebarNavItem{key: PagePods, label: tr("Pods"), icon: lucide.Hexagon, action: runningBadge(m.RunningPods,
-				func(n int) string { return trn(n, "%d pod running", "%d pods running") })},
+			runningBadge(m.RunningPods, func(n int) string { return trn(n, "%d pod running", "%d pods running") }),
+			sidebarNavItem{key: PagePods, label: tr("Pods"), icon: lucide.Hexagon, action: kubeBadge},
 			sidebarNavItem{key: PageWorkloads, label: tr("Workloads"), icon: lucide.Boxes},
 			sidebarNavItem{key: PageServices, label: tr("Services"), icon: lucide.Waypoints},
 		))
@@ -204,11 +214,14 @@ func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
 		).Gap(1),
 	).Gap(10), brandTop, 12, 8, 12))
 
+	footer := []ui.SidebarEntry{}
+	if LabsSupported() {
+		footer = append(footer, item(PageLabs, tr("Labs"), lucide.FlaskConical))
+	}
+	footer = append(footer, item(PageSettings, tr("Settings"), lucide.Settings))
+
 	return ui.Sidebar(nav, entries...).Header(brand).
-		FooterItems(
-			item(PageLabs, tr("Labs"), lucide.FlaskConical),
-			item(PageSettings, tr("Settings"), lucide.Settings),
-		).
+		FooterItems(footer...).
 		Width(232).
 		Collapsible(ui.SidebarCollapseOffcanvas).BindCollapsed(m.SidebarNarrow).
 		Shortcut("cmd+b").Name(tr("Navigation")).
@@ -529,14 +542,17 @@ func pullDialog(m *Model) ggui.Widget {
 	logs := ggui.If(ggui.Map(m.PullLog, func(s string) bool { return s != "" }), func() ggui.Widget {
 		return ui.CodeBlockOf(m.PullLog).Height(180).Small().CopyButton(false)
 	})
-	heading := ui.HeadingOf(ggui.Map(m.PullTarget, func(t int) string {
+	heading := ui.HeadingOf(ggui.Combine(m.PullTarget, m.Settings, func(t int, s storeSettings) string {
 		if t == PullTargetDocker {
+			if s.SandboxEngine {
+				return tr("Pull an image into Docker")
+			}
 			return tr("Pull an image into Docker Engine")
 		}
 		return tr("Pull an image")
 	})).Size(17)
-	help := ui.CaptionOf(ggui.Map(m.PullTarget, func(t int) string {
-		if t == PullTargetDocker {
+	help := ui.CaptionOf(ggui.Combine(m.PullTarget, m.Settings, func(t int, s storeSettings) string {
+		if t == PullTargetDocker && !s.SandboxEngine {
 			return tr("Images run natively on this CPU (linux/%s) inside the Docker Engine sandbox.", goarch())
 		}
 		return tr("Images run natively on this CPU (linux/%s). Layers are compiled to read-only EROFS files once and cached.", goarch())
@@ -614,9 +630,8 @@ func suggestion(m *Model, ref string) ggui.Widget {
 }
 
 func volumeDialog(m *Model) ggui.Widget {
-	invalid := ggui.Map(m.VolumeName, func(s string) bool {
-		s = strings.TrimSpace(s)
-		return s == "" || (sandbox.Mount{Type: sandbox.MountVolume, Source: s, Target: "/x"}).Target == "" || strings.ContainsAny(s, " /\\:")
+	disabled := ggui.Derived(func() bool {
+		return !isValidVolumeName(m.VolumeName.Get()) || m.BusyOps.Get()["vol:create"]
 	})
 	return ui.Dialog(m.VolumeOpen, widget.Column(
 		ui.Field(tr("Name"), ui.TextField(m.VolumeName).Placeholder("pgdata").Name(tr("Volume name")).OnSubmit(func(string) { m.CreateVolume() })).
@@ -625,7 +640,7 @@ func volumeDialog(m *Model) ggui.Widget {
 			Help(tr("ext4lite keeps a journaled ext4 image in one file: real POSIX semantics, fast. hostfs keeps plain host files, slower.")),
 	).Gap(14).Stretch()).Title(tr("Create a volume")).Width(460).Footer(
 		ui.Button(tr("Cancel"), func() { m.VolumeOpen.Set(false) }).Outline(),
-		ui.Button(tr("Create"), m.CreateVolume).BindDisabled(invalid),
+		ui.Button(tr("Create"), m.CreateVolume).BindDisabled(disabled),
 	)
 }
 
@@ -635,14 +650,39 @@ func quitText(n int) string {
 		"%d sandboxes are running. gvx has no daemon: sandboxes live only while GVX Desktop runs.")
 }
 
+func quitHeading(sandboxes, containers int) string {
+	switch {
+	case sandboxes > 0 && containers > 0:
+		return tr("Stop running sandboxes and containers?")
+	case containers > 0:
+		return tr("Stop running containers?")
+	default:
+		return tr("Stop running sandboxes?")
+	}
+}
+
+func quitSummary(sandboxes, containers int) string {
+	switch {
+	case sandboxes > 0 && containers > 0:
+		return tr("%s and %s are running. gvx has no daemon: they live only while GVX Desktop runs.",
+			trn(sandboxes, "%d sandbox", "%d sandboxes"),
+			trn(containers, "%d container", "%d containers"))
+	case containers > 0:
+		return trn(containers, "%d container is running. gvx has no daemon: containers live only while GVX Desktop runs.",
+			"%d containers are running. gvx has no daemon: containers live only while GVX Desktop runs.")
+	default:
+		return quitText(sandboxes)
+	}
+}
+
 func quitDialog(m *Model) ggui.Widget {
 	head := widget.Row(
 		widget.Box(glyph(lucide.TriangleExclamationPoint, 16).Color(colorAmber)).Pad(7).Radius(8).Fill(rgbA(0xf59e0b, 0x1c)),
-		widget.Expanded(ui.Heading(tr("Stop running sandboxes?")).Size(17)),
+		widget.Expanded(ui.HeadingOf(ggui.Combine(m.Active, m.EngineRunning, quitHeading)).Size(17)),
 	).Gap(10).Align(widget.AlignCenter)
 	return ui.Dialog(m.QuitOpen, widget.Column(
 		head,
-		ui.CaptionOf(ggui.Map(m.TotalRunning, quitText)),
+		ui.CaptionOf(ggui.Combine(m.Active, m.EngineRunning, quitSummary)),
 	).Gap(12).Stretch()).Width(460).Dismissible(false).Name(tr("Quit")).Footer(
 		ui.Button(tr("Cancel"), func() { m.QuitOpen.Set(false) }).Outline(),
 		ui.Button(tr("Stop and quit"), func() {
@@ -666,11 +706,13 @@ type paletteSandbox struct {
 
 type paletteState struct {
 	containers, pods bool
+	sandboxEngine    bool
+	active           int
 	sandboxes        []paletteSandbox
 }
 
 func (a paletteState) equal(b paletteState) bool {
-	return a.containers == b.containers && a.pods == b.pods && slices.Equal(a.sandboxes, b.sandboxes)
+	return a.containers == b.containers && a.pods == b.pods && a.sandboxEngine == b.sandboxEngine && a.active == b.active && slices.Equal(a.sandboxes, b.sandboxes)
 }
 
 func palette(m *Model) ggui.Widget {
@@ -679,33 +721,41 @@ func palette(m *Model) ggui.Widget {
 	}
 	ic := func(g *icons.Glyph) ggui.Widget { return glyph(g, 14).Color(colorGray) }
 	entries := func(st paletteState) []ui.CommandEntry {
+		dockerAction := ui.CommandItem(tr("Start Docker Engine"), close(m.OpenDocker)).Icon(ic(dockerIcon)).Group(tr("Recipes")).Keywords("dind dockerd")
+		if st.sandboxEngine {
+			dockerAction = ui.CommandItem(tr("Open Docker"), close(m.OpenDocker)).Icon(ic(dockerIcon)).Group(tr("Recipes")).Keywords("docker engine sandbox")
+		}
 		out := []ui.CommandEntry{
 			ui.CommandItem(tr("New sandbox"), close(func() { m.NewSandbox("") })).Icon(ic(lucide.Plus)).Group(tr("Sandboxes")).Shortcut("cmd+n").Keywords("create run"),
-			ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Icon(ic(lucide.Square)).Group(tr("Sandboxes")),
+			ui.CommandItem(tr("Stop all sandboxes"), close(m.StopAll)).Icon(ic(lucide.Square)).Group(tr("Sandboxes")).Disabled(st.active == 0),
 			ui.CommandItem(tr("Pull image"), close(func() { m.OpenPull("") })).Icon(ic(lucide.Download)).Group(tr("Images")).Shortcut("cmd+shift+p").Keywords("download"),
 			ui.CommandItem(tr("Prune images"), close(m.AskPruneImages)).Icon(ic(lucide.Eraser)).Group(tr("Images")).Keywords("clean unused"),
-			ui.CommandItem(tr("Start Docker Engine"), close(func() { m.CreateFromRecipe(recipes.Docker); m.Go(PageDocker) })).Icon(ic(dockerIcon)).Group(tr("Recipes")).Keywords("dind dockerd"),
+			dockerAction,
 			ui.CommandItem(tr("Start Kubernetes (k3s)"), close(func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(PageKubernetes) })).Icon(ic(lucide.ShipWheel)).Group(tr("Recipes")).Keywords("k8s cluster kubectl"),
 			ui.CommandItem(tr("Start the image registry"), close(func() { m.CreateFromRecipe(recipes.Registry); m.OpenRecipe(recipes.Registry) })).Icon(ic(recipeIcon(recipes.Registry))).Group(tr("Recipes")).Keywords("registry push images cluster"),
-			ui.CommandItem(tr("Create volume"), close(func() { m.VolumeOpen.Set(true) })).Icon(ic(lucide.HardDrive)).Group(tr("Volumes")),
+			ui.CommandItem(tr("Create volume"), close(m.OpenVolumeDialog)).Icon(ic(lucide.HardDrive)).Group(tr("Volumes")),
 			ui.CommandItem(tr("Prune volumes"), close(m.AskPruneVolumes)).Icon(ic(lucide.Eraser)).Group(tr("Volumes")).Keywords("clean unused"),
 			ui.CommandItem(tr("Dashboard"), close(func() { m.Go(PageDashboard) })).Icon(ic(lucide.LayoutDashboard)).Group(tr("Go to")).Shortcut("cmd+1"),
 			ui.CommandItem(tr("Sandboxes"), close(func() { m.Go(PageSandboxes) })).Icon(ic(lucide.Box)).Group(tr("Go to")).Shortcut("cmd+2"),
-			ui.CommandItem(tr("Containers"), close(func() { m.Go(PageContainers) })).Icon(ic(lucide.Container)).Group(tr("Go to")).Shortcut("cmd+3").Keywords("docker ps").Disabled(!st.containers),
+			ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Shortcut("cmd+3"),
+			ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Keywords("docker images rmi pull"),
+			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Icon(ic(lucide.HardDrive)).Group(tr("Go to")).Shortcut("cmd+4"),
+			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Icon(ic(lucide.Camera)).Group(tr("Go to")).Shortcut("cmd+5"),
+			ui.CommandItem("Docker", close(func() { m.Go(PageDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Shortcut("cmd+6").Keywords("docker engine dind dockerd"),
 			ui.CommandItem(tr("Networks"), close(func() { m.Go(PageNetworks) })).Icon(ic(lucide.Network)).Group(tr("Go to")).Keywords("docker network ls").Disabled(!st.containers),
+			ui.CommandItem(tr("Containers"), close(func() { m.Go(PageContainers) })).Icon(ic(lucide.Container)).Group(tr("Go to")).Shortcut("cmd+7").Keywords("docker ps").Disabled(!st.containers),
 			ui.CommandItem(tr("Remove unused networks"), close(m.AskPruneNetworks)).Icon(ic(lucide.Eraser)).Group(tr("Networks")).Keywords("docker network prune clean").Disabled(!st.containers),
-			ui.CommandItem(tr("Pods"), close(func() { m.GoKube(KubePods) })).Icon(ic(lucide.Hexagon)).Group(tr("Go to")).Shortcut("cmd+4").Keywords("kubectl get pods k8s").Disabled(!st.pods),
+			ui.CommandItem("Kubernetes", close(func() { m.Go(PageKubernetes) })).Icon(ic(lucide.ShipWheel)).Group(tr("Go to")).Shortcut("cmd+8").Keywords("k3s k8s"),
+			ui.CommandItem(tr("Pods"), close(func() { m.GoKube(KubePods) })).Icon(ic(lucide.Hexagon)).Group(tr("Go to")).Shortcut("cmd+9").Keywords("kubectl get pods k8s").Disabled(!st.pods),
 			ui.CommandItem(tr("Workloads"), close(func() { m.GoKube(KubeWorkloads) })).Icon(ic(lucide.Boxes)).Group(tr("Go to")).Keywords("k8s deployments statefulsets daemonsets jobs").Disabled(!st.pods),
 			ui.CommandItem(tr("Services"), close(func() { m.GoKube(KubeServices) })).Icon(ic(lucide.Waypoints)).Group(tr("Go to")).Keywords("k8s svc nodeport port-forward").Disabled(!st.pods),
-			ui.CommandItem(tr("Images"), close(func() { m.GoImages(ImagesGVX) })).Icon(ic(lucide.Layers)).Group(tr("Go to")).Shortcut("cmd+5"),
-			ui.CommandItem(tr("Docker images"), close(func() { m.GoImages(ImagesDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Keywords("docker images rmi pull"),
-			ui.CommandItem(tr("Volumes"), close(func() { m.Go(PageVolumes) })).Icon(ic(lucide.HardDrive)).Group(tr("Go to")).Shortcut("cmd+6"),
-			ui.CommandItem(tr("Snapshots"), close(func() { m.Go(PageSnapshots) })).Icon(ic(lucide.Camera)).Group(tr("Go to")).Shortcut("cmd+7"),
-			ui.CommandItem("Docker Engine", close(func() { m.Go(PageDocker) })).Icon(ic(dockerIcon)).Group(tr("Go to")).Shortcut("cmd+8").Keywords("dockerd"),
-			ui.CommandItem("Kubernetes", close(func() { m.Go(PageKubernetes) })).Icon(ic(lucide.ShipWheel)).Group(tr("Go to")).Shortcut("cmd+9").Keywords("k3s k8s"),
 			ui.CommandItem(tr("Image registry"), close(m.OpenRegistry)).Icon(ic(recipeIcon(recipes.Registry))).Group(tr("Go to")).Keywords("registry"),
 			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Icon(ic(lucide.Settings)).Group(tr("Go to")).Shortcut("cmd+,"),
-			ui.CommandItem(tr("Labs"), close(func() { m.Go(PageLabs) })).Icon(ic(lucide.FlaskConical)).Group(tr("Go to")),
+		}
+		if LabsSupported() {
+			out = append(out, ui.CommandItem(tr("Labs"), close(func() { m.Go(PageLabs) })).Icon(ic(lucide.FlaskConical)).Group(tr("Go to")))
+		}
+		out = append(out,
 			ui.CommandItem(tr("Refresh"), close(m.RefreshAll)).Icon(ic(lucide.RefreshCw)).Group(tr("App")).Shortcut("cmd+r"),
 			ui.CommandItem(tr("Toggle sidebar"), close(func() { m.SidebarNarrow.Set(!ggui.Peek(m.SidebarNarrow)) })).Icon(ic(lucide.PanelLeft)).Group(tr("App")).Shortcut("cmd+b").Keywords("navigation panel"),
 			ui.CommandItem(tr("Check for updates"), close(func() { m.CheckAppUpdate(false) })).Icon(ic(lucide.CircleFadingArrowUp)).Group(tr("App")).Keywords("update version release"),
@@ -718,7 +768,7 @@ func palette(m *Model) ggui.Widget {
 					}
 				})
 			})).Icon(ic(lucide.Moon)).Group(tr("App")).Keywords("theme appearance"),
-		}
+		)
 		for _, sb := range st.sandboxes {
 			id := sb.id
 			state := sandbox.State{Status: sb.status, Paused: sb.paused}
@@ -742,7 +792,13 @@ func palette(m *Model) ggui.Widget {
 		for i, r := range rows {
 			sbs[i] = paletteSandbox{id: r.Spec.ID, name: r.Spec.Name, image: r.Spec.Image, status: r.State.Status, paused: r.State.Paused}
 		}
-		return paletteState{containers: m.ContainersOpen.Get(), pods: m.PodsOpen.Get(), sandboxes: sbs}
+		return paletteState{
+			containers:    m.ContainersOpen.Get(),
+			pods:          m.PodsOpen.Get(),
+			sandboxEngine: m.Settings.Get().SandboxEngine,
+			active:        m.TotalRunning.Get(),
+			sandboxes:     sbs,
+		}
 	}).WithEqual(paletteState.equal)
 	ggui.Watch(state, func(st paletteState) { cmd.Entries(entries(st)...) })
 	return ui.CommandDialog(m.PaletteOpen, cmd)

@@ -150,10 +150,13 @@ type Model struct {
 	Detail            *ggui.StateValue[int]
 	Query             *ggui.StateValue[string]
 
-	Images    *ggui.StateValue[Listing[rungv.Image]]
-	Volumes   *ggui.StateValue[Listing[rungv.Volume]]
-	Disk      *ggui.StateValue[[]rungv.DiskUsage]
-	Snapshots *ggui.StateValue[[]sandbox.Snapshot]
+	Images          *ggui.StateValue[Listing[rungv.Image]]
+	Volumes         *ggui.StateValue[Listing[rungv.Volume]]
+	Disk            *ggui.StateValue[[]rungv.DiskUsage]
+	Snapshots       *ggui.StateValue[[]sandbox.Snapshot]
+	SnapshotsLoaded *ggui.StateValue[bool]
+	AddingNode      *ggui.StateValue[bool]
+	BusyOps         *ggui.StateValue[map[string]bool]
 
 	// ImageView chooses between gvx's own image cache (ImagesGVX) and the
 	// images inside the Docker Engine sandbox (ImagesDocker).
@@ -247,6 +250,8 @@ type Model struct {
 	// DockerProxyErr is the last listener error from the app's Docker API
 	// proxy, or empty when listening normally.
 	DockerProxyErr *ggui.StateValue[string]
+	// SandboxEngineStatus tracks the in-app sandbox engine startup lifecycle.
+	SandboxEngineStatus *ggui.StateValue[SandboxEngineStatus]
 	// DockerExposeLAN mirrors Settings.DockerExposeLAN for reactive UI bindings.
 	DockerExposeLAN *ggui.StateValue[bool]
 	// DockerSSHAgent mirrors Settings.DockerSSHAgent for reactive UI bindings.
@@ -263,12 +268,13 @@ type Model struct {
 	Menus *ggui.DerivedValue[MenuState]
 
 	// Editor
-	EditorOpen   *ggui.StateValue[bool]
-	Draft        *ggui.StateValue[Draft]
-	DraftError   *ggui.DerivedValue[string]
-	DraftLine    *ggui.DerivedValue[string]
-	DraftRunning *ggui.DerivedValue[bool]
-	DraftAction  *ggui.DerivedValue[editorAction]
+	EditorOpen    *ggui.StateValue[bool]
+	EditorTouched *ggui.StateValue[bool]
+	editorInitial Draft
+	Draft         *ggui.StateValue[Draft]
+	DraftError    *ggui.DerivedValue[string]
+	DraftLine     *ggui.DerivedValue[string]
+	DraftAction   *ggui.DerivedValue[editorAction]
 
 	// Dialogs
 	ConfirmOpen   *ggui.StateValue[bool]
@@ -296,25 +302,27 @@ type Model struct {
 	// screens rendered with made-up state must not.
 	Offline bool
 	// Image explorer dialog state (Files, Layers, Inspect).
-	ExploreOpen     *ggui.StateValue[bool]
-	ExploreTitle    *ggui.StateValue[string]
-	ExploreSource   *ggui.StateValue[string]
-	ExploreTab      *ggui.StateValue[int]
-	ExploreLoading  *ggui.StateValue[bool]
-	ExploreProgress *ggui.StateValue[string]
-	ExploreErr      *ggui.StateValue[string]
-	ExploreLayers   *ggui.StateValue[[]imagefs.Layer]
-	ExploreLayer    *ggui.StateValue[int]
-	ExplorePath     *ggui.StateValue[string]
-	ExploreQuery    *ggui.StateValue[string]
-	ExploreEntries  *ggui.StateValue[[]imagefs.Entry]
-	ExploreSelected *ggui.StateValue[string]
-	ExplorePreview  *ggui.StateValue[FilePreview]
-	ExploreInspect  *ggui.StateValue[string]
-	explorer        explorerSession
-	VolumeOpen      *ggui.StateValue[bool]
-	VolumeName      *ggui.StateValue[string]
-	VolumeDriver    *ggui.StateValue[string]
+	ExploreOpen      *ggui.StateValue[bool]
+	ExploreTitle     *ggui.StateValue[string]
+	ExploreSource    *ggui.StateValue[string]
+	ExploreTab       *ggui.StateValue[int]
+	ExploreLoading   *ggui.StateValue[bool]
+	ExploreProgress  *ggui.StateValue[string]
+	ExploreErr       *ggui.StateValue[string]
+	ExploreDirErr    *ggui.StateValue[string]
+	ExploreFilesNote *ggui.StateValue[string]
+	ExploreLayers    *ggui.StateValue[[]imagefs.Layer]
+	ExploreLayer     *ggui.StateValue[int]
+	ExplorePath      *ggui.StateValue[string]
+	ExploreQuery     *ggui.StateValue[string]
+	ExploreEntries   *ggui.StateValue[[]imagefs.Entry]
+	ExploreSelected  *ggui.StateValue[string]
+	ExplorePreview   *ggui.StateValue[FilePreview]
+	ExploreInspect   *ggui.StateValue[string]
+	explorer         explorerSession
+	VolumeOpen       *ggui.StateValue[bool]
+	VolumeName       *ggui.StateValue[string]
+	VolumeDriver     *ggui.StateValue[string]
 	// The daemon.json editor of the Docker Engine (model_dockerd_config.go).
 	DockerConfigOpen *ggui.StateValue[bool]
 	DockerConfigText *ggui.StateValue[string]
@@ -372,6 +380,8 @@ type Model struct {
 	amd64Gen                                   int
 	buildxSyncGen                              int
 	keepImages                                 atomic.Pointer[[]string]
+	buildCancelMu                              sync.Mutex
+	buildCancel                                context.CancelFunc
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -430,57 +440,62 @@ func NewModel(st store.Store, dataDir string) *Model {
 		Volumes:             ggui.State(Listing[rungv.Volume]{}).WithEqual(nil),
 		Disk:                ggui.State([]rungv.DiskUsage(nil)).WithEqual(slices.Equal[[]rungv.DiskUsage]),
 		Snapshots:           ggui.State([]sandbox.Snapshot(nil)).WithEqual(slices.Equal[[]sandbox.Snapshot]),
+		SnapshotsLoaded:     ggui.State(false),
+		AddingNode:          ggui.State(false),
+		BusyOps:             ggui.State(map[string]bool{}).WithEqual(maps.Equal[map[string]bool]),
 		ImageView:           ggui.State(ImagesGVX),
 		DockerImages:        ggui.State(Listing[dockerapi.Image]{}).WithEqual(nil),
 		DockerImageQuery:    ggui.State(""),
 		SelectedDockerImage: ggui.State(""),
 
-		DockerContainers:  ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
-		DockerVersion:     ggui.State(dockerapi.Version{}),
-		DockerProxyErr:    ggui.State(""),
-		DockerExposeLAN:   ggui.State(settings.DockerExposeLAN),
-		DockerSSHAgent:    ggui.State(settings.DockerSSHAgent),
-		BundledDocker:     ggui.State(BundledDockerState{}).WithEqual(BundledDockerState.Equal),
-		ContainerQuery:    ggui.State(""),
-		ContainerStatus:   ggui.State("all"),
-		SelectedContainer: ggui.State(""),
-		ContainerDetail:   ggui.State(0),
-		ContainerLogs:     ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
-		ComposeFolded:     ggui.State(map[string]bool{}).WithEqual(maps.Equal[map[string]bool]),
-		DockerNetworks:    ggui.State(Listing[dockerapi.Network]{}).WithEqual(nil),
-		NetworkQuery:      ggui.State(""),
-		SelectedNetwork:   ggui.State(""),
-		SandboxUsage:      ggui.State(map[string]Usage(nil)).WithEqual(usageEqual),
-		ContainerUsage:    ggui.State(map[string]Usage(nil)).WithEqual(usageEqual),
-		PodUsage:          ggui.State(map[string]PodUse(nil)).WithEqual(podUsageEqual),
-		KubeconfigReady:   ggui.State(false),
-		Pods:              ggui.State(Listing[kubeapi.Pod]{}).WithEqual(podsEqual),
-		KubeNodes:         ggui.State([]kubeapi.Node(nil)).WithEqual(nodesEqual),
-		PodsWaiting:       ggui.State(false),
-		PodQuery:          ggui.State(""),
-		SystemPods:        ggui.State(false),
-		SelectedPod:       ggui.State(""),
-		PodDetail:         ggui.State(0),
-		PodContainer:      ggui.State(""),
-		PodLogs:           ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
-		PodOwner:          ggui.State(WorkloadRef{}),
-		Workloads:         ggui.State(Listing[kubeapi.Workload]{}).WithEqual(workloadsEqual),
-		Services:          ggui.State(Listing[kubeapi.Service]{}).WithEqual(servicesEqual),
-		WorkloadQuery:     ggui.State(""),
-		ServiceQuery:      ggui.State(""),
-		Forwards:          ggui.State([]PortForward(nil)).WithEqual(slices.Equal[[]PortForward]),
-		ForwardOpen:       ggui.State(false),
-		ForwardDraft:      ggui.State(ForwardDraft{}).WithEqual(ForwardDraft.Equal),
-		ForwardRemote:     ggui.State(""),
-		ForwardLocal:      ggui.State(""),
-		ForwardErr:        ggui.State(""),
-		ScaleOpen:         ggui.State(false),
-		ScaleTarget:       ggui.State(kubeapi.Workload{}).WithEqual(kubeapi.Workload.Equal),
-		ScaleReplicas:     ggui.State(1.0),
-		LinkCommandsOpen:  ggui.State(false),
+		DockerContainers:    ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
+		DockerVersion:       ggui.State(dockerapi.Version{}),
+		DockerProxyErr:      ggui.State(""),
+		SandboxEngineStatus: ggui.State(SandboxEngineStatus{}),
+		DockerExposeLAN:     ggui.State(settings.DockerExposeLAN),
+		DockerSSHAgent:      ggui.State(settings.DockerSSHAgent),
+		BundledDocker:       ggui.State(BundledDockerState{}).WithEqual(BundledDockerState.Equal),
+		ContainerQuery:      ggui.State(""),
+		ContainerStatus:     ggui.State("all"),
+		SelectedContainer:   ggui.State(""),
+		ContainerDetail:     ggui.State(0),
+		ContainerLogs:       ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
+		ComposeFolded:       ggui.State(map[string]bool{}).WithEqual(maps.Equal[map[string]bool]),
+		DockerNetworks:      ggui.State(Listing[dockerapi.Network]{}).WithEqual(nil),
+		NetworkQuery:        ggui.State(""),
+		SelectedNetwork:     ggui.State(""),
+		SandboxUsage:        ggui.State(map[string]Usage(nil)).WithEqual(usageEqual),
+		ContainerUsage:      ggui.State(map[string]Usage(nil)).WithEqual(usageEqual),
+		PodUsage:            ggui.State(map[string]PodUse(nil)).WithEqual(podUsageEqual),
+		KubeconfigReady:     ggui.State(false),
+		Pods:                ggui.State(Listing[kubeapi.Pod]{}).WithEqual(podsEqual),
+		KubeNodes:           ggui.State([]kubeapi.Node(nil)).WithEqual(nodesEqual),
+		PodsWaiting:         ggui.State(false),
+		PodQuery:            ggui.State(""),
+		SystemPods:          ggui.State(false),
+		SelectedPod:         ggui.State(""),
+		PodDetail:           ggui.State(0),
+		PodContainer:        ggui.State(""),
+		PodLogs:             ggui.State(ContainerLogs{}).WithEqual(ContainerLogs.Equal),
+		PodOwner:            ggui.State(WorkloadRef{}),
+		Workloads:           ggui.State(Listing[kubeapi.Workload]{}).WithEqual(workloadsEqual),
+		Services:            ggui.State(Listing[kubeapi.Service]{}).WithEqual(servicesEqual),
+		WorkloadQuery:       ggui.State(""),
+		ServiceQuery:        ggui.State(""),
+		Forwards:            ggui.State([]PortForward(nil)).WithEqual(slices.Equal[[]PortForward]),
+		ForwardOpen:         ggui.State(false),
+		ForwardDraft:        ggui.State(ForwardDraft{}).WithEqual(ForwardDraft.Equal),
+		ForwardRemote:       ggui.State(""),
+		ForwardLocal:        ggui.State(""),
+		ForwardErr:          ggui.State(""),
+		ScaleOpen:           ggui.State(false),
+		ScaleTarget:         ggui.State(kubeapi.Workload{}).WithEqual(kubeapi.Workload.Equal),
+		ScaleReplicas:       ggui.State(1.0),
+		LinkCommandsOpen:    ggui.State(false),
 
-		EditorOpen: ggui.State(false),
-		Draft:      ggui.State(Draft{}),
+		EditorOpen:    ggui.State(false),
+		EditorTouched: ggui.State(false),
+		Draft:         ggui.State(Draft{}),
 
 		ConfirmOpen:      ggui.State(false),
 		ConfirmTitle:     ggui.State(""),
@@ -506,6 +521,8 @@ func NewModel(st store.Store, dataDir string) *Model {
 		ExploreLoading:   ggui.State(false),
 		ExploreProgress:  ggui.State(""),
 		ExploreErr:       ggui.State(""),
+		ExploreDirErr:    ggui.State(""),
+		ExploreFilesNote: ggui.State(""),
 		ExploreLayers:    ggui.State([]imagefs.Layer(nil)).WithEqual(func(a, b []imagefs.Layer) bool { return slices.EqualFunc(a, b, imagefs.Layer.Equal) }),
 		ExploreLayer:     ggui.State(0),
 		ExplorePath:      ggui.State("/"),
@@ -562,7 +579,13 @@ func NewModel(st store.Store, dataDir string) *Model {
 		return dockerSettingOf(set).Host()
 	})
 	m.newLinks()
-	m.ContainersAccess = ggui.Combine(m.Rows, m.Settings, containersAccess)
+	m.ContainersAccess = ggui.Derived(func() ContainersAccess {
+		set := m.Settings.Get()
+		if set.SandboxEngine && m.SandboxEngineStatus.Get().Opening {
+			return ContainersStarting
+		}
+		return containersAccess(m.Rows.Get(), set)
+	})
 	m.ContainersOpen = ggui.Map(m.ContainersAccess, func(a ContainersAccess) bool { return a == ContainersOpen })
 	m.RunningContainers = ggui.Map(m.DockerContainers, func(l Listing[dockerapi.Container]) int {
 		n := 0
@@ -588,12 +611,20 @@ func NewModel(st store.Store, dataDir string) *Model {
 	m.Pod = ggui.Derived(func() kubeapi.Pod {
 		return chosenPod(ownedPods(userPods(m.Pods.Get().Items, m.SystemPods.Get()), m.PodOwner.Get()), m.SelectedPod.Get())
 	}).WithEqual(kubeapi.Pod.Equal)
+	ggui.Watch(m.SystemPods, func(on bool) {
+		if !on {
+			if ref := ggui.Peek(m.PodOwner); ref != (WorkloadRef{}) && systemNamespace(ref.Namespace) {
+				m.PodOwner.Set(WorkloadRef{})
+			}
+		}
+	})
 	m.PodLogContainer = ggui.Combine(m.Pod, m.PodContainer, podLogContainer)
 	m.Menus = ggui.Derived(func() MenuState {
 		ctrs := m.DockerContainers.Get()
 		s := menuState(m.Rows.Get(), ctrs, m.Pods.Get(), m.PodsWaiting.Get(), m.DockerLink.View.Get(), m.KubeLink.View.Get())
 		if m.Settings.Get().SandboxEngine {
 			s.SandboxEngine = true
+			s.SandboxEngineStatus = m.SandboxEngineStatus.Get()
 			s.menuContainers(ctrs)
 		}
 		s.Forwards = menuForwards(m.Forwards.Get())
@@ -632,9 +663,6 @@ func NewModel(st store.Store, dataDir string) *Model {
 			}
 		}
 		return ""
-	})
-	m.DraftRunning = ggui.Combine(m.Draft, m.States, func(d Draft, states map[string]sandbox.State) bool {
-		return d.ID != "" && states[d.ID].Status.Active()
 	})
 	m.DraftAction = ggui.Combine(m.Draft, m.States, func(d Draft, states map[string]sandbox.State) editorAction {
 		if d.ID == "" {
@@ -854,6 +882,9 @@ func (m *Model) Start() {
 	if specs := ggui.Peek(m.Specs); len(specs) > 0 {
 		m.Selected.Set(specs[0].ID)
 	}
+	if !m.Offline && ggui.Peek(m.Settings).SandboxEngine {
+		m.SandboxEngineStatus.Set(SandboxEngineStatus{Opening: true})
+	}
 	m.DetectEngine(func(ok bool) {
 		if ok {
 			m.startWithApp()
@@ -936,6 +967,8 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 		}
 		if ready && ggui.Peek(m.Settings).SandboxEngine {
 			m.openSandboxEngine()
+		} else if ggui.Peek(m.Settings).SandboxEngine {
+			m.SandboxEngineStatus.Set(SandboxEngineStatus{Opening: false})
 		}
 		if then != nil {
 			then(ready)
@@ -1391,7 +1424,7 @@ func (m *Model) AskDelete(id string) {
 				m.setResume(g, false)
 			}
 			specs := slices.DeleteFunc(slices.Clone(ggui.Peek(m.Specs)), func(s sandbox.Spec) bool { return slices.Contains(gone, s.ID) })
-			if ggui.Peek(m.Selected) == id {
+			if slices.Contains(gone, ggui.Peek(m.Selected)) {
 				next := ""
 				if len(specs) > 0 {
 					next = specs[0].ID
@@ -1450,12 +1483,62 @@ func (m *Model) EditSandbox(id string) {
 
 // OpenEditor shows the editor sheet with spec.
 func (m *Model) OpenEditor(spec sandbox.Spec) {
-	m.Draft.Set(DraftFrom(spec))
+	d := DraftFrom(spec)
+	m.editorInitial = d
+	m.EditorTouched.Set(false)
+	m.Draft.Set(d)
 	m.EditorOpen.Set(true)
+}
+
+// EditorDirty reports whether the draft in the open editor differs from when
+// the editor opened.
+func (m *Model) EditorDirty() bool {
+	return ggui.Peek(m.Draft) != m.editorInitial
+}
+
+// CloseEditor closes the editor sheet, asking for confirmation when the user
+// has unsaved changes.
+func (m *Model) CloseEditor() {
+	if !ggui.Peek(m.EditorOpen) {
+		return
+	}
+	if m.EditorDirty() {
+		m.Confirm(tr("Discard unsaved changes?"),
+			tr("Your edits to the sandbox settings have not been saved."),
+			tr("Discard changes"),
+			func() { m.EditorOpen.Set(false) })
+		return
+	}
+	m.EditorOpen.Set(false)
+}
+
+// isBusy reports whether an asynchronous mutation keyed by k is in flight.
+func (m *Model) isBusy(k string) bool {
+	return ggui.Peek(m.BusyOps)[k]
+}
+
+// setBusy marks or clears an in-flight mutation key k for reactive UI buttons.
+func (m *Model) setBusy(k string, on bool) {
+	m.BusyOps.Update(func(cur map[string]bool) map[string]bool {
+		if cur[k] == on {
+			return cur
+		}
+		next := maps.Clone(cur)
+		if next == nil {
+			next = map[string]bool{}
+		}
+		if on {
+			next[k] = true
+		} else {
+			delete(next, k)
+		}
+		return next
+	})
 }
 
 // SaveDraft stores the editor's sandbox, and starts it with start.
 func (m *Model) SaveDraft(start bool) bool {
+	m.EditorTouched.Set(true)
 	d := ggui.Peek(m.Draft)
 	spec, err := d.Spec()
 	if err == nil && spec.Recipe == recipes.Docker {
@@ -1517,7 +1600,7 @@ func (m *Model) SaveDraft(start bool) bool {
 	m.saveSpecs(specs)
 	m.EditorOpen.Set(false)
 	m.Select(spec.ID)
-	if applyLive {
+	if applyLive && start {
 		id, name, diff := spec.ID, spec.Name, liveDiff
 		m.async(func(ctx context.Context) error {
 			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1531,6 +1614,10 @@ func (m *Model) SaveDraft(start bool) bool {
 			m.toastOK(tr("Applied to %s", name), liveDiffToastDesc(diff))
 			m.refreshStates()
 		})
+		return true
+	}
+	if applyLive && !start {
+		m.Toasts.Push(ui.Toast(tr("Saved %s", spec.Name), tr("Saved for the next start without changing the running sandbox.")).Info())
 		return true
 	}
 	if liveChecked {
@@ -1691,7 +1778,10 @@ func (m *Model) LoadSnapshots() {
 		}
 		slices.SortFunc(snaps, func(a, b sandbox.Snapshot) int { return b.Time.Compare(a.Time) })
 		return nil
-	}, func(error) { m.Snapshots.Set(snaps) })
+	}, func(error) {
+		m.Snapshots.Set(snaps)
+		m.SnapshotsLoaded.Set(true)
+	})
 }
 
 // Restore resumes a snapshot.

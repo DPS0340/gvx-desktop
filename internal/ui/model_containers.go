@@ -140,15 +140,24 @@ func (r containerRow) name() string {
 // containers q leaves unless it is folded. A project shows while any of
 // its containers is left; its head counts all of them.
 func containerRows(list []dockerapi.Container, q string, folded map[string]bool) []containerRow {
+	return containerRowsFiltered(list, "all", q, folded)
+}
+
+// containerRowsFiltered is containerRows with an additional status filter
+// ("all", "running", "stopped"). Compose project heads always retain every
+// container of the project from all so counts and bulk actions stay accurate,
+// and projects automatically unfold while a search query is active.
+func containerRowsFiltered(all []dockerapi.Container, status, q string, folded map[string]bool) []containerRow {
 	var out, grouped []containerRow
 	members := map[string][]dockerapi.Container{}
-	for _, c := range list {
+	for _, c := range all {
 		if p := c.Project(); p != "" {
 			members[p] = append(members[p], c)
 		}
 	}
+	searching := strings.TrimSpace(q) != ""
 	shown := map[string][]dockerapi.Container{}
-	for _, c := range filterContainers(list, q) {
+	for _, c := range filterContainers(filterContainersByStatus(all, status), q) {
 		p := c.Project()
 		if p == "" {
 			out = append(out, containerRow{C: c})
@@ -157,8 +166,9 @@ func containerRows(list []dockerapi.Container, q string, folded map[string]bool)
 		shown[p] = append(shown[p], c)
 	}
 	for _, p := range slices.Sorted(maps.Keys(shown)) {
-		grouped = append(grouped, containerRow{Project: p, Head: true, Members: members[p], Folded: folded[p]})
-		if folded[p] {
+		isFolded := folded[p] && !searching
+		grouped = append(grouped, containerRow{Project: p, Head: true, Members: members[p], Folded: isFolded})
+		if isFolded {
 			continue
 		}
 		for _, c := range shown[p] {
@@ -217,9 +227,11 @@ func projectTargets(action string, members []dockerapi.Container) []dockerapi.Co
 // a Compose project, all at once, and says which failed.
 func (m *Model) ProjectAction(action, project string, members []dockerapi.Container) {
 	targets := projectTargets(action, members)
-	if len(targets) == 0 || m.Offline {
+	busyKey := "proj:" + project
+	if len(targets) == 0 || m.Offline || m.isBusy(busyKey) {
 		return
 	}
+	m.setBusy(busyKey, true)
 	host := m.dockerBackendHost()
 	m.async(func(ctx context.Context) error {
 		c, err := dockerapi.New(host)
@@ -250,14 +262,29 @@ func (m *Model) ProjectAction(action, project string, members []dockerapi.Contai
 		wg.Wait()
 		return errors.Join(errs...)
 	}, func(err error) {
+		m.setBusy(busyKey, false)
 		if err != nil {
-			m.toastError(tr("Could not %s project %s", action, project), err)
+			m.toastError(projectActionErrorTitle(action, project), err)
 		}
 		m.LoadDocker()
 		if ggui.Peek(m.Page) == PageContainers && ggui.Peek(m.Container).Project() == project {
 			m.LoadContainerLogs()
 		}
 	})
+}
+
+func projectActionErrorTitle(action, project string) string {
+	switch action {
+	case "start":
+		return tr("Could not start project %s", project)
+	case "stop":
+		return tr("Could not stop project %s", project)
+	case "restart":
+		return tr("Could not restart project %s", project)
+	case "remove":
+		return tr("Could not remove project %s", project)
+	}
+	return tr("Could not update project %s", project)
 }
 
 // AskRemoveProject confirms and removes the containers of a Compose
@@ -277,11 +304,19 @@ func (m *Model) SelectContainer(id string) {
 	m.SelectedContainer.Set(id)
 }
 
+// ShowContainer opens the Containers page on a container and detail tab,
+// clearing active filters so the target container is visible.
+func (m *Model) ShowContainer(id string, tab int) {
+	m.ContainerQuery.Set("")
+	m.ContainerStatus.Set("all")
+	m.SelectContainer(id)
+	m.ContainerDetail.Set(tab)
+	m.Go(PageContainers)
+}
+
 // ShowContainerLogs opens the Containers page on a container's logs.
 func (m *Model) ShowContainerLogs(id string) {
-	m.SelectContainer(id)
-	m.ContainerDetail.Set(0)
-	m.Go(PageContainers)
+	m.ShowContainer(id, 0)
 }
 
 // ContainerLogs are the last lines a container wrote.

@@ -113,6 +113,9 @@ func trn(n int, one, other string, args ...any) string {
 // T is tr for the menus and the tray, which main builds.
 func T(key string, args ...any) string { return tr(key, args...) }
 
+// TN is trn for the menus and the tray, which main builds.
+func TN(n int, one, other string, args ...any) string { return trn(n, one, other, args...) }
+
 // ResolveLanguage turns the language of the settings into one the app has
 // words for: the one chosen, or the system's when none is.
 func ResolveLanguage(setting string) string {

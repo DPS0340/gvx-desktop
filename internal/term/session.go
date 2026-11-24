@@ -48,10 +48,11 @@ type Session struct {
 	sentAt time.Time
 	settle *time.Timer
 
-	pending atomic.Bool // a paint was asked for and has not copied the screen
-	done    chan struct{}
-	replies chan []byte
-	closing sync.Once
+	pending  atomic.Bool // a paint was asked for and has not copied the screen
+	done     chan struct{}
+	replies  chan []byte
+	resizeCh chan struct{}
+	closing  sync.Once
 }
 
 // Options are how a session's terminal starts.
@@ -107,8 +108,9 @@ func New(prog Program, o Options) (*Session, error) {
 		prog: prog, wake: wake,
 		vt: vt, state: state, gesture: gesture,
 		cols: cols, rows: rows,
-		done:    make(chan struct{}),
-		replies: make(chan []byte, replyQueue),
+		done:     make(chan struct{}),
+		replies:  make(chan []byte, replyQueue),
+		resizeCh: make(chan struct{}, 1),
 	}
 	// A program that selects text itself copies it with OSC 52. The request
 	// is served on the UI thread, where the clipboard is; one asking to read
@@ -121,6 +123,7 @@ func New(prog Program, o Options) (*Session, error) {
 	})
 	go s.pump()
 	go s.writeReplies()
+	go s.sendResizes()
 	return s, nil
 }
 
@@ -319,7 +322,7 @@ func (s *Session) Resize(cols, rows, cellW, cellH uint16) {
 	}
 	s.mu.Unlock()
 	if send {
-		_ = s.prog.Resize(cols, rows, cellW, cellH)
+		s.queueResize()
 	}
 }
 
@@ -327,16 +330,44 @@ func (s *Session) Resize(cols, rows, cellW, cellH uint16) {
 // it again.
 const resizeSettle = 120 * time.Millisecond
 
+// queueResize notifies sendResizes to deliver the latest terminal size off the
+// UI thread without blocking Paint.
+func (s *Session) queueResize() {
+	select {
+	case s.resizeCh <- struct{}{}:
+	default:
+	}
+}
+
 // sendSize tells the program the size the terminal settled on.
 func (s *Session) sendSize() {
 	s.mu.Lock()
 	s.settle = nil
 	s.sentAt = time.Now()
-	cols, rows, cellW, cellH := s.cols, s.rows, s.cellW, s.cellH
 	live := !s.closed && !s.exited
 	s.mu.Unlock()
 	if live {
-		_ = s.prog.Resize(cols, rows, cellW, cellH)
+		s.queueResize()
+	}
+}
+
+// sendResizes delivers coalesced terminal size updates to the underlying
+// program asynchronously so callers on the UI thread (such as Paint) never
+// block on network or PTY resize RPCs.
+func (s *Session) sendResizes() {
+	for {
+		select {
+		case <-s.resizeCh:
+			s.mu.Lock()
+			cols, rows, cellW, cellH := s.cols, s.rows, s.cellW, s.cellH
+			live := !s.closed && !s.exited
+			s.mu.Unlock()
+			if live {
+				_ = s.prog.Resize(cols, rows, cellW, cellH)
+			}
+		case <-s.done:
+			return
+		}
 	}
 }
 

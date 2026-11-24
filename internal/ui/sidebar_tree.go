@@ -38,10 +38,23 @@ type sidebarTreeGroup struct {
 	lineX    float64
 }
 
-func newSidebarTreeGroup(m *Model, parent sidebarNavItem, open *ggui.StateValue[bool], subs ...sidebarNavItem) *sidebarTreeGroup {
+func newSidebarTreeGroup(m *Model, parent sidebarNavItem, open *ggui.StateValue[bool], collapsedBadge ggui.Widget, subs ...sidebarNavItem) *sidebarTreeGroup {
 	g := &sidebarTreeGroup{open: open}
 	g.foldBtn = newSidebarFoldButton(open, parent.label)
-	g.parent = newSidebarTabRow(m, parent, 0, g.foldBtn)
+	var parentAction ggui.Widget = g.foldBtn
+	if collapsedBadge != nil {
+		parentAction = widget.Row(
+			ggui.If(ggui.Not(open), func() ggui.Widget { return collapsedBadge }),
+			g.foldBtn,
+		).Gap(4).Align(widget.AlignCenter)
+	}
+	subKeys := make([]string, len(subs))
+	for i, s := range subs {
+		subKeys[i] = s.key
+	}
+	g.parent = newSidebarTabRow(m, parent, 0, parentAction)
+	g.parent.open = open
+	g.parent.subKeys = subKeys
 	g.subs = make([]*sidebarTabRow, len(subs))
 	for i, s := range subs {
 		g.subs[i] = newSidebarTabRow(m, s, 1, s.action)
@@ -156,6 +169,8 @@ type sidebarTabRow struct {
 	key       string
 	labelText string
 	depth     int
+	open      *ggui.StateValue[bool]
+	subKeys   []string
 
 	icon   *icons.Widget
 	label  *widget.TextWidget
@@ -194,6 +209,18 @@ func (r *sidebarTabRow) isActive() bool {
 	return ggui.Untrack(r.m.Page.Get) == r.key
 }
 
+func (r *sidebarTabRow) hasCollapsedActiveChild(page string) bool {
+	if r.open == nil || len(r.subKeys) == 0 || ggui.Untrack(r.open.Get) {
+		return false
+	}
+	for _, k := range r.subKeys {
+		if k == page {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *sidebarTabRow) Layout(c ggui.Constraints, env ggui.Env) ggui.Size {
 	t := uitheme.Of(env)
 	r.theme = t
@@ -208,7 +235,11 @@ func (r *sidebarTabRow) Layout(c ggui.Constraints, env ggui.Env) ggui.Size {
 	}
 
 	// Read m.Page in Layout so switching pages updates weight and highlight.
-	active := r.m.Page.Get() == r.key
+	page := r.m.Page.Get()
+	if r.open != nil {
+		_ = r.open.Get()
+	}
+	active := page == r.key || r.hasCollapsedActiveChild(page)
 	if r.depth == 0 {
 		r.rowH = 4 * u
 		r.padL = u
@@ -228,7 +259,7 @@ func (r *sidebarTabRow) Layout(c ggui.Constraints, env ggui.Env) ggui.Size {
 		medium = ggui.WeightMedium
 	}
 	weight := regular
-	if active && r.depth == 0 {
+	if active {
 		weight = medium
 	}
 	r.label.Style(ggui.TextStyle{Size: t.Text.Size, Weight: weight})
@@ -238,7 +269,7 @@ func (r *sidebarTabRow) Layout(c ggui.Constraints, env ggui.Env) ggui.Size {
 	limit := w - u
 	r.actionSize = ggui.Size{}
 	if r.action != nil {
-		r.actionSize = r.action.Layout(ggui.Loose(ggui.Sz(2.5*u, r.rowH)), env)
+		r.actionSize = r.action.Layout(ggui.Loose(ggui.Sz(6*u, r.rowH)), env)
 		if r.actionSize.W > 0 {
 			limit = min(limit, w-edge-r.actionSize.W-edge)
 		}
@@ -257,7 +288,7 @@ func (r *sidebarTabRow) Paint(dst *ggui.Canvas, rect ggui.Rect) {
 	dst.HitPointer(rect, r)
 	dst.HitCursor(rect, ggui.CursorShapePointer)
 
-	lit := r.isActive() || r.hover
+	lit := r.isActive() || r.hasCollapsedActiveChild(ggui.Untrack(r.m.Page.Get)) || r.hover
 	d := r.env.Motion(t.MotionFast)
 	if !r.litSeen {
 		r.litSeen, d = true, 0

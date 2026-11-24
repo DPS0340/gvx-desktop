@@ -17,26 +17,69 @@ import (
 // StatefulSets, DaemonSets and Jobs that make the cluster's pods, filtered
 // via the toolbar query and System workloads switch.
 func workloadsView(m *Model) ggui.Widget {
-	// 0: not read yet, 1: failed, 2: loaded.
-	state := ggui.Derived(func() int {
+	type viewState struct {
+		stage int
+		err   string
+	}
+	state := ggui.Derived(func() viewState {
 		l := m.Workloads.Get()
 		switch {
 		case !l.Loaded:
-			return 0
+			return viewState{stage: 0}
 		case l.Err != "":
-			return 1
+			return viewState{stage: 1, err: l.Err}
 		}
-		return 2
+		return viewState{stage: 2}
 	})
-	return ggui.View(state, func(s int) ggui.Widget {
-		switch s {
+	return ggui.View(state, func(s viewState) ggui.Widget {
+		switch s.stage {
 		case 0:
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking the API server…"))).Gap(8)
 		case 1:
-			return ui.Alert(tr("Could not list the workloads"), ggui.Peek(m.Workloads).Err).Destructive().Icon(icons.Alert)
+			return ui.Alert(tr("Could not list the workloads"), s.err).Destructive().Icon(icons.Alert)
 		}
-		return tableCard(workloadsTable(m))
+		return workloadsSection(m)
 	})
+}
+
+func workloadsSection(m *Model) ggui.Widget {
+	type emptyState struct {
+		visible  int
+		total    int
+		filtered bool
+		system   bool
+	}
+	st := ggui.Derived(func() emptyState {
+		total := m.Workloads.Get().Items
+		sys := m.SystemPods.Get()
+		q := m.WorkloadQuery.Get()
+		vis := filterWorkloads(userWorkloads(total, sys), q)
+		return emptyState{
+			visible:  len(vis),
+			total:    len(total),
+			filtered: strings.TrimSpace(q) != "",
+			system:   sys,
+		}
+	})
+	note := ggui.View(st, func(s emptyState) ggui.Widget {
+		if s.visible > 0 {
+			return widget.Box()
+		}
+		if s.filtered {
+			return widget.Padding(widget.Row(
+				widget.Expanded(ui.Caption(tr("No workloads match the current filter.")).Size(12)),
+				ui.Button(tr("Clear filter"), func() { m.WorkloadQuery.Set("") }).Outline().Size(ui.ButtonExtraSmall),
+			).Gap(8).Align(widget.AlignCenter), 8, 12)
+		}
+		if !s.system && s.total > 0 {
+			return widget.Padding(
+				ui.Caption(trn(s.total, "%d system workload hidden by the switch above.", "%d system workloads hidden by the switch above.")).Size(12),
+				10, 12,
+			)
+		}
+		return widget.Padding(ui.Caption(tr("No workloads in the cluster yet.")).Size(12), 10, 12)
+	})
+	return tableCard(widget.Column(workloadsTable(m), note).Stretch())
 }
 
 func workloadsTable(m *Model) ggui.Widget {
@@ -44,7 +87,8 @@ func workloadsTable(m *Model) ggui.Widget {
 		return userWorkloads(l.Items, system)
 	}).WithEqual(nil)
 	visible := ggui.Combine(all, m.WorkloadQuery, filterWorkloads).WithEqual(nil)
-	count := ggui.Combine(visible, all, func(v, a []kubeapi.Workload) string { return showing(len(v), len(a)) })
+	count := ggui.Combine(visible, m.Workloads, func(v []kubeapi.Workload, l Listing[kubeapi.Workload]) string { return showing(len(v), len(l.Items)) })
+	selected := ggui.State("")
 	toolbar := widget.Row(
 		widget.Expanded(filterBar(m.WorkloadQuery, tr("Filter by kind, name, namespace or image"), count)),
 		ui.Switch(m.SystemPods, tr("System workloads")).Small(),
@@ -102,7 +146,7 @@ func workloadsTable(m *Model) ggui.Widget {
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(84).Identified("actions"),
-	).RowName(kubeapi.Workload.Name).RowHeight(48).MaxRows(8).Toolbar(toolbar)
+	).BindSelected(selected).RowName(kubeapi.Workload.Name).RowHeight(48).Toolbar(toolbar)
 }
 
 // workloadMenu is what can be done to a workload.
@@ -147,6 +191,9 @@ func scaleDialog(m *Model) ggui.Widget {
 	scale := func() {
 		w, n := ggui.Peek(m.ScaleTarget), int(ggui.Peek(m.ScaleReplicas))
 		m.ScaleOpen.Set(false)
+		if n == w.Desired {
+			return
+		}
 		m.ScaleWorkload(w, n)
 	}
 	note := ggui.View(ggui.Combine(m.ScaleTarget, m.ScaleReplicas, func(w kubeapi.Workload, n float64) string {
@@ -164,7 +211,7 @@ func scaleDialog(m *Model) ggui.Widget {
 		return widget.Padding(ui.Caption(s).Size(12), 14, 0, 0, 0)
 	})
 	return ui.Dialog(m.ScaleOpen, widget.Column(
-		widget.Column(title, text).Gap(4),
+		widget.Padding(widget.Column(title, text).Gap(4), 0, 32, 0, 0),
 		widget.Column(
 			ui.Field(tr("Replicas"), ui.NumberInput(m.ScaleReplicas).Range(0, 100).Step(1).Precision(0).Name(tr("Replicas"))),
 			note,
@@ -173,8 +220,6 @@ func scaleDialog(m *Model) ggui.Widget {
 		Name(tr("Scale")).Width(420).
 		Footer(
 			ui.Button(tr("Cancel"), func() { m.ScaleOpen.Set(false) }).Outline(),
-			ui.Button(tr("Scale"), scale).BindDisabled(ggui.Combine(m.ScaleTarget, m.ScaleReplicas, func(w kubeapi.Workload, n float64) bool {
-				return int(n) == w.Desired
-			})),
+			ui.Button(tr("Scale"), scale),
 		)
 }

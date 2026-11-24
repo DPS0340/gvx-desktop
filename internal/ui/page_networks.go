@@ -33,31 +33,32 @@ func networksPage(m *Model) ggui.Widget {
 		return trn(user, "%d network of your own, and the built-in ones.", "%d networks of your own, and the built-in ones.")
 	}))
 
-	state := ggui.Combine(m.ContainersAccess, listing, func(a ContainersAccess, l Listing[dockerapi.Network]) int {
+	type netViewState struct {
+		state int
+		err   string
+	}
+	state := ggui.Combine(m.ContainersAccess, listing, func(a ContainersAccess, l Listing[dockerapi.Network]) netViewState {
 		switch {
 		case a != ContainersOpen:
-			return 0
+			return netViewState{state: 0}
 		case l.Err != "":
-			return containersFailed
+			return netViewState{state: containersFailed, err: l.Err}
 		case !l.Loaded:
-			return containersLoading
+			return netViewState{state: containersLoading}
 		}
-		return containersListed
+		return netViewState{state: containersListed}
 	})
-	body := ggui.View(state, func(s int) ggui.Widget {
-		switch s {
+	body := ggui.View(state, func(s netViewState) ggui.Widget {
+		switch s.state {
 		case 0:
 			stage := ggui.Map(m.ContainersAccess, func(a ContainersAccess) int { return int(a) })
 			return ggui.View(gateOf(m, recipes.Docker, stage), func(g engineGate) ggui.Widget { return engineNotRunning(m, g, networksGate()) })
 		case containersFailed:
-			return ui.Alert(tr("Could not list networks"), ggui.Peek(listing).Err).Destructive().Icon(icons.Alert)
+			return ui.Alert(tr("Could not list networks"), s.err).Destructive().Icon(icons.Alert)
 		case containersLoading:
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Loading networks…"))).Gap(8)
 		}
-		return widget.Column(
-			tableCard(networksTable(m)),
-			networkDetail(m),
-		).Gap(16).Stretch()
+		return networksSection(m)
 	})
 
 	return page(
@@ -66,7 +67,9 @@ func networksPage(m *Model) ggui.Widget {
 				m.LoadDockerNetworks()
 				m.LoadDocker()
 			}).BindDisabled(ggui.Not(m.ContainersOpen)), tr("Refresh")),
-			ui.Button(tr("Remove unused"), m.AskPruneNetworks).Outline().Icon(glyph(lucide.Eraser, 16)).BindDisabled(ggui.Not(m.ContainersOpen)),
+			ui.Button(tr("Remove unused"), m.AskPruneNetworks).Outline().Icon(glyph(lucide.Eraser, 16)).BindDisabled(ggui.Derived(func() bool {
+				return !m.ContainersOpen.Get() || m.BusyOps.Get()["net:prune"]
+			})),
 		),
 		body,
 	)
@@ -83,13 +86,15 @@ func networksGate() gateWords {
 	return g
 }
 
-// networksTable is the engine's networks, the built-in ones first.
-func networksTable(m *Model) ggui.Widget {
+// networksSection pairs the networks table, its filtered-empty state, and
+// the detail card below.
+func networksSection(m *Model) ggui.Widget {
 	all := ggui.Map(m.DockerNetworks, func(l Listing[dockerapi.Network]) []dockerapi.Network { return sortNetworks(l.Items) }).WithEqual(nil)
 	rows := ggui.Combine(all, m.NetworkQuery, filterNetworks).WithEqual(nil)
 	count := ggui.Combine(rows, all, func(v, a []dockerapi.Network) string { return showing(len(v), len(a)) })
+	hasVisible := ggui.Map(rows, func(v []dockerapi.Network) bool { return len(v) > 0 })
 	selected := ggui.Bind(ggui.Map(m.Network, func(n dockerapi.Network) string { return n.ID }).Get, m.SelectNetwork)
-	return ui.Table(rows, func(n dockerapi.Network) string { return n.ID },
+	table := ui.Table(rows, func(n dockerapi.Network) string { return n.ID },
 		ui.Col(tr("Name"), func(r ggui.Readable[dockerapi.Network]) ggui.Widget {
 			return ggui.View(r, func(n dockerapi.Network) ggui.Widget {
 				caption := n.ShortID()
@@ -140,12 +145,30 @@ func networksTable(m *Model) ggui.Widget {
 			})).Size(12).NoWrap()
 		}).W(130),
 		ui.Col("", func(r ggui.Readable[dockerapi.Network]) ggui.Widget {
-			return ggui.View(r, func(n dockerapi.Network) ggui.Widget {
-				return widget.Row(networkRemoveButton(m, n), networkMenu(m, n)).Gap(2).Justify(widget.JustifyEnd)
+			type netActState struct {
+				n    dockerapi.Network
+				busy bool
+			}
+			return ggui.View(ggui.Combine(r, m.BusyOps, func(n dockerapi.Network, b map[string]bool) netActState {
+				return netActState{n: n, busy: b["net:"+n.ID]}
+			}), func(st netActState) ggui.Widget {
+				return widget.Row(networkRemoveButton(m, st.n, st.busy), networkMenu(m, st.n, st.busy)).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(84).Identified("actions"),
 	).BindSelected(selected).RowName(func(n dockerapi.Network) string { return n.Name }).RowHeight(48).MaxRows(6).
 		Toolbar(filterBar(m.NetworkQuery, tr("Filter by name, subnet or project"), count))
+
+	filteredEmpty := ggui.If(ggui.Not(hasVisible), func() ggui.Widget {
+		return widget.Padding(widget.Row(
+			ui.Caption(tr("No networks match the current filter.")),
+			ui.Button(tr("Clear filter"), func() { m.NetworkQuery.Set("") }).Outline().Size(ui.ButtonExtraSmall),
+		).Gap(10).Align(widget.AlignCenter).Justify(widget.JustifyCenter), 16, 12)
+	})
+
+	return widget.Column(
+		tableCard(widget.Column(table, filteredEmpty).Stretch()),
+		ggui.If(hasVisible, func() ggui.Widget { return networkDetail(m) }),
+	).Gap(16).Stretch()
 }
 
 // networkRemovable says why n cannot be removed, or "" when it can.
@@ -159,9 +182,9 @@ func networkRemovable(n dockerapi.Network) string {
 	return ""
 }
 
-func networkRemoveButton(m *Model, n dockerapi.Network) ggui.Widget {
+func networkRemoveButton(m *Model, n dockerapi.Network, busy bool) ggui.Widget {
 	why := networkRemovable(n)
-	b := iconButton(lucide.Trash, tr("Remove %s", n.Name), func() { m.AskRemoveNetwork(n) }).Disabled(why != "")
+	b := iconButton(lucide.Trash, tr("Remove %s", n.Name), func() { m.AskRemoveNetwork(n) }).Disabled(why != "" || busy)
 	if why != "" {
 		return tip(b, why)
 	}
@@ -169,7 +192,7 @@ func networkRemoveButton(m *Model, n dockerapi.Network) ggui.Widget {
 }
 
 // networkMenu is what can be done with a network.
-func networkMenu(m *Model, n dockerapi.Network) ggui.Widget {
+func networkMenu(m *Model, n dockerapi.Network, busy bool) ggui.Widget {
 	return moreMenu(tr("More actions for %s", n.Name),
 		ui.MenuItem(tr("Copy name"), func() { m.Copy(n.Name, n.Name) }),
 		ui.MenuItem(tr("Copy ID"), func() { m.Copy(n.ID, n.ShortID()) }),
@@ -180,7 +203,7 @@ func networkMenu(m *Model, n dockerapi.Network) ggui.Widget {
 			m.Copy("docker network inspect "+n.Name, "docker network inspect")
 		}),
 		ui.MenuDivider(),
-		ui.MenuItem(tr("Remove"), func() { m.AskRemoveNetwork(n) }).Destructive().Disabled(networkRemovable(n) != ""),
+		ui.MenuItem(tr("Remove…"), func() { m.AskRemoveNetwork(n) }).Destructive().Disabled(networkRemovable(n) != "" || busy),
 	)
 }
 
@@ -193,18 +216,19 @@ func networkDetail(m *Model) ggui.Widget {
 			n       dockerapi.Network
 			members []NetworkMember
 			se      bool
+			busy    bool
 		}
 		v := ggui.Derived(func() view {
 			n := m.Network.Get()
-			return view{n, networkMembers(n, m.DockerContainers.Get().Items), m.Settings.Get().SandboxEngine}
+			return view{n, networkMembers(n, m.DockerContainers.Get().Items), m.Settings.Get().SandboxEngine, m.BusyOps.Get()["net:"+n.ID]}
 		}).WithEqual(func(a, b view) bool {
-			return a.n.Equal(b.n) && a.se == b.se && slicesEqualMembers(a.members, b.members)
+			return a.n.Equal(b.n) && a.se == b.se && a.busy == b.busy && slicesEqualMembers(a.members, b.members)
 		})
 		return ggui.View(v, func(v view) ggui.Widget {
 			if v.n.ID == "" {
 				return widget.Box()
 			}
-			return ui.Card(networkDetailBody(m, v.n, v.members, v.se))
+			return ui.Card(networkDetailBody(m, v.n, v.members, v.se, v.busy))
 		})
 	})
 }
@@ -222,7 +246,7 @@ func slicesEqualMembers(a, b []NetworkMember) bool {
 	return true
 }
 
-func networkDetailBody(m *Model, n dockerapi.Network, members []NetworkMember, se bool) ggui.Widget {
+func networkDetailBody(m *Model, n dockerapi.Network, members []NetworkMember, se, busy bool) ggui.Widget {
 	meta := []string{n.Driver}
 	if sub, gw := n.Subnet(); sub != "" {
 		meta = append(meta, sub)
@@ -252,9 +276,9 @@ func networkDetailBody(m *Model, n dockerapi.Network, members []NetworkMember, s
 	}
 	var actions []ggui.Widget
 	if why := networkRemovable(n); why == "" {
-		actions = append(actions, ui.Button(tr("Remove"), func() { m.AskRemoveNetwork(n) }).Outline().Icon(glyph(lucide.Trash, 14)))
+		actions = append(actions, ui.Button(tr("Remove"), func() { m.AskRemoveNetwork(n) }).Outline().Icon(glyph(lucide.Trash, 14)).Disabled(busy))
 	}
-	actions = append(actions, networkMenu(m, n))
+	actions = append(actions, networkMenu(m, n, busy))
 	head := detailHead(n.Name, state, ui.Caption(strings.Join(meta, " · ")).Size(12), actions...)
 
 	parts := []ggui.Widget{head, ui.Caption(networkReach(n, se)).Size(12)}
@@ -265,11 +289,11 @@ func networkDetailBody(m *Model, n dockerapi.Network, members []NetworkMember, s
 	for _, mem := range members {
 		parts = append(parts, networkMemberRow(m, n, mem, se))
 	}
-	parts = append(parts,
-		sectionTitle(tr("Commands"), tr("For a terminal where docker uses the gvx context.")),
-		copyable(m, "docker run --rm -it --network "+n.Name+" alpine sh", "docker run"),
-		copyable(m, "docker network inspect "+n.Name, "docker network inspect"),
-	)
+	parts = append(parts, sectionTitle(tr("Commands"), tr("For a terminal where docker uses the gvx context.")))
+	if n.Name != "none" {
+		parts = append(parts, copyable(m, "docker run --rm -it --network "+n.Name+" alpine sh", "docker run"))
+	}
+	parts = append(parts, copyable(m, "docker network inspect "+n.Name, "docker network inspect"))
 	return widget.Column(parts...).Gap(10).Stretch()
 }
 
@@ -296,20 +320,29 @@ func networkReach(n dockerapi.Network, se bool) string {
 // and the names others reach it by.
 func networkMemberRow(m *Model, n dockerapi.Network, mem NetworkMember, se bool) ggui.Widget {
 	col := colorGray
-	if mem.State == "running" {
+	switch mem.State {
+	case "running":
 		col = colorGreen
+	case "paused", "restarting":
+		col = colorAmber
+	case "dead":
+		col = colorRed
 	}
 	addr := mem.Address
 	if se && n.Builtin() {
 		addr = "" // the sandbox's own NAT, the same in every container
 	}
+	displayName := mem.Name
+	if displayName == "" && mem.ID != "" {
+		displayName = mem.ID[:min(12, len(mem.ID))]
+	}
 	var names []string
 	for _, nm := range mem.Names {
-		if nm != mem.Name && len(nm) != 12 {
+		if nm != displayName && !(len(nm) == 12 && strings.HasPrefix(mem.ID, nm)) {
 			names = append(names, nm)
 		}
 	}
-	label := []ggui.Widget{widget.Text(mem.Name).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()}
+	label := []ggui.Widget{widget.Text(displayName).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()}
 	if len(names) > 0 {
 		label = append(label, ui.Caption(tr("also %s", strings.Join(names, ", "))).Size(11).NoWrap().Ellipsis())
 	}
@@ -320,15 +353,13 @@ func networkMemberRow(m *Model, n dockerapi.Network, mem NetworkMember, se bool)
 	if addr != "" {
 		row = append(row,
 			ui.Mono(addr).Size(12).NoWrap(),
-			iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(addr, addr) }),
+			tip(iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(addr, addr) }), tr("Copy address")),
 		)
 	}
 	if mem.State != "" {
 		id := mem.ID
-		row = append(row, tip(iconButton(lucide.ArrowRight, tr("Show %s", mem.Name), func() {
-			m.SelectContainer(id)
-			m.ContainerDetail.Set(1)
-			m.Go(PageContainers)
+		row = append(row, tip(iconButton(lucide.ArrowRight, tr("Show %s", displayName), func() {
+			m.ShowContainer(id, 1)
 		}), tr("Show container")))
 	}
 	return widget.Row(row...).Gap(10).Align(widget.AlignCenter)

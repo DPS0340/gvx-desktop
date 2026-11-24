@@ -41,8 +41,11 @@ func settingField(title, help string, control ggui.Widget) ggui.Widget {
 // settingsGroup is a titled card of settings with a rule between each two.
 func settingsGroup(icon *icons.Glyph, title string, rows ...ggui.Widget) ggui.Widget {
 	body := make([]ggui.Widget, 0, 2*len(rows))
-	for i, r := range rows {
-		if i > 0 {
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		if len(body) > 0 {
 			body = append(body, ui.Divider())
 		}
 		body = append(body, r)
@@ -101,7 +104,7 @@ func settingsPage(m *Model) ggui.Widget {
 	noTray := ggui.Map(m.Settings, func(s storeSettings) bool { return s.NoTray })
 
 	groups := []ggui.Widget{
-		headed(pageHeader(tr("Settings"), ui.Caption(tr("Where rungv lives and how the app treats running sandboxes."))), engineAlert(m), appUpdateAlert(m)),
+		headed(pageHeader(tr("Settings"), ui.Caption(tr("Where rungv lives and how the app treats running sandboxes."))), engineAlertFor(m, true)),
 		settingsGroup(lucide.Palette, tr("General"),
 			settingRow(tr("Appearance"), tr("Light, dark, or as the system is."),
 				ui.ToggleGroup[string](theme).Options([]string{"system", "light", "dark"}).Format(themeName).Icon(themeIcon).Outline().Spacing(0).Name(tr("Appearance"))),
@@ -109,32 +112,32 @@ func settingsPage(m *Model) ggui.Widget {
 				ui.Select(language).Options(append([]string{LangSystem}, LanguageTags()...)).Format(languageName).MinWidth(180).Name(tr("Language"))),
 			settingRow(tr("Start at login"),
 				tr("Starts the app when you log in, in the tray without its window when the tray icon is shown. Sandboxes set to start with the app start then."),
-				ui.Switch(ggui.Bind(m.Autostart.Get, m.SetAutostart), "")),
+				ui.Switch(ggui.Bind(m.Autostart.Get, m.SetAutostart), "").Name(tr("Start at login"))),
 		),
-		appUpdateSettings(m),
 	}
 	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		trayTitle := tr("Show GVX Desktop in the %s", trayPlace())
 		groups = append(groups, settingsGroup(lucide.PanelTop, tr("Tray"),
-			settingRow(tr("Show GVX Desktop in the %s", trayPlace()),
+			settingRow(trayTitle,
 				tr("An icon with the sandboxes and what they are doing, to start and stop them without the window."),
-				ui.Switch(tray, "")),
+				ui.Switch(tray, "").Name(trayTitle)),
 			settingRow(tr("Keep running when the window closes"),
 				tr("Closing the window leaves the app and its sandboxes running behind the icon. Without the icon, closing the window quits."),
-				ui.Switch(hideOnClose, "").BindDisabled(noTray)),
+				ui.Switch(hideOnClose, "").Name(tr("Keep running when the window closes")).BindDisabled(noTray)),
 		))
 	}
 	groups = append(groups,
 		settingsGroup(lucide.Box, tr("Sandboxes"),
 			settingRow(tr("Stop running sandboxes on quit without asking"),
 				tr("gvx has no daemon: sandboxes run as long as this app does."),
-				ui.Switch(stopOnQuit, "")),
+				ui.Switch(stopOnQuit, "").Name(tr("Stop running sandboxes on quit without asking"))),
 			settingRow(tr("Stop timeout (seconds)"),
 				tr("How long a sandbox gets to exit after an interrupt before it is killed."),
 				widget.Box(ui.NumberInput(timeout).Range(1, 300).Step(1).Precision(0).Name(tr("Stop timeout"))).Width(120)),
 		),
 		dockerSettings(m),
 		kubeSettings(m),
-		settingsGroup(lucide.Cpu, tr("Engine"),
+		settingsGroup(lucide.Cpu, "rungv",
 			settingField(tr("rungv path"), tr("Leave empty to search $GVX_RUNGV, PATH, ~/.gvx/bin and the app's own folder."), widget.Row(
 				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, ~/.gvx/bin, next to the app)")).Name(tr("rungv path")).
 					OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = strings.TrimSpace(v) }) })),
@@ -151,6 +154,7 @@ func settingsPage(m *Model) ggui.Widget {
 			).Gap(8)),
 			engineFacts(m),
 		),
+		appUpdateSettings(m),
 		settingsGroup(lucide.Download, tr("rungv updates"),
 			widget.Column(
 				settingRow(tr("Channel"),
@@ -162,7 +166,7 @@ func settingsPage(m *Model) ggui.Widget {
 			releaseRow(m),
 			settingRow(tr("Look for a newer rungv when the app starts"),
 				tr("Asks GitHub for the newest release of gvx. Nothing is installed until you say so."),
-				ui.Switch(checkUpdates, "")),
+				ui.Switch(checkUpdates, "").Name(tr("Look for a newer rungv when the app starts"))),
 		),
 		aboutCard(m),
 	)
@@ -278,7 +282,10 @@ func releaseRow(m *Model) ggui.Widget {
 		switch {
 		case u.Installing && u.Source:
 			text = tr("Building rungv from %s", branch)
-			action = installButton(m, u, install).Size(ui.ButtonSmall)
+			action = widget.Row(
+				installButton(m, u, install).Size(ui.ButtonSmall),
+				ui.Button(tr("Cancel"), m.CancelInstallRungv).Outline().Size(ui.ButtonSmall),
+			).Gap(6).Align(widget.AlignCenter)
 		case u.Installing:
 			text = tr("Installing rungv %s", u.Name())
 			action = installButton(m, u, install).Size(ui.ButtonSmall)
@@ -407,51 +414,62 @@ func dockerSettings(m *Model) ggui.Widget {
 	exposeLAN := ggui.Bind(m.DockerExposeLAN.Get, m.SetDockerExposeLAN)
 	sshAgent := ggui.Bind(m.DockerSSHAgent.Get, m.SetDockerSSHAgent)
 
-	return settingsGroup(dockerIcon, "Docker",
-		dockerModeSettings(m),
-		widget.Column(
-			settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Row(
-				widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, Homebrew, Docker Desktop, bundled)")).Name(tr("docker path")).OnCommit(setPath)),
-				ui.Button(tr("Browse…"), func() { browseFile(m, path, setPath) }).Outline(),
-			).Gap(8)),
-			found,
-		).Gap(4).Stretch(),
-		bundledDockerSettings(m),
-		widget.Column(
+	apiRows := []ggui.Widget{
+		widget.Row(
+			widget.Expanded(widget.Column(
+				widget.Text(tr("Engine API")).Size(14).Weight(ggui.WeightMedium),
+				ui.CaptionOf(ggui.Map(m.Settings, func(s storeSettings) string {
+					if s.SandboxEngine {
+						return tr("How docker reaches GVX Desktop's sandbox engine. Changes take effect immediately.")
+					}
+					return tr("How the Docker Engine is reached. Changes take effect immediately.")
+				})),
+			).Gap(2)),
 			widget.Row(
-				widget.Expanded(widget.Column(
-					widget.Text(tr("Engine API")).Size(14).Weight(ggui.WeightMedium),
-					ui.CaptionOf(ggui.Map(m.Settings, func(s storeSettings) string {
-						if s.SandboxEngine {
-							return tr("How docker reaches GVX Desktop's sandbox engine. Changes take effect immediately.")
-						}
-						return tr("How the Docker Engine is reached. Changes take effect immediately.")
-					})),
-				).Gap(2)),
-				widget.Row(
-					ggui.If(overTCP, func() ggui.Widget {
-						return widget.Box(ui.TextField(port).Filter(digits).Name(tr("Docker API port")).OnCommit(setPort)).Width(84)
-					}),
-					ui.ToggleGroup(endpoint).Options([]string{DockerSocketEndpoint, DockerTCPEndpoint}).Format(dockerEndpointName).Outline().Spacing(0).Name(tr("Engine API")),
-				).Gap(8).Align(widget.AlignCenter),
-			).Gap(24).Align(widget.AlignCenter),
-			ui.Caption(tr("A Docker CLI on Windows reaches a Unix socket only from version 29 on. TCP on this computer's loopback address works with any version, on every system.")),
-			host,
-			proxyErr,
-		).Gap(6).Stretch(),
-		sharedFoldersField(m),
-		settingRow(
-			tr("Publish container ports on local network (0.0.0.0)"),
-			tr("Published container ports default to 127.0.0.1 only. Turning this on binds ports on 0.0.0.0, exposing them to other devices on your local network (requires rungv v0.21+ for Docker Engine)."),
-			ui.Switch(exposeLAN, "").Name(tr("Publish container ports on local network (0.0.0.0)")),
-		),
-		settingRow(
-			tr("Forward host SSH agent"),
-			tr("Relays this machine's SSH_AUTH_SOCK to /run/host-services/ssh-auth.sock for containers that mount it. Requires rungv v0.21+."),
-			ui.Switch(sshAgent, "").Name(tr("Forward host SSH agent")),
-		),
-		dockerConfigField(m),
+				ggui.If(overTCP, func() ggui.Widget {
+					return widget.Box(ui.TextField(port).Filter(digits).Name(tr("Docker API port")).OnCommit(setPort)).Width(84)
+				}),
+				ui.ToggleGroup(endpoint).Options([]string{DockerSocketEndpoint, DockerTCPEndpoint}).Format(dockerEndpointName).Outline().Spacing(0).Name(tr("Engine API")),
+			).Gap(8).Align(widget.AlignCenter),
+		).Gap(24).Align(widget.AlignCenter),
+	}
+	if runtime.GOOS == "windows" {
+		apiRows = append(apiRows, ui.Caption(tr("A Docker CLI on Windows reaches a Unix socket only from version 29 on. TCP on this computer's loopback address works with any version, on every system.")))
+	}
+	apiRows = append(apiRows, host, proxyErr)
+
+	modeRow := dockerModeSettings(m)
+	cliRow := widget.Column(
+		settingField(tr("docker path"), tr("The docker command the app sets a context up with. Leave empty to look where a terminal would."), widget.Row(
+			widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, Homebrew, Docker Desktop, bundled)")).Name(tr("docker path")).OnCommit(setPath)),
+			ui.Button(tr("Browse…"), func() { browseFile(m, path, setPath) }).Outline(),
+		).Gap(8)),
+		found,
+	).Gap(4).Stretch()
+	bundledRow := bundledDockerSettings(m)
+	apiCol := widget.Column(apiRows...).Gap(6).Stretch()
+	sharedRow := sharedFoldersField(m)
+	lanRow := settingRow(
+		tr("Publish container ports on local network (0.0.0.0)"),
+		tr("Published container ports default to 127.0.0.1 only. Turning this on binds ports on 0.0.0.0, exposing them to other devices on your local network (requires rungv v0.21+ for Docker Engine)."),
+		ui.Switch(exposeLAN, "").Name(tr("Publish container ports on local network (0.0.0.0)")),
 	)
+	sshRow := settingRow(
+		tr("Forward host SSH agent"),
+		tr("Relays this machine's SSH_AUTH_SOCK to /run/host-services/ssh-auth.sock for containers that mount it. Requires rungv v0.21+."),
+		ui.Switch(sshAgent, "").Name(tr("Forward host SSH agent")),
+	)
+	cfgRow := dockerConfigField(m)
+
+	hasBundled := ggui.Map(m.BundledDocker, func(s BundledDockerState) bool { return s.Available })
+	return ggui.View(hasBundled, func(avail bool) ggui.Widget {
+		rows := []ggui.Widget{modeRow, cliRow}
+		if avail {
+			rows = append(rows, bundledRow)
+		}
+		rows = append(rows, apiCol, sharedRow, lanRow, sshRow, cfgRow)
+		return settingsGroup(dockerIcon, "Docker", rows...)
+	})
 }
 
 // bundledDockerSettings shows the bundled Docker CLI status and lets the user
@@ -527,7 +545,7 @@ func dockerModeToggle(m *Model, size *ui.ButtonSizeVariant) ggui.Widget {
 		}
 		return "compat"
 	}, func(v string) {
-		m.SetSandboxEngine(v == "sandbox")
+		m.SwitchSandboxEngine(v == "sandbox")
 	})
 	return ui.ToggleGroup(mode).Options([]string{"sandbox", "compat"}).Format(func(v string) string {
 		if v == "compat" {
@@ -956,7 +974,7 @@ func kubeSettings(m *Model) ggui.Widget {
 		settingRow(tr("Service load balancer"),
 			tr("Runs k3s's ServiceLB, so a LoadBalancer service gets an address instead of staying pending. The node's ports 80 and 443 reach this computer at 127.0.0.1:%d and :%d. A running cluster changes when it is restarted.",
 				recipes.ServiceLBHTTPPort, recipes.ServiceLBHTTPSPort),
-			ui.Switch(serviceLB, "")),
+			ui.Switch(serviceLB, "").Name(tr("Service load balancer"))),
 	)
 }
 

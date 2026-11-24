@@ -26,7 +26,7 @@ func explorerDialog(m *Model) ggui.Widget {
 			m.explorer.close()
 		}
 	})
-	head := widget.Row(
+	head := widget.Padding(widget.Row(
 		widget.Flexible(ui.HeadingOf(m.ExploreTitle).Size(17).NoWrap().Ellipsis()),
 		ggui.View(m.ExploreSource, func(src string) ggui.Widget {
 			if src == "" {
@@ -40,7 +40,7 @@ func explorerDialog(m *Model) ggui.Widget {
 			}
 			return trn(len(ls), "%d layer", "%d layers")
 		})).Size(12).NoWrap(),
-	).Gap(8).Align(widget.AlignCenter)
+	).Gap(8).Align(widget.AlignCenter), 0, 32, 0, 0)
 
 	tabs := ui.Tabs(m.ExploreTab,
 		ui.Tab(tr("Files"), widget.Padding(explorerFilesView(m), 10, 0, 0, 0)),
@@ -54,29 +54,22 @@ func explorerDialog(m *Model) ggui.Widget {
 		Width(960).Name(tr("Image explorer")).CloseButton(true)
 }
 
-func explorerUnsupportedView() ggui.Widget {
-	return widget.Box(ui.Empty(
-		tr("Not supported in the sandbox engine"),
-		tr("Browsing Docker image files is not supported in the sandbox engine yet. Browse the same image under GVX Sandboxes instead."),
-	).Media(glyph(lucide.FolderSearch, 32).Color(colorGray)).Outline()).Height(470)
-}
-
 func explorerFilesView(m *Model) ggui.Widget {
-	state := ggui.Derived(func() int {
-		if m.Settings.Get().SandboxEngine && m.ExploreSource.Get() == "Docker Engine" {
-			return 3
+	type viewState struct {
+		loading bool
+		err     string
+		note    string
+	}
+	state := ggui.Derived(func() viewState {
+		return viewState{
+			loading: m.ExploreLoading.Get(),
+			err:     m.ExploreErr.Get(),
+			note:    m.ExploreFilesNote.Get(),
 		}
-		if m.ExploreLoading.Get() {
-			return 1
-		}
-		if m.ExploreErr.Get() != "" {
-			return 2
-		}
-		return 0
 	})
-	return ggui.View(state, func(s int) ggui.Widget {
-		switch s {
-		case 1:
+	return ggui.View(state, func(s viewState) ggui.Widget {
+		switch {
+		case s.loading:
 			msg := ggui.Map(m.ExploreProgress, func(p string) string {
 				if p != "" {
 					return p
@@ -84,13 +77,24 @@ func explorerFilesView(m *Model) ggui.Widget {
 				return tr("Reading image filesystem…")
 			})
 			return widget.Box(widget.Row(ui.Spinner(), ui.CaptionOf(msg)).Gap(10).Align(widget.AlignCenter)).Height(470)
-		case 2:
-			return widget.Box(ui.Alert(tr("Could not read image filesystem"), ggui.Peek(m.ExploreErr)).Destructive().Icon(icons.Alert)).Height(470)
-		case 3:
-			return explorerUnsupportedView()
+		case s.note != "":
+			return widget.Box(ui.Empty(
+				tr("Files unavailable"),
+				s.note,
+			).Media(glyph(lucide.FolderSearch, 32).Color(colorGray)).Outline()).Height(470)
+		case s.err != "":
+			return widget.Box(ui.Alert(tr("Could not read image filesystem"), s.err).Destructive().Icon(icons.Alert)).Height(470)
 		}
+		dirErr := ggui.View(m.ExploreDirErr, func(err string) ggui.Widget {
+			if err == "" {
+				return widget.Box()
+			}
+			return ui.Alert(tr("Could not open folder"), err).Destructive().Icon(icons.Alert).
+				Action(ui.Button(tr("Retry"), func() { m.ExploreOpenDir(ggui.Peek(m.ExplorePath)) }).Outline().Size(ui.ButtonExtraSmall))
+		})
 		return widget.Column(
 			explorerNavBar(m),
+			dirErr,
 			widget.Box(
 				ui.Resizable(m.ExploreSplit, explorerDirPane(m), explorerPreviewPane(m)).
 					WithHandle().MinSizes(280, 280).Name(tr("Image explorer")),
@@ -168,19 +172,22 @@ func explorerDirPane(m *Model) ggui.Widget {
 		}
 		return n > 1
 	})
-	list := ggui.View(ggui.Combine(visible, showLayer, func(es []imagefs.Entry, sl bool) struct {
-		entries []imagefs.Entry
-		layer   bool
-	} {
-		return struct {
-			entries []imagefs.Entry
-			layer   bool
-		}{es, sl}
-	}).WithEqual(nil), func(v struct {
-		entries []imagefs.Entry
-		layer   bool
-	}) ggui.Widget {
+	type dirListState struct {
+		entries  []imagefs.Entry
+		layer    bool
+		hasQuery bool
+	}
+	list := ggui.View(ggui.Derived(func() dirListState {
+		return dirListState{
+			entries:  visible.Get(),
+			layer:    showLayer.Get(),
+			hasQuery: strings.TrimSpace(m.ExploreQuery.Get()) != "",
+		}
+	}).WithEqual(nil), func(v dirListState) ggui.Widget {
 		if len(v.entries) == 0 {
+			if v.hasQuery {
+				return widget.Padding(ui.Caption(tr("No matching files.")), 16)
+			}
 			return widget.Padding(ui.Caption(tr("Empty folder.")), 16)
 		}
 		rows := make([]ggui.Widget, len(v.entries))
@@ -208,9 +215,9 @@ func explorerEntryRow(m *Model, e imagefs.Entry, showLayer bool) ggui.Widget {
 	if e.Kind == imagefs.KindDir {
 		nameText = nameText.Weight(ggui.WeightMedium)
 	}
-	nameCol := []ggui.Widget{nameText}
+	nameCol := []ggui.Widget{widget.Flexible(nameText)}
 	if e.Kind == imagefs.KindSymlink && e.Target != "" {
-		nameCol = append(nameCol, ui.Caption("→ "+e.Target).Size(11).NoWrap().Ellipsis())
+		nameCol = append(nameCol, widget.Flexible(ui.Caption("→ "+e.Target).Size(11).NoWrap().Ellipsis()))
 	}
 	sizeStr := "—"
 	if e.Kind == imagefs.KindFile {
@@ -221,7 +228,7 @@ func explorerEntryRow(m *Model, e imagefs.Entry, showLayer bool) ggui.Widget {
 		widget.Expanded(widget.Row(nameCol...).Gap(6).Align(widget.AlignCenter)),
 	}
 	if showLayer && e.Layer > 0 {
-		parts = append(parts, ui.Mono(fmt.Sprintf("L%d", e.Layer)).Size(10).Color(colorGray).NoWrap())
+		parts = append(parts, tip(ui.Mono(fmt.Sprintf("L%d", e.Layer)).Size(10).Color(colorGray).NoWrap(), tr("Layer %d", e.Layer)))
 	}
 	parts = append(parts,
 		ui.Mono(imagefs.FormatMode(e.Mode, e.Kind)).Size(10).Color(colorGray).NoWrap(),
@@ -246,8 +253,15 @@ func explorerEntryRow(m *Model, e imagefs.Entry, showLayer bool) ggui.Widget {
 func explorerPreviewPane(m *Model) ggui.Widget {
 	body := ggui.View(m.ExplorePreview, func(p FilePreview) ggui.Widget {
 		if !p.HasEntry {
-			count := ui.CaptionOf(ggui.Combine(m.ExplorePath, m.ExploreEntries, func(dir string, es []imagefs.Entry) string {
-				return fmt.Sprintf("%s · %s", dir, trn(len(es), "%d item", "%d items"))
+			count := ui.CaptionOf(ggui.Derived(func() string {
+				dir := m.ExplorePath.Get()
+				all := m.ExploreEntries.Get()
+				q := m.ExploreQuery.Get()
+				if strings.TrimSpace(q) != "" {
+					shown := filterExploreEntries(all, q)
+					return fmt.Sprintf("%s · %s", dir, showing(len(shown), len(all)))
+				}
+				return fmt.Sprintf("%s · %s", dir, trn(len(all), "%d item", "%d items"))
 			})).Size(12)
 			return widget.Align(widget.Column(
 				glyph(lucide.FileText, 24).Color(colorGray),
@@ -323,11 +337,11 @@ func explorerPreviewPane(m *Model) ggui.Widget {
 		if p.Body == "" && !p.Binary {
 			parts = append(parts, ui.Caption(tr("Empty file.")))
 		} else {
-			cb := ui.CodeBlock(p.Body).Height(290).Small().LineNumbers(!p.Binary).CopyButton(true)
+			cb := ui.CodeBlock(p.Body).Small().LineNumbers(!p.Binary).CopyButton(true)
 			if p.Language != "" {
 				cb = cb.Language(p.Language)
 			}
-			parts = append(parts, cb)
+			parts = append(parts, widget.Expanded(cb))
 		}
 		return widget.Column(parts...).Gap(8).Stretch()
 	})
@@ -335,26 +349,22 @@ func explorerPreviewPane(m *Model) ggui.Widget {
 }
 
 func explorerLayersView(m *Model) ggui.Widget {
-	state := ggui.Derived(func() int {
-		if m.Settings.Get().SandboxEngine && m.ExploreSource.Get() == "Docker Engine" {
-			return 3
+	type layerState struct {
+		loading bool
+		err     string
+	}
+	state := ggui.Derived(func() layerState {
+		return layerState{
+			loading: m.ExploreLoading.Get(),
+			err:     m.ExploreErr.Get(),
 		}
-		if m.ExploreLoading.Get() {
-			return 1
-		}
-		if m.ExploreErr.Get() != "" {
-			return 2
-		}
-		return 0
 	})
-	return ggui.View(state, func(s int) ggui.Widget {
-		switch s {
-		case 1:
+	return ggui.View(state, func(s layerState) ggui.Widget {
+		switch {
+		case s.loading:
 			return widget.Box(widget.Row(ui.Spinner(), ui.Caption(tr("Reading layers…"))).Gap(10).Align(widget.AlignCenter)).Height(470)
-		case 2:
-			return widget.Box(ui.Alert(tr("Could not read layers"), ggui.Peek(m.ExploreErr)).Destructive().Icon(icons.Alert)).Height(470)
-		case 3:
-			return explorerUnsupportedView()
+		case s.err != "":
+			return widget.Box(ui.Alert(tr("Could not read layers"), s.err).Destructive().Icon(icons.Alert)).Height(470)
 		}
 		return ggui.View(m.ExploreLayers, func(ls []imagefs.Layer) ggui.Widget {
 			if len(ls) == 0 {
@@ -385,7 +395,7 @@ func explorerLayersView(m *Model) ggui.Widget {
 				if layer.Empty {
 					metaParts = append(metaParts, tr("empty"))
 				}
-				col := []ggui.Widget{ui.Mono(cmd).Size(12).NoWrap().Ellipsis()}
+				col := []ggui.Widget{tip(ui.Mono(cmd).Size(12).NoWrap().Ellipsis(), cmd)}
 				if len(metaParts) > 0 {
 					col = append(col, ui.Caption(strings.Join(metaParts, " · ")).Size(11).NoWrap())
 				}

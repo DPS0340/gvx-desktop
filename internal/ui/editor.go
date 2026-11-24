@@ -3,6 +3,7 @@ package ui
 import (
 	"image/color"
 	"slices"
+	"strings"
 
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/icons/lucide"
@@ -90,6 +91,12 @@ func editorSheet(m *Model) ggui.Widget {
 		}
 		return tr("Edit %s", x.Name)
 	})
+	advancedOpen := ggui.State(false)
+	ggui.Watch(m.EditorOpen, func(open bool) {
+		if open {
+			advancedOpen.Set(false)
+		}
+	})
 
 	cached := ggui.Map(m.Images, func(l Listing[rungv.Image]) []string {
 		var refs []string
@@ -134,6 +141,17 @@ func editorSheet(m *Model) ggui.Widget {
 	network := d.Field(func(x *Draft) *string { return &x.Network })
 	isWG := ggui.Map(network, func(n string) bool { return n == "wg" })
 	isNAT := ggui.Map(network, func(n string) bool { return n == "nat" || n == "" })
+	autoPub := ggui.Bind(func() bool { return d.Get().AutoPublish }, func(v bool) {
+		m.EditorTouched.Set(true)
+		d.Update(func(x Draft) Draft {
+			x.AutoPublish = v
+			if !v {
+				x.AutoPublishAddr = ""
+			}
+			return x
+		})
+	})
+	isAutoPub := ggui.Map(d, func(x Draft) bool { return x.AutoPublish || strings.TrimSpace(x.AutoPublishAddr) != "" })
 
 	ports := widget.Column(
 		ui.Field(tr("Published ports"), ui.TextField(str(func(x *Draft) *string { return &x.Ports })).Multiline().Lines(3).
@@ -144,9 +162,12 @@ func editorSheet(m *Model) ggui.Widget {
 			Help(tr("One per line: GUEST_PATH=HOST_SOCKET[,uid=N,gid=N,mode=0600]. Relays a guest Unix socket to a host socket under lockdown (rungv v0.21+).")),
 		ggui.If(isNAT, func() ggui.Widget {
 			return widget.Column(
-				ui.Field(tr("Auto-publish bind address"), ui.TextField(str(func(x *Draft) *string { return &x.AutoPublishAddr })).
-					Placeholder("127.0.0.1").Name(tr("Auto-publish bind address"))).
-					Help(tr("Host IP for --auto-publish, such as 0.0.0.0. Leave empty for 127.0.0.1 only (requires -auto-publish and rungv v0.21+).")),
+				ui.Switch(autoPub, tr("Auto-publish ports as the guest listens")).Small(),
+				ggui.If(isAutoPub, func() ggui.Widget {
+					return ui.Field(tr("Auto-publish bind address"), ui.TextField(str(func(x *Draft) *string { return &x.AutoPublishAddr })).
+						Placeholder("127.0.0.1").Name(tr("Auto-publish bind address"))).
+						Help(tr("Host IP for --auto-publish, such as 0.0.0.0. Leave empty for 127.0.0.1 only (requires rungv v0.21+)."))
+				}),
 				ui.Field(tr("Allowed live port addresses"), ui.TextField(str(func(x *Draft) *string { return &x.DynamicPortAddrs })).Multiline().Lines(2).
 					Placeholder("0.0.0.0\n192.168.1.10").Name(tr("Allowed live port addresses"))).
 					Help(tr("IP literals, one per line or comma-separated, allowed for live port publishing under lockdown (rungv v0.21+).")),
@@ -218,11 +239,15 @@ func editorSheet(m *Model) ggui.Widget {
 		ui.Switch(flag(func(x *Draft) *bool { return &x.Privileged }), tr("Privileged inside the sandbox (raw sockets, iptables, setuid) — needed by dockerd")).Small(),
 		ui.Switch(flag(func(x *Draft) *bool { return &x.HostCACerts }), tr("Trust this machine's root certificates (TLS-inspecting proxies)")).Small(),
 		ui.Field(tr("Execution backend"), ui.Select(d.Field(func(x *Draft) *string { return &x.Backend })).
-			Options([]string{"auto", "hvf", "whpx", "systrap"}).Name(tr("Execution backend"))).
+			Options([]string{"auto", "hvf", "whpx", "systrap"}).Format(func(v string) string {
+			if v == "auto" {
+				return tr("Auto")
+			}
+			return v
+		}).Name(tr("Execution backend"))).
 			Help(tr("auto picks hvf on macOS, whpx on Windows and systrap on Linux. Use whpx for untrusted code on Windows.")),
 	).Gap(14).Stretch()
 
-	advancedOpen := ggui.State(false)
 	advanced := widget.Column(
 		widget.Row(
 			widget.Expanded(ui.Field(tr("Hostname"), ui.TextField(str(func(x *Draft) *string { return &x.Hostname })).Placeholder("gvx").Name(tr("Hostname")))),
@@ -230,7 +255,15 @@ func editorSheet(m *Model) ggui.Widget {
 		).Gap(12),
 		widget.Row(
 			widget.Expanded(ui.Field(tr("Working directory"), ui.TextField(str(func(x *Draft) *string { return &x.Workdir })).Placeholder(tr("Image default")).Name(tr("Working directory")))),
-			widget.Expanded(ui.Field(tr("Pull policy"), ui.Select(d.Field(func(x *Draft) *string { return &x.Pull })).Options([]string{"missing", "always", "never"}).Name(tr("Pull policy")))),
+			widget.Expanded(ui.Field(tr("Pull policy"), ui.Select(d.Field(func(x *Draft) *string { return &x.Pull })).Options([]string{"missing", "always", "never"}).Format(func(v string) string {
+				switch v {
+				case "always":
+					return tr("Always")
+				case "never":
+					return tr("Never")
+				}
+				return tr("If missing")
+			}).Name(tr("Pull policy")))),
 		).Gap(12),
 		ui.Field(tr("Entrypoint"), ui.TextField(str(func(x *Draft) *string { return &x.Entrypoint })).Placeholder(tr("Image default")).Name(tr("Entrypoint"))),
 		ui.Switch(flag(func(x *Draft) *bool { return &x.SetEntrypoint }), tr("Override the entrypoint even when empty (clears it)")).Small(),
@@ -240,8 +273,8 @@ func editorSheet(m *Model) ggui.Widget {
 	).Gap(14).Stretch()
 
 	lifecycle := widget.Column(
-		ui.Switch(flag(func(x *Draft) *bool { return &x.Checkpoint }), tr("Allow snapshots (checkpoint and restore)")),
-		ui.Switch(flag(func(x *Draft) *bool { return &x.AutoStart }), tr("Start when GVX Desktop starts")),
+		ui.Switch(flag(func(x *Draft) *bool { return &x.Checkpoint }), tr("Allow snapshots (checkpoint and restore)")).Small(),
+		ui.Switch(flag(func(x *Draft) *bool { return &x.AutoStart }), tr("Start when GVX Desktop starts")).Small(),
 	).Gap(10).Stretch()
 
 	section := func(icon *icons.Glyph, title string, body ggui.Widget) ggui.Widget {
@@ -251,7 +284,19 @@ func editorSheet(m *Model) ggui.Widget {
 		).Gap(12).Stretch()
 	}
 
-	errorBanner := ggui.View(m.DraftError, func(msg string) ggui.Widget {
+	// Only surface the red validation banner after the user edits the form or
+	// attempts to save, so opening a blank "New sandbox" form stays calm.
+	visibleErr := ggui.Derived(func() string {
+		msg := m.DraftError.Get()
+		if msg == "" {
+			return ""
+		}
+		if !m.EditorTouched.Get() && m.Draft.Get() == m.editorInitial {
+			return ""
+		}
+		return msg
+	})
+	errorBanner := ggui.View(visibleErr, func(msg string) ggui.Widget {
 		if msg == "" {
 			return widget.Box()
 		}
@@ -300,12 +345,19 @@ func editorSheet(m *Model) ggui.Widget {
 	// in the room it has and the validation status + actions stay pinned
 	// at the bottom edge.
 	actions := widget.Row(
-		ui.Button(tr("Cancel"), func() { m.EditorOpen.Set(false) }).Ghost(),
+		ui.Button(tr("Cancel"), m.CloseEditor).Outline(),
 		widget.Spacer(),
 		saveActions,
 	).Gap(8).Align(widget.AlignCenter)
-	return ui.Sheet(m.EditorOpen, widget.Column(
-		ui.TitleOf(title).Size(20),
+	sheetOpen := ggui.Bind(m.EditorOpen.Get, func(open bool) {
+		if !open {
+			m.CloseEditor()
+			return
+		}
+		m.EditorOpen.Set(true)
+	})
+	return ui.Sheet(sheetOpen, widget.Column(
+		widget.Padding(ui.TitleOf(title).Size(20), 0, 32, 0, 0),
 		caption,
 		widget.Expanded(widget.Scroll(widget.Padding(form, 16, 12, 24, 0)).FadeEdges(12)),
 		errorBanner,

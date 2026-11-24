@@ -211,7 +211,7 @@ func TestCommandPaletteHasRecipesAndSandboxes(t *testing.T) {
 	for _, n := range p.Semantics().Nodes(ggui.RoleMenuItem) {
 		names[n.Name] = true
 	}
-	for _, want := range []string{"Docker Engine", "Kubernetes", "Toggle sidebar", "my-api"} {
+	for _, want := range []string{"Docker", "Open Docker", "Kubernetes", "Toggle sidebar", "my-api"} {
 		if !names[want] {
 			t.Errorf("command palette missing %q (have: %v)", want, names)
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ironpark/ggui"
+	"github.com/ironpark/ggui/ui"
 
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
@@ -303,6 +304,10 @@ func (m *Model) InstallRungv() {
 			m.release = rel
 		}
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				m.Toasts.Push(ui.Toast(tr("Build canceled"), tr("The rungv installation was canceled.")).Info())
+				return
+			}
 			if errors.Is(err, rungv.ErrNoToolchain) {
 				err = errors.New(tr("Building from source needs git and Go on this computer: ") + err.Error())
 			}
@@ -327,10 +332,28 @@ func (m *Model) InstallRungv() {
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), buildTimeout)
-		defer cancel()
+		m.buildCancelMu.Lock()
+		m.buildCancel = cancel
+		m.buildCancelMu.Unlock()
+		defer func() {
+			m.buildCancelMu.Lock()
+			m.buildCancel = nil
+			m.buildCancelMu.Unlock()
+			cancel()
+		}()
 		err := work(ctx)
 		m.post(func() { done(err) })
 	}()
+}
+
+// CancelInstallRungv aborts an in-progress rungv download or source build.
+func (m *Model) CancelInstallRungv() {
+	m.buildCancelMu.Lock()
+	cancel := m.buildCancel
+	m.buildCancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // buildFromSource builds src into target, telling the screen what it is

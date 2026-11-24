@@ -61,24 +61,55 @@ func (r shellRun) Equal(o shellRun) bool { return r.target.Equal(o.target) && r.
 func terminalTab(m *Model, target ggui.Readable[shellTarget], caption string, tools ...ggui.Widget) ggui.Widget {
 	restarts := ggui.State(0)
 	restart := func() { restarts.Set(ggui.Peek(restarts) + 1) }
+	activeSess := ggui.State[*term.Session](nil)
 	run := ggui.Combine(target, restarts, func(t shellTarget, n int) shellRun { return shellRun{t, n} }).WithEqual(shellRun.Equal)
+	canRun := ggui.Map(target, func(t shellTarget) bool { return t.Why == "" && t.Key != "" && t.Start != nil })
+	hasSess := ggui.Map(activeSess, func(s *term.Session) bool { return s != nil })
 	body := ggui.View(run, func(r shellRun) ggui.Widget {
 		t := r.target
 		switch {
 		case t.Why != "":
-			return terminalEmpty(t.Why, t.WhyText)
+			activeSess.Set(nil)
+			return terminalEmpty(t.Why, t.WhyText, nil)
 		case t.Key == "" || t.Start == nil:
+			activeSess.Set(nil)
 			return widget.Box()
 		}
-		return shellView(m, t, restart)
+		return shellView(m, t, restart, activeSess)
 	})
-	bar := append([]ggui.Widget{widget.Expanded(ui.Caption(caption).Size(12)),
-		tip(iconButton(lucide.RotateCcw, tr("Restart the shell"), restart), tr("Restart"))}, tools...)
+	copyBtn := tip(iconButton(lucide.Copy, tr("Copy selection"), func() {
+		if s := ggui.Peek(activeSess); s != nil {
+			if sel := s.Selection(); sel != "" {
+				m.Copy(sel, tr("Terminal selection"))
+			} else if txt := s.Text(); txt != "" {
+				m.Copy(txt, tr("Terminal screen"))
+			}
+		}
+	}).BindDisabled(ggui.Not(hasSess)), tr("Copy"))
+	pasteBtn := tip(iconButton(lucide.ClipboardPaste, tr("Paste"), func() {
+		if s := ggui.Peek(activeSess); s != nil {
+			if txt := ggui.CurrentClipboard().Read(); txt != "" {
+				s.ClearSelection()
+				s.Paste(txt)
+			}
+		}
+	}).BindDisabled(ggui.Not(hasSess)), tr("Paste"))
+	restartBtn := tip(iconButton(lucide.RotateCcw, tr("Restart the shell"), restart).BindDisabled(ggui.Not(canRun)), tr("Restart"))
+	bar := append([]ggui.Widget{
+		widget.Expanded(ui.Caption(caption).Size(12)),
+		copyBtn,
+		pasteBtn,
+		restartBtn,
+	}, tools...)
 	return widget.Column(widget.Row(bar...).Gap(6).Align(widget.AlignCenter), body).Gap(10).Stretch()
 }
 
-func terminalEmpty(title, text string) ggui.Widget {
-	return ui.Empty(title, text).Media(glyph(lucide.SquareTerminal, 32).Color(colorGray)).Outline()
+func terminalEmpty(title, text string, action ggui.Widget) ggui.Widget {
+	e := ui.Empty(title, text).Media(glyph(lucide.SquareTerminal, 32).Color(colorGray)).Outline()
+	if action != nil {
+		e = e.Action(action)
+	}
+	return e
 }
 
 // shellState is where a shell is: starting, failed, running, or exited.
@@ -95,7 +126,7 @@ func (a shellState) Equal(b shellState) bool {
 
 // shellView starts a shell in t and shows it, ending it when it is
 // disposed of.
-func shellView(m *Model, t shellTarget, restart func()) ggui.Widget {
+func shellView(m *Model, t shellTarget, restart func(), activeSess *ggui.StateValue[*term.Session]) ggui.Widget {
 	st := ggui.State(shellState{}).WithEqual(shellState.Equal)
 	var (
 		sess     *term.Session
@@ -104,6 +135,9 @@ func shellView(m *Model, t shellTarget, restart func()) ggui.Widget {
 	ggui.OnCleanup(func() {
 		disposed = true
 		if sess != nil {
+			if ggui.Peek(activeSess) == sess {
+				activeSess.Set(nil)
+			}
 			m.closeTerminal(sess)
 		}
 	})
@@ -127,6 +161,7 @@ func shellView(m *Model, t shellTarget, restart func()) ggui.Widget {
 				return
 			}
 			sess = s
+			activeSess.Set(s)
 			m.openTerminal(s, t.TargetID)
 			st.Set(shellState{s: s})
 			go func() {
@@ -145,7 +180,7 @@ func shellView(m *Model, t shellTarget, restart func()) ggui.Widget {
 		var u unavailable
 		switch {
 		case errors.As(s.err, &u):
-			return terminalEmpty(u.title, u.text)
+			return terminalEmpty(u.title, u.text, ui.Button(tr("Retry"), restart).Outline().Size(ui.ButtonSmall))
 		case s.err != nil:
 			return widget.Column(
 				ui.Alert(tr("Could not start a shell"), s.err.Error()).Destructive().Icon(icons.Alert),

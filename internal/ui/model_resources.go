@@ -116,6 +116,10 @@ func (m *Model) Pull() {
 			m.PullOpen.Set(false)
 			m.toastOK(tr("Pulled %s", ref), tr("The image is ready in the Docker Engine."))
 			m.LoadDockerImages()
+			if ggui.Peek(m.Settings).SandboxEngine {
+				m.LoadImages()
+				m.LoadDisk()
+			}
 		})
 		return
 	}
@@ -134,6 +138,9 @@ func (m *Model) Pull() {
 		m.toastOK(tr("Pulled %s", ref), tr("The image layers are compiled to EROFS and cached."))
 		m.LoadImages()
 		m.LoadDisk()
+		if ggui.Peek(m.Settings).SandboxEngine {
+			m.LoadDockerImages()
+		}
 	})
 }
 
@@ -150,10 +157,29 @@ func (m *Model) InspectImage(ref string) {
 
 // AskRemoveImage confirms and removes an image.
 func (m *Model) AskRemoveImage(img rungv.Image) {
+	m.AskRemoveImageWithUsers(img, nil)
+}
+
+// AskRemoveImageWithUsers confirms and removes a cached gvx image in a single
+// dialog, warning when any sandboxes currently reference it.
+func (m *Model) AskRemoveImageWithUsers(img rungv.Image, users []string) {
 	ref := img.Ref()
-	m.Confirm(tr("Remove %s?", ref), tr("The image record is removed and layers no other image uses are deleted (%s).", formatSize(img.Size)), tr("Remove image"), func() {
+	busyKey := "img:" + img.Key()
+	if m.isBusy(busyKey) {
+		return
+	}
+	text := tr("The image record is removed and layers no other image uses are deleted (%s).", formatSize(img.Size))
+	if len(users) > 0 {
+		text = tr("Used by %s. They pull it again at their next start.", strings.Join(users, ", ")) + " " + text
+	}
+	m.Confirm(tr("Remove %s?", ref), text, tr("Remove image"), func() {
+		if m.isBusy(busyKey) {
+			return
+		}
+		m.setBusy(busyKey, true)
 		c := m.Client()
 		m.async(func(ctx context.Context) error { return c.RemoveImage(ctx, ref, true) }, func(err error) {
+			m.setBusy(busyKey, false)
 			if err != nil {
 				m.toastError(tr("Could not remove %s", ref), err)
 			} else {
@@ -161,13 +187,24 @@ func (m *Model) AskRemoveImage(img rungv.Image) {
 			}
 			m.LoadImages()
 			m.LoadDisk()
+			if ggui.Peek(m.Settings).SandboxEngine {
+				m.LoadDockerImages()
+			}
 		})
 	})
 }
 
 // AskPruneImages removes dangling images.
 func (m *Model) AskPruneImages() {
+	const busyKey = "img:prune"
+	if m.isBusy(busyKey) {
+		return
+	}
 	m.Confirm(tr("Remove unused images?"), tr("Dangling images and orphaned layer files are deleted."), tr("Prune images"), func() {
+		if m.isBusy(busyKey) {
+			return
+		}
+		m.setBusy(busyKey, true)
 		c := m.Client()
 		var out string
 		m.async(func(ctx context.Context) error {
@@ -175,6 +212,7 @@ func (m *Model) AskPruneImages() {
 			out, err = c.PruneImages(ctx, false)
 			return err
 		}, func(err error) {
+			m.setBusy(busyKey, false)
 			if err != nil {
 				m.toastError(tr("Prune failed"), err)
 			} else {
@@ -182,6 +220,9 @@ func (m *Model) AskPruneImages() {
 			}
 			m.LoadImages()
 			m.LoadDisk()
+			if ggui.Peek(m.Settings).SandboxEngine {
+				m.LoadDockerImages()
+			}
 		})
 	})
 }
@@ -293,12 +334,39 @@ func (m *Model) pruneVolumes(
 	return deleted, errors.Join(errs...)
 }
 
+// isValidVolumeName checks whether s is a valid rungv volume name: non-empty,
+// starts with an alphanumeric character or '_', and contains only letters,
+// digits, '-', '_' and '.'.
+func isValidVolumeName(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || s[0] == '-' || s[0] == '.' {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// OpenVolumeDialog resets the volume form and opens the create-volume dialog.
+func (m *Model) OpenVolumeDialog() {
+	m.VolumeName.Set("")
+	m.VolumeOpen.Set(true)
+}
+
 // CreateVolume formats the volume named in the dialog.
 func (m *Model) CreateVolume() {
 	name := strings.TrimSpace(ggui.Peek(m.VolumeName))
+	if !isValidVolumeName(name) || m.isBusy("vol:create") {
+		return
+	}
+	m.setBusy("vol:create", true)
 	driver := ggui.Peek(m.VolumeDriver)
 	c := m.Client()
 	m.async(func(ctx context.Context) error { return c.CreateVolume(ctx, name, driver) }, func(err error) {
+		m.setBusy("vol:create", false)
 		if err != nil {
 			m.toastError(tr("Could not create the volume"), err)
 			return
@@ -307,20 +375,32 @@ func (m *Model) CreateVolume() {
 		m.VolumeName.Set("")
 		m.toastOK(tr("Volume created"), tr("Mount it in a sandbox as %s:/path.", name))
 		m.LoadVolumes()
+		m.LoadDisk()
 	})
 }
 
 // AskRemoveVolume confirms and deletes a volume.
 func (m *Model) AskRemoveVolume(v rungv.Volume) {
-	_, engUsers := m.sandboxEngineVolumeOwnership()
+	busyKey := "vol:" + v.Name
+	if m.isBusy(busyKey) {
+		return
+	}
+	engOwned, engUsers := m.sandboxEngineVolumeOwnership()
 	users := volumeUsersWithEngine(ggui.Peek(m.Rows), engUsers, v.Name)
 	text := tr("All data in %s (%s) is deleted. This cannot be undone.", v.Name, formatSize(v.Size))
 	if len(users) > 0 {
 		text += tr(" Used by: %s.", strings.Join(users, ", "))
+	} else if engOwned[v.Name] {
+		text += " " + tr("This volume is managed by Docker in the sandbox engine.")
 	}
 	m.Confirm(tr("Delete volume %s?", v.Name), text, tr("Delete volume"), func() {
+		if m.isBusy(busyKey) {
+			return
+		}
+		m.setBusy(busyKey, true)
 		c := m.Client()
 		m.async(func(ctx context.Context) error { return c.RemoveVolume(ctx, v.Name) }, func(err error) {
+			m.setBusy(busyKey, false)
 			if err != nil {
 				m.toastError(tr("Could not delete %s", v.Name), err)
 			} else {
@@ -335,9 +415,17 @@ func (m *Model) AskRemoveVolume(v rungv.Volume) {
 // AskPruneVolumes removes unused rungv volumes individually, keeping volumes
 // referenced by saved sandboxes and all engine-managed volumes.
 func (m *Model) AskPruneVolumes() {
+	const busyKey = "vol:prune"
+	if m.isBusy(busyKey) {
+		return
+	}
 	m.Confirm(tr("Delete all unused volumes?"),
 		tr("Unused volumes that no sandbox or container uses are deleted, with their data. Engine-managed Docker volumes are kept."),
 		tr("Prune volumes"), func() {
+			if m.isBusy(busyKey) {
+				return
+			}
+			m.setBusy(busyKey, true)
 			c := m.Client()
 			rows := slices.Clone(ggui.Peek(m.Rows))
 			var deleted int
@@ -346,6 +434,7 @@ func (m *Model) AskPruneVolumes() {
 				deleted, err = m.pruneVolumes(ctx, c.Volumes, c.RemoveVolume, rows)
 				return err
 			}, func(err error) {
+				m.setBusy(busyKey, false)
 				if err != nil {
 					m.toastError(tr("Prune failed"), err)
 				} else if deleted == 0 {
@@ -690,6 +779,10 @@ func (m *Model) LoadDocker() {
 			m.DockerContainers.Set(Listing[dockerapi.Container]{Loaded: true, Err: pe})
 			return
 		}
+		if seErr := ggui.Peek(m.SandboxEngineStatus).Err; seErr != "" {
+			m.DockerContainers.Set(Listing[dockerapi.Container]{Loaded: true, Err: seErr})
+			return
+		}
 	}
 	if m.dockerLoading {
 		m.dockerAgain = true
@@ -836,6 +929,11 @@ func (m *Model) followLinks() {
 
 // DockerAction runs start, stop, restart, pause, unpause or remove on a container.
 func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
+	busyKey := "ctr:" + ctr.ID
+	if m.isBusy(busyKey) {
+		return
+	}
+	m.setBusy(busyKey, true)
 	host := m.dockerBackendHost()
 	m.async(func(ctx context.Context) error {
 		if action == "pause" {
@@ -856,21 +954,33 @@ func (m *Model) DockerAction(action string, ctr dockerapi.Container) {
 		}
 		return nil
 	}, func(err error) {
+		m.setBusy(busyKey, false)
 		if err != nil {
-			switch action {
-			case "pause":
-				m.toastError(tr("Could not pause %s", ctr.Name()), err)
-			case "unpause":
-				m.toastError(tr("Could not resume %s", ctr.Name()), err)
-			default:
-				m.toastError(fmt.Sprintf(tr("Could not %s %s"), action, ctr.Name()), err)
-			}
+			m.toastError(containerActionErrorTitle(action, ctr.Name()), err)
 		}
 		m.LoadDocker()
 		if ggui.Peek(m.Page) == PageContainers && ggui.Peek(m.Container).ID == ctr.ID {
 			m.LoadContainerLogs() // what it wrote as it stopped or started
 		}
 	})
+}
+
+func containerActionErrorTitle(action, name string) string {
+	switch action {
+	case "start":
+		return tr("Could not start %s", name)
+	case "stop":
+		return tr("Could not stop %s", name)
+	case "restart":
+		return tr("Could not restart %s", name)
+	case "pause":
+		return tr("Could not pause %s", name)
+	case "unpause":
+		return tr("Could not resume %s", name)
+	case "remove":
+		return tr("Could not remove %s", name)
+	}
+	return tr("Could not update %s", name)
 }
 
 // dockerDo runs start, stop, restart, pause, unpause or remove on the container id.
@@ -994,6 +1104,13 @@ func (m *Model) StopAllAndThen(then func()) {
 	m.stopAll(true, then)
 }
 
+// StopAllForUpdate stops running sandboxes and sandbox-engine containers before
+// an in-app update applies, without marking the model as quitting or closing
+// the sandbox engine so the app remains fully recoverable if Apply fails.
+func (m *Model) StopAllForUpdate(then func()) {
+	m.stopAll(false, then)
+}
+
 func (m *Model) stopAll(closeEngine bool, then func()) {
 	timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
 	id := m.Toasts.Push(ui.Toast(tr("Stopping sandboxes"), tr("Waiting for the guests to exit…")).Loading())
@@ -1035,6 +1152,7 @@ type Draft struct {
 	NetTX, NetRX             string
 	NATPolicyFile            string
 	DynamicPortAddrs         string
+	AutoPublish              bool
 	AutoPublishAddr          string
 	Backend                  string
 	Hostname, User, Workdir  string
@@ -1055,7 +1173,8 @@ func DraftFrom(s sandbox.Spec) Draft {
 		Workspace: s.Workspace, WorkspaceRO: s.WorkspaceRO, RootfsVolume: s.RootfsVolume,
 		Memory: s.Memory, CPUs: s.CPUs, Network: s.Network, WGConf: s.WGConf, IsolateLAN: s.IsolateLAN,
 		NetTX: formatBandwidthBPS(s.NetTXBPS), NetRX: formatBandwidthBPS(s.NetRXBPS),
-		NATPolicyFile: s.NATPolicyFile, DynamicPortAddrs: strings.Join(s.DynamicPortAddrs, "\n"), AutoPublishAddr: s.AutoPublishAddr,
+		NATPolicyFile: s.NATPolicyFile, DynamicPortAddrs: strings.Join(s.DynamicPortAddrs, "\n"),
+		AutoPublish: sandbox.HasAutoPublish(s), AutoPublishAddr: s.AutoPublishAddr,
 		Backend: s.Backend, Hostname: s.Hostname, User: s.User, Workdir: s.Workdir,
 		Privileged: !s.Unprivileged, HostCACerts: s.HostCACerts, Pull: s.Pull,
 		Checkpoint: s.Checkpoint, AutoStart: s.AutoStart, ReadyPattern: s.ReadyPattern,
@@ -1243,24 +1362,33 @@ func formatBandwidthBPS(bps uint64) string {
 
 // Spec converts the form to a sandbox spec.
 func (d Draft) Spec() (sandbox.Spec, error) {
-	tx, err := parseBandwidthBPS(d.NetTX)
-	if err != nil {
-		return sandbox.Spec{}, err
-	}
-	rx, err := parseBandwidthBPS(d.NetRX)
-	if err != nil {
-		return sandbox.Spec{}, err
-	}
-	autoPubAddr := strings.TrimSpace(d.AutoPublishAddr)
-	if autoPubAddr != "" {
-		if err := validateBareIPAddr(autoPubAddr); err != nil {
-			return sandbox.Spec{}, fmt.Errorf("Auto-publish address %q: must be a valid IP literal.", autoPubAddr)
+	isNAT := d.Network == "" || d.Network == "nat"
+	var (
+		tx, rx      uint64
+		natPolicy   string
+		autoPubAddr string
+		dynAddrs    []string
+	)
+	if isNAT {
+		var err error
+		if tx, err = parseBandwidthBPS(d.NetTX); err != nil {
+			return sandbox.Spec{}, err
 		}
-	}
-	dynAddrs := splitAddrList(d.DynamicPortAddrs)
-	for _, addr := range dynAddrs {
-		if err := validateBareIPAddr(addr); err != nil {
-			return sandbox.Spec{}, fmt.Errorf("Dynamic port bind address %q: must be a valid IP literal.", addr)
+		if rx, err = parseBandwidthBPS(d.NetRX); err != nil {
+			return sandbox.Spec{}, err
+		}
+		natPolicy = strings.TrimSpace(d.NATPolicyFile)
+		autoPubAddr = strings.TrimSpace(d.AutoPublishAddr)
+		if autoPubAddr != "" {
+			if err := validateBareIPAddr(autoPubAddr); err != nil {
+				return sandbox.Spec{}, fmt.Errorf("Auto-publish address %q: must be a valid IP literal.", autoPubAddr)
+			}
+		}
+		dynAddrs = splitAddrList(d.DynamicPortAddrs)
+		for _, addr := range dynAddrs {
+			if err := validateBareIPAddr(addr); err != nil {
+				return sandbox.Spec{}, fmt.Errorf("Dynamic port bind address %q: must be a valid IP literal.", addr)
+			}
 		}
 	}
 	s := sandbox.Spec{
@@ -1269,15 +1397,20 @@ func (d Draft) Spec() (sandbox.Spec, error) {
 		Ports: lines(d.Ports), UnixForwards: lines(d.UnixForwards), Env: lines(d.Env),
 		Workspace: strings.TrimSpace(d.Workspace), WorkspaceRO: d.WorkspaceRO, RootfsVolume: strings.TrimSpace(d.RootfsVolume),
 		Memory: strings.TrimSpace(d.Memory), CPUs: strings.TrimSpace(d.CPUs), WGConf: strings.TrimSpace(d.WGConf), IsolateLAN: d.IsolateLAN,
-		NetTXBPS: tx, NetRXBPS: rx, NATPolicyFile: strings.TrimSpace(d.NATPolicyFile),
+		NetTXBPS: tx, NetRXBPS: rx, NATPolicyFile: natPolicy,
 		DynamicPortAddrs: dynAddrs, AutoPublishAddr: autoPubAddr,
 		Hostname: strings.TrimSpace(d.Hostname), User: strings.TrimSpace(d.User), Workdir: strings.TrimSpace(d.Workdir),
 		Unprivileged: !d.Privileged, HostCACerts: d.HostCACerts,
 		Checkpoint: d.Checkpoint, AutoStart: d.AutoStart, ReadyPattern: strings.TrimSpace(d.ReadyPattern),
 		ExtraArgs: strings.TrimSpace(d.ExtraArgs), Recipe: d.Recipe, CreatedAt: d.CreatedAt,
 	}
-	if d.Network != "nat" {
+	if !isNAT {
 		s.Network = d.Network
+		if sandbox.HasAutoPublish(s) {
+			s = sandbox.WithAutoPublish(s, false)
+		}
+	} else if d.AutoPublish != sandbox.HasAutoPublish(s) {
+		s = sandbox.WithAutoPublish(s, d.AutoPublish)
 	}
 	if d.Backend != "auto" {
 		s.Backend = d.Backend

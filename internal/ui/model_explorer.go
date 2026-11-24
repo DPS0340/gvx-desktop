@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -145,6 +146,8 @@ func (m *Model) beginExplore(title, source string, tab int) (int, context.Contex
 	m.ExploreLoading.Set(true)
 	m.ExploreProgress.Set("")
 	m.ExploreErr.Set("")
+	m.ExploreDirErr.Set("")
+	m.ExploreFilesNote.Set("")
 	m.ExploreLayers.Set(nil)
 	m.ExploreLayer.Set(0)
 	m.ExplorePath.Set("/")
@@ -221,15 +224,20 @@ func (m *Model) ExploreGVXImage(img rungv.Image, tab int) {
 	}()
 }
 
-// ExploreDockerImage opens the image explorer for a Docker Engine image on tab.
+// ExploreDockerImage opens the image explorer for a Docker image on tab.
 func (m *Model) ExploreDockerImage(img DockerImageRow, tab int) {
 	ref := img.Ref()
-	gen, ctx := m.beginExplore(ref, "Docker Engine", tab)
+	gen, ctx := m.beginExplore(ref, "Docker", tab)
 	if m.Offline {
 		m.ExploreLoading.Set(false)
 		return
 	}
 	host := m.dockerBackendHost()
+	se := ggui.Peek(m.Settings).SandboxEngine
+	cacheDir := ggui.Peek(m.Engine).Info.LayerCacheDir
+	if cacheDir == "" {
+		cacheDir = rungv.ExpandHome(ggui.Peek(m.Settings).CacheDir)
+	}
 
 	// Load inspect JSON in parallel.
 	go func() {
@@ -254,37 +262,90 @@ func (m *Model) ExploreDockerImage(img DockerImageRow, tab int) {
 		})
 	}()
 
-	// Index Docker image filesystem and layer history.
-	if ggui.Peek(m.Settings).SandboxEngine {
-		m.ExploreLoading.Set(false)
-		return
-	}
+	// Index image filesystem and layer history. In sandbox-engine mode, native
+	// images share rungv's EROFS cache (fast per-layer browsing via OpenGVX),
+	// with Docker API export fallback and history-only fallback for foreign
+	// architectures.
 	go func() {
-		var last time.Time
-		fs, err := imagefs.OpenDocker(ctx, host, img.ID, func(n int) {
-			if now := time.Now(); now.Sub(last) > 120*time.Millisecond {
-				last = now
-				msg := tr("Indexing image… %d entries", n)
-				m.post(func() {
-					curGen, _ := m.explorer.getFS()
-					if curGen == gen {
-						m.ExploreProgress.Set(msg)
+		var (
+			fs        imagefs.FS
+			err       error
+			filesNote string
+		)
+		if se {
+			if !img.ForeignArch() && cacheDir != "" {
+				fs, err = imagefs.OpenGVX(cacheDir, img.ID, img.Digest)
+			}
+			if fs == nil && !img.ForeignArch() {
+				var last time.Time
+				fs, err = imagefs.OpenDocker(ctx, host, img.ID, func(n int) {
+					if now := time.Now(); now.Sub(last) > 120*time.Millisecond {
+						last = now
+						msg := tr("Indexing image… %d entries", n)
+						m.post(func() {
+							curGen, _ := m.explorer.getFS()
+							if curGen == gen {
+								m.ExploreProgress.Set(msg)
+							}
+						})
 					}
 				})
 			}
-		})
-		if err != nil {
-			if ctx.Err() != nil {
+			if fs == nil {
+				if ctx.Err() != nil {
+					return
+				}
+				layers := fetchDockerImageLayers(ctx, host, img.ID)
+				if img.ForeignArch() {
+					filesNote = tr("Browsing files is not available for linux/%s images yet. Layer history and inspect JSON are available.", img.Arch)
+				} else if len(layers) > 0 && err != nil {
+					filesNote = err.Error()
+				}
+				m.post(func() {
+					curGen, _ := m.explorer.getFS()
+					if curGen != gen {
+						return
+					}
+					m.ExploreLoading.Set(false)
+					m.ExploreProgress.Set("")
+					if filesNote != "" {
+						m.ExploreLayers.Set(layers)
+						m.ExploreFilesNote.Set(filesNote)
+						return
+					}
+					if err != nil {
+						m.ExploreErr.Set(err.Error())
+					}
+				})
 				return
 			}
-			m.post(func() {
-				curGen, _ := m.explorer.getFS()
-				if curGen == gen {
-					m.ExploreLoading.Set(false)
-					m.ExploreErr.Set(err.Error())
+		} else {
+			var last time.Time
+			fs, err = imagefs.OpenDocker(ctx, host, img.ID, func(n int) {
+				if now := time.Now(); now.Sub(last) > 120*time.Millisecond {
+					last = now
+					msg := tr("Indexing image… %d entries", n)
+					m.post(func() {
+						curGen, _ := m.explorer.getFS()
+						if curGen == gen {
+							m.ExploreProgress.Set(msg)
+						}
+					})
 				}
 			})
-			return
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				m.post(func() {
+					curGen, _ := m.explorer.getFS()
+					if curGen == gen {
+						m.ExploreLoading.Set(false)
+						m.ExploreErr.Set(err.Error())
+					}
+				})
+				return
+			}
 		}
 		if !m.explorer.setFS(gen, fs) {
 			return
@@ -298,14 +359,46 @@ func (m *Model) ExploreDockerImage(img DockerImageRow, tab int) {
 			}
 			m.ExploreLoading.Set(false)
 			m.ExploreProgress.Set("")
+			m.ExploreLayers.Set(layers)
 			if derr != nil {
-				m.ExploreErr.Set(derr.Error())
+				m.ExploreDirErr.Set(derr.Error())
 				return
 			}
-			m.ExploreLayers.Set(layers)
 			m.ExploreEntries.Set(entries)
 		})
 	}()
+}
+
+// fetchDockerImageLayers reads layer history from the Docker Engine API in
+// oldest-first order for images whose filesystem cannot be indexed directly.
+func fetchDockerImageLayers(ctx context.Context, host, imageID string) []imagefs.Layer {
+	c, err := dockerapi.New(host)
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+	hctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	hist, err := c.ImageHistory(hctx, imageID)
+	if err != nil {
+		return nil
+	}
+	layers := make([]imagefs.Layer, 0, len(hist))
+	for _, h := range slices.Backward(hist) {
+		var created time.Time
+		if h.Created > 0 {
+			created = time.Unix(h.Created, 0)
+		}
+		layers = append(layers, imagefs.Layer{
+			Index:   len(layers) + 1,
+			Digest:  h.ID,
+			Size:    h.Size,
+			Created: created,
+			Command: imagefs.CleanCommand(h.CreatedBy),
+			Empty:   h.Size == 0,
+		})
+	}
+	return layers
 }
 
 // ExploreOpenDir navigates to dir in the active image filesystem.
@@ -318,6 +411,7 @@ func (m *Model) ExploreOpenDir(dir string) {
 	layer := ggui.Peek(m.ExploreLayer)
 	m.ExplorePath.Set(dir)
 	m.ExploreQuery.Set("")
+	m.ExploreDirErr.Set("")
 	m.ExploreSelected.Set("")
 	m.ExplorePreview.Set(FilePreview{})
 	go func() {
@@ -330,10 +424,11 @@ func (m *Model) ExploreOpenDir(dir string) {
 				return
 			}
 			if err != nil {
-				m.ExploreErr.Set(err.Error())
+				m.ExploreDirErr.Set(err.Error())
+				m.ExploreEntries.Set(nil)
 				return
 			}
-			m.ExploreErr.Set("")
+			m.ExploreDirErr.Set("")
 			m.ExploreEntries.Set(entries)
 		})
 	}()
@@ -430,12 +525,22 @@ func (m *Model) ExploreFollowSymlink(e imagefs.Entry) {
 		parent := path.Dir(target)
 		base := path.Base(target)
 		if target == "/" {
-			m.post(func() { m.ExploreOpenDir("/") })
+			m.post(func() {
+				curGen, _ := m.explorer.getFS()
+				if curGen == gen {
+					m.ExploreOpenDir("/")
+				}
+			})
 			return
 		}
 		siblings, err := fs.ReadDir(ctx, parent, layer)
 		if err != nil {
-			m.post(func() { m.toastError(tr("Could not open %s", target), err) })
+			m.post(func() {
+				curGen, _ := m.explorer.getFS()
+				if curGen == gen {
+					m.toastError(tr("Could not open %s", target), err)
+				}
+			})
 			return
 		}
 		var found *imagefs.Entry

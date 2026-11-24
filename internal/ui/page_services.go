@@ -19,26 +19,69 @@ import (
 // cluster, filtered via the toolbar query and System services switch, with
 // the NodePorts that reach this computer and a way to forward a port to any.
 func servicesView(m *Model) ggui.Widget {
-	// 0: not read yet, 1: failed, 2: loaded.
-	state := ggui.Derived(func() int {
+	type viewState struct {
+		stage int
+		err   string
+	}
+	state := ggui.Derived(func() viewState {
 		l := m.Services.Get()
 		switch {
 		case !l.Loaded:
-			return 0
+			return viewState{stage: 0}
 		case l.Err != "":
-			return 1
+			return viewState{stage: 1, err: l.Err}
 		}
-		return 2
+		return viewState{stage: 2}
 	})
-	return ggui.View(state, func(s int) ggui.Widget {
-		switch s {
+	return ggui.View(state, func(s viewState) ggui.Widget {
+		switch s.stage {
 		case 0:
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Asking the API server…"))).Gap(8)
 		case 1:
-			return ui.Alert(tr("Could not list the services"), ggui.Peek(m.Services).Err).Destructive().Icon(icons.Alert)
+			return ui.Alert(tr("Could not list the services"), s.err).Destructive().Icon(icons.Alert)
 		}
-		return tableCard(servicesTable(m))
+		return servicesSection(m)
 	})
+}
+
+func servicesSection(m *Model) ggui.Widget {
+	type emptyState struct {
+		visible  int
+		total    int
+		filtered bool
+		system   bool
+	}
+	st := ggui.Derived(func() emptyState {
+		total := m.Services.Get().Items
+		sys := m.SystemPods.Get()
+		q := m.ServiceQuery.Get()
+		vis := filterServices(userServices(total, sys), q)
+		return emptyState{
+			visible:  len(vis),
+			total:    len(total),
+			filtered: strings.TrimSpace(q) != "",
+			system:   sys,
+		}
+	})
+	note := ggui.View(st, func(s emptyState) ggui.Widget {
+		if s.visible > 0 {
+			return widget.Box()
+		}
+		if s.filtered {
+			return widget.Padding(widget.Row(
+				widget.Expanded(ui.Caption(tr("No services match the current filter.")).Size(12)),
+				ui.Button(tr("Clear filter"), func() { m.ServiceQuery.Set("") }).Outline().Size(ui.ButtonExtraSmall),
+			).Gap(8).Align(widget.AlignCenter), 8, 12)
+		}
+		if !s.system && s.total > 0 {
+			return widget.Padding(
+				ui.Caption(trn(s.total, "%d system service hidden by the switch above.", "%d system services hidden by the switch above.")).Size(12),
+				10, 12,
+			)
+		}
+		return widget.Padding(ui.Caption(tr("No services in the cluster yet.")).Size(12), 10, 12)
+	})
+	return tableCard(widget.Column(servicesTable(m), note).Stretch())
 }
 
 // clusterSpecOf follows the spec of the cluster's sandbox.
@@ -54,7 +97,8 @@ func servicesTable(m *Model) ggui.Widget {
 		return userServices(l.Items, system)
 	}).WithEqual(nil)
 	visible := ggui.Combine(all, m.ServiceQuery, filterServices).WithEqual(nil)
-	count := ggui.Combine(visible, all, func(v, a []kubeapi.Service) string { return showing(len(v), len(a)) })
+	count := ggui.Combine(visible, m.Services, func(v []kubeapi.Service, l Listing[kubeapi.Service]) string { return showing(len(v), len(l.Items)) })
+	selected := ggui.State("")
 	spec := clusterSpecOf(m)
 	toolbar := widget.Row(
 		widget.Expanded(filterBar(m.ServiceQuery, tr("Filter by name, namespace, type or selector"), count)),
@@ -122,7 +166,7 @@ func servicesTable(m *Model) ggui.Widget {
 				return widget.Row(tip(forward, why), serviceMenu(m, s, ggui.Peek(spec))).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(84).Identified("actions"),
-	).RowName(kubeapi.Service.Name).RowHeight(48).MaxRows(8).Toolbar(toolbar)
+	).BindSelected(selected).RowName(kubeapi.Service.Name).RowHeight(48).Toolbar(toolbar)
 }
 
 // nodePortCell tells of the ports a service takes on the node: the first,

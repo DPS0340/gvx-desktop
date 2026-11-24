@@ -132,6 +132,9 @@ func AddNodeBlocked(rows []Row) string {
 // the server onto the nodes' network, which restarts it: the user is asked
 // first.
 func (m *Model) AddNode() {
+	if ggui.Peek(m.AddingNode) {
+		return
+	}
 	rows := ggui.Peek(m.Rows)
 	if why := AddNodeBlocked(rows); why != "" {
 		m.toastError(tr("Could not add a node"), errors.New(why))
@@ -145,6 +148,10 @@ func (m *Model) AddNode() {
 	m.Offer(tr("Add a node?"),
 		tr("The cluster's server restarts to join the network its nodes share, and its pods restart with it. Then the new node joins."),
 		tr("Restart and add"), func() {
+			if ggui.Peek(m.AddingNode) {
+				return
+			}
+			m.AddingNode.Set(true)
 			moved := recipes.WithNodeNetwork(server.Spec)
 			m.replaceSpec(moved)
 			timeout := time.Duration(ggui.Peek(m.Settings).StopTimeout) * time.Second
@@ -162,6 +169,7 @@ const nodeTokenWait = 4 * time.Minute
 // addAgent reads the join token from the running server serverID, as soon
 // as it is up, then saves and starts a new agent.
 func (m *Model) addAgent(serverID string) {
+	m.AddingNode.Set(true)
 	toast := m.Toasts.Push(ui.Toast(tr("Adding a node"), tr("Waiting for the cluster's server…")).Loading())
 	var token string
 	m.async(func(ctx context.Context) error {
@@ -181,6 +189,7 @@ func (m *Model) addAgent(serverID string) {
 			}
 		}
 	}, func(err error) {
+		m.AddingNode.Set(false)
 		if err != nil {
 			m.Toasts.Update(toast, ui.Toast(tr("Could not add a node"), err.Error()).Error())
 			return

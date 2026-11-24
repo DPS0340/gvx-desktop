@@ -53,37 +53,42 @@ func containersPage(m *Model) ggui.Widget {
 		return tr("%d running · %d total. Containers run inside the Docker Engine sandbox.", running, len(l.Items))
 	}))
 
-	state := ggui.Combine(m.ContainersAccess, listing, func(a ContainersAccess, l Listing[dockerapi.Container]) int {
+	type pageState struct {
+		stage int
+		err   string
+		se    bool
+	}
+	state := ggui.Derived(func() pageState {
+		a, l, se := m.ContainersAccess.Get(), listing.Get(), m.Settings.Get().SandboxEngine
 		switch {
 		case a != ContainersOpen:
-			return 0
+			return pageState{stage: 0, se: se}
 		case l.Err != "":
-			return containersFailed
+			return pageState{stage: containersFailed, err: l.Err, se: se}
 		case !l.Loaded:
-			return containersLoading
+			return pageState{stage: containersLoading, se: se}
 		case len(l.Items) == 0:
-			return containersNone
+			return pageState{stage: containersNone, se: se}
 		}
-		return containersListed
+		return pageState{stage: containersListed, se: se}
 	})
-	body := ggui.View(state, func(s int) ggui.Widget {
+	body := ggui.View(state, func(s pageState) ggui.Widget {
 		empty := func(title, text string) *ui.EmptyWidget {
 			return ui.Empty(title, text).Media(glyph(lucide.Container, 32).Color(colorGray)).Outline()
 		}
-		se := ggui.Peek(m.Settings).SandboxEngine
-		switch s {
+		switch s.stage {
 		case 0:
 			stage := ggui.Map(m.ContainersAccess, func(a ContainersAccess) int { return int(a) })
 			return ggui.View(gateOf(m, recipes.Docker, stage), func(g engineGate) ggui.Widget { return engineNotRunning(m, g, dockerGate()) })
 		case containersFailed:
 			title := tr("Could not reach dockerd")
-			if se {
+			if s.se {
 				title = tr("Could not reach the sandbox engine")
 			}
-			return ui.Alert(title, ggui.Peek(listing).Err).Destructive().Icon(icons.Alert)
+			return ui.Alert(title, s.err).Destructive().Icon(icons.Alert)
 		case containersLoading:
 			msg := tr("Asking dockerd…")
-			if se {
+			if s.se {
 				msg = tr("Loading containers…")
 			}
 			return widget.Row(ui.Spinner(), ui.Caption(msg)).Gap(8)
@@ -91,7 +96,7 @@ func containersPage(m *Model) ggui.Widget {
 			return empty(tr("No containers"), tr("Run one with the docker CLI: docker run -d -p 9000:80 nginx:alpine"))
 		}
 		return widget.Column(
-			tableCard(containersTable(m)),
+			containersSection(m),
 			containerDetail(m),
 		).Gap(16).Stretch()
 	})
@@ -101,6 +106,7 @@ func containersPage(m *Model) ggui.Widget {
 			tip(iconButton(lucide.RefreshCw, tr("Refresh containers"), func() {
 				m.LoadDocker()
 				m.LoadContainerLogs()
+				m.LoadContainerUsage()
 			}).BindDisabled(ggui.Not(m.ContainersOpen)), tr("Refresh")),
 			ui.Button("Docker", func() { m.Go(PageDocker) }).Outline().Icon(glyph(dockerIcon, 16)),
 		),
@@ -123,17 +129,39 @@ func dockerGate() gateWords {
 	}
 }
 
+// containersSection wraps containersTable with an inline "No matches" row when
+// active search or status filters leave zero matching containers.
+func containersSection(m *Model) ggui.Widget {
+	noMatch := ggui.Derived(func() bool {
+		all := m.DockerContainers.Get().Items
+		if len(all) == 0 {
+			return false
+		}
+		shown := filterContainers(filterContainersByStatus(all, m.ContainerStatus.Get()), m.ContainerQuery.Get())
+		return len(shown) == 0
+	})
+	emptyNote := ggui.If(noMatch, func() ggui.Widget {
+		return widget.Padding(widget.Row(
+			widget.Expanded(ui.Caption(tr("No containers match the current filter.")).Size(12)),
+			ui.Button(tr("Clear filter"), func() {
+				m.ContainerQuery.Set("")
+				m.ContainerStatus.Set("all")
+			}).Outline().Size(ui.ButtonExtraSmall),
+		).Gap(8).Align(widget.AlignCenter), 8, 12)
+	})
+	return tableCard(widget.Column(containersTable(m), emptyNote).Stretch())
+}
+
 // containersTable is the engine's containers, filtered by status and query,
 // each Compose project's under a head that folds them away.
 func containersTable(m *Model) ggui.Widget {
 	all := ggui.Map(m.DockerContainers, func(l Listing[dockerapi.Container]) []dockerapi.Container { return l.Items }).WithEqual(nil)
-	byStatus := ggui.Combine(all, m.ContainerStatus, filterContainersByStatus).WithEqual(nil)
 	rows := ggui.Derived(func() []containerRow {
-		return containerRows(byStatus.Get(), m.ContainerQuery.Get(), m.ComposeFolded.Get())
+		return containerRowsFiltered(all.Get(), m.ContainerStatus.Get(), m.ContainerQuery.Get(), m.ComposeFolded.Get())
 	}).WithEqual(nil)
 	count := ggui.Derived(func() string {
 		total := all.Get()
-		shown := filterContainers(byStatus.Get(), m.ContainerQuery.Get())
+		shown := filterContainers(filterContainersByStatus(total, m.ContainerStatus.Get()), m.ContainerQuery.Get())
 		return showing(len(shown), len(total))
 	})
 	statusFilter := ui.ToggleGroup(m.ContainerStatus).Options([]string{"all", "running", "stopped"}).Format(func(v string) string {
@@ -149,11 +177,13 @@ func containersTable(m *Model) ggui.Widget {
 		widget.Expanded(filterBar(m.ContainerQuery, tr("Filter by name, image or project"), count)),
 		statusFilter,
 	).Gap(12).Align(widget.AlignCenter)
-	// A head is no container to choose: choosing one leaves the choice.
+	// Clicking a Compose head folds/unfolds it; clicking a container selects it.
 	selected := ggui.Bind(ggui.Map(m.Container, func(c dockerapi.Container) string { return c.ID }).Get, func(id string) {
-		if !strings.HasPrefix(id, composeKey("")) {
-			m.SelectContainer(id)
+		if project, ok := strings.CutPrefix(id, composeKey("")); ok {
+			m.ToggleProject(project)
+			return
 		}
+		m.SelectContainer(id)
 	})
 	// cell builds a column's cell for a container's row, or with head for a
 	// project's head, which has nothing in the column without one. A row
@@ -227,12 +257,34 @@ func containersTable(m *Model) ggui.Widget {
 			})).Size(12).NoWrap()
 		}, nil)).W(130),
 		ui.Col("", cell(func(r ggui.Readable[dockerapi.Container]) ggui.Widget {
-			return ggui.View(r, func(c dockerapi.Container) ggui.Widget {
-				return widget.Row(containerQuickAction(m, c), containerMenu(m, c)).Gap(2).Justify(widget.JustifyEnd)
+			return ggui.View(ggui.Combine(r, m.BusyOps, func(c dockerapi.Container, busy map[string]bool) struct {
+				c    dockerapi.Container
+				busy bool
+			} {
+				return struct {
+					c    dockerapi.Container
+					busy bool
+				}{c, busy["ctr:"+c.ID]}
+			}), func(v struct {
+				c    dockerapi.Container
+				busy bool
+			}) ggui.Widget {
+				return widget.Row(containerQuickAction(m, v.c, v.busy), containerMenu(m, v.c)).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}, func(r ggui.Readable[containerRow]) ggui.Widget {
-			return ggui.View(r, func(row containerRow) ggui.Widget {
-				return widget.Row(projectQuickAction(m, row), projectMenu(m, row)).Gap(2).Justify(widget.JustifyEnd)
+			return ggui.View(ggui.Combine(r, m.BusyOps, func(row containerRow, busy map[string]bool) struct {
+				row  containerRow
+				busy bool
+			} {
+				return struct {
+					row  containerRow
+					busy bool
+				}{row, busy["proj:"+row.Project]}
+			}), func(v struct {
+				row  containerRow
+				busy bool
+			}) ggui.Widget {
+				return widget.Row(projectQuickAction(m, v.row, v.busy), projectMenu(m, v.row)).Gap(2).Justify(widget.JustifyEnd)
 			})
 		})).W(84).Identified("actions"),
 	).BindSelected(selected).RowName(containerRow.name).RowHeight(48).MaxRows(5).
@@ -301,26 +353,47 @@ func projectUsage(members []dockerapi.Container, all map[string]Usage) (u Usage,
 	return u, ok
 }
 
-// projectQuickAction stops a project with containers running, and starts
-// one with none.
-func projectQuickAction(m *Model, row containerRow) ggui.Widget {
-	if running, _ := projectCounts(row.Members); running > 0 {
-		return tip(iconButton(lucide.Square, tr("Stop %s", row.Project), func() { m.ProjectAction("stop", row.Project, row.Members) }), tr("Stop all"))
+// projectQuickAction stops a project with running/restarting containers, and
+// starts (or resumes) one without.
+func projectQuickAction(m *Model, row containerRow, busy bool) ggui.Widget {
+	active := false
+	for _, c := range row.Members {
+		if c.State == "running" || c.State == "restarting" {
+			active = true
+			break
+		}
 	}
-	return tip(iconButton(lucide.Play, tr("Start %s", row.Project), func() { m.ProjectAction("start", row.Project, row.Members) }), tr("Start all"))
+	if active {
+		return tip(iconButton(lucide.Square, tr("Stop %s", row.Project), func() { m.ProjectAction("stop", row.Project, row.Members) }).Disabled(busy), tr("Stop all"))
+	}
+	return tip(iconButton(lucide.Play, tr("Start %s", row.Project), func() { m.ProjectAction("start", row.Project, row.Members) }).Disabled(busy), tr("Start all"))
 }
 
 // projectMenu is what can be done to a project's containers together.
 func projectMenu(m *Model, row containerRow) ggui.Widget {
 	p, members := row.Project, row.Members
+	busy := m.isBusy("proj:" + p)
 	return moreMenu(tr("More actions for %s", p),
-		ui.MenuItem(tr("Start all"), func() { m.ProjectAction("start", p, members) }).Disabled(len(projectTargets("start", members)) == 0),
-		ui.MenuItem(tr("Stop all"), func() { m.ProjectAction("stop", p, members) }).Disabled(len(projectTargets("stop", members)) == 0),
-		ui.MenuItem(tr("Restart all"), func() { m.ProjectAction("restart", p, members) }),
+		ui.MenuItem(tr("Start all"), func() { m.ProjectAction("start", p, members) }).Disabled(busy || len(projectTargets("start", members)) == 0),
+		ui.MenuItem(tr("Stop all"), func() { m.ProjectAction("stop", p, members) }).Disabled(busy || len(projectTargets("stop", members)) == 0),
+		ui.MenuItem(tr("Restart all"), func() { m.ProjectAction("restart", p, members) }).Disabled(busy),
 		ui.MenuItem(tr("Copy project name"), func() { m.Copy(p, p) }),
 		ui.MenuDivider(),
-		ui.MenuItem(tr("Remove all…"), func() { m.AskRemoveProject(p, members) }).Destructive(),
+		ui.MenuItem(tr("Remove all…"), func() { m.AskRemoveProject(p, members) }).Destructive().Disabled(busy),
 	)
+}
+
+// containerHealth extracts Docker's healthcheck state from c.Status when present.
+func containerHealth(status string) string {
+	switch {
+	case strings.Contains(status, "(unhealthy)"):
+		return "unhealthy"
+	case strings.Contains(status, "(health: starting)"):
+		return "starting"
+	case strings.Contains(status, "(healthy)"):
+		return "healthy"
+	}
+	return ""
 }
 
 // containerStatus is a container's state as a color, words, and whether it
@@ -328,6 +401,14 @@ func projectMenu(m *Model, row containerRow) ggui.Widget {
 func containerStatus(c dockerapi.Container) (col color.Color, text string, changing bool) {
 	switch c.State {
 	case "running":
+		switch containerHealth(c.Status) {
+		case "unhealthy":
+			return colorRed, tr("Unhealthy"), false
+		case "starting":
+			return colorAmber, tr("Starting"), true
+		case "healthy":
+			return colorGreen, tr("Healthy"), false
+		}
 		return colorGreen, tr("Running"), false
 	case "restarting":
 		return colorAmber, tr("Restarting"), true
@@ -408,34 +489,35 @@ func containerPauseAction(c dockerapi.Container, sandboxEngine, canControl bool)
 
 // containerQuickAction starts a stopped container, resumes a paused one, and
 // stops a running one.
-func containerQuickAction(m *Model, c dockerapi.Container) ggui.Widget {
+func containerQuickAction(m *Model, c dockerapi.Container, busy bool) ggui.Widget {
 	if c.State == "paused" {
 		if !ggui.Peek(m.Settings).SandboxEngine || m.canControlContainer(c.ID) {
-			return tip(iconButton(lucide.Play, tr("Resume"), func() { m.DockerAction("unpause", c) }), tr("Resume"))
+			return tip(iconButton(lucide.Play, tr("Resume"), func() { m.DockerAction("unpause", c) }).Disabled(busy), tr("Resume"))
 		}
-		return tip(iconButton(lucide.Square, tr("Stop %s", c.Name()), func() { m.DockerAction("stop", c) }), tr("Stop"))
+		return tip(iconButton(lucide.Square, tr("Stop %s", c.Name()), func() { m.DockerAction("stop", c) }).Disabled(busy), tr("Stop"))
 	}
 	if c.State == "running" || c.State == "restarting" {
-		return tip(iconButton(lucide.Square, tr("Stop %s", c.Name()), func() { m.DockerAction("stop", c) }), tr("Stop"))
+		return tip(iconButton(lucide.Square, tr("Stop %s", c.Name()), func() { m.DockerAction("stop", c) }).Disabled(busy), tr("Stop"))
 	}
-	return tip(iconButton(lucide.Play, tr("Start %s", c.Name()), func() { m.DockerAction("start", c) }), tr("Start"))
+	return tip(iconButton(lucide.Play, tr("Start %s", c.Name()), func() { m.DockerAction("start", c) }).Disabled(busy), tr("Start"))
 }
 
 // containerMenu is the rest of what can be done to a container.
 func containerMenu(m *Model, c dockerapi.Container) ggui.Widget {
 	name := c.Name()
 	se := ggui.Peek(m.Settings).SandboxEngine
+	busy := m.isBusy("ctr:" + c.ID)
 	entries := []ggui.Widget{
 		ui.MenuItem(tr("Logs"), func() { m.ShowContainerLogs(c.ID) }),
 	}
 	switch containerPauseAction(c, se, m.canControlContainer(c.ID)) {
 	case "pause":
-		entries = append(entries, ui.MenuItem(tr("Pause"), func() { m.DockerAction("pause", c) }))
+		entries = append(entries, ui.MenuItem(tr("Pause"), func() { m.DockerAction("pause", c) }).Disabled(busy))
 	case "unpause":
-		entries = append(entries, ui.MenuItem(tr("Resume"), func() { m.DockerAction("unpause", c) }))
+		entries = append(entries, ui.MenuItem(tr("Resume"), func() { m.DockerAction("unpause", c) }).Disabled(busy))
 	}
 	if c.State == "running" {
-		entries = append(entries, ui.MenuItem(tr("Restart"), func() { m.DockerAction("restart", c) }))
+		entries = append(entries, ui.MenuItem(tr("Restart"), func() { m.DockerAction("restart", c) }).Disabled(busy))
 	}
 	entries = append(entries,
 		ui.MenuItem(tr("Copy ID"), func() { m.Copy(c.ID, c.ShortID()) }),
@@ -446,7 +528,7 @@ func containerMenu(m *Model, c dockerapi.Container) ggui.Widget {
 	}
 	entries = append(entries,
 		ui.MenuDivider(),
-		ui.MenuItem(tr("Remove"), func() { m.AskRemoveContainer(c) }).Destructive(),
+		ui.MenuItem(tr("Remove…"), func() { m.AskRemoveContainer(c) }).Destructive().Disabled(busy),
 	)
 	return moreMenu(tr("More actions for %s", name), entries...)
 }
@@ -454,41 +536,93 @@ func containerMenu(m *Model, c dockerapi.Container) ggui.Widget {
 // ---- Detail -------------------------------------------------------------
 
 // containerDetail is the chosen container: its state and actions, and tabs
-// with its logs and how to reach it.
+// with its logs and how to reach it. Hidden when active filters match nothing.
 func containerDetail(m *Model) ggui.Widget {
-	id := ggui.Map(m.Container, func(c dockerapi.Container) string { return c.ID })
-	return entering(id, func(string) ggui.Widget {
-		header := ggui.View(m.Container, func(c dockerapi.Container) ggui.Widget { return containerHeader(m, c) })
+	id := ggui.Derived(func() string {
+		all := m.DockerContainers.Get().Items
+		shown := filterContainers(filterContainersByStatus(all, m.ContainerStatus.Get()), m.ContainerQuery.Get())
+		if len(shown) == 0 {
+			return ""
+		}
+		c := m.Container.Get()
+		for _, s := range shown {
+			if s.ID == c.ID {
+				return c.ID
+			}
+		}
+		return shown[0].ID
+	})
+	return entering(id, func(shownID string) ggui.Widget {
+		if shownID == "" {
+			return widget.Box()
+		}
+		type hdrState struct {
+			c    dockerapi.Container
+			se   bool
+			ctrl bool
+			busy bool
+		}
+		hdr := ggui.Derived(func() hdrState {
+			c := m.Container.Get()
+			se := m.Settings.Get().SandboxEngine
+			ctrl := m.engineFeatures().Control
+			return hdrState{c: c, se: se, ctrl: ctrl, busy: m.BusyOps.Get()["ctr:"+c.ID]}
+		})
+		header := ggui.View(hdr, func(h hdrState) ggui.Widget { return containerHeader(m, h.c, h.se, h.busy) })
+		type connState struct {
+			c      dockerapi.Container
+			se     bool
+			lan    bool
+			ctrl   bool
+			engine Row
+		}
+		conn := ggui.Derived(func() connState {
+			set := m.Settings.Get()
+			eng, _ := m.RecipeSandbox(m.Rows.Get(), recipes.Docker)
+			return connState{
+				c:      m.Container.Get(),
+				se:     set.SandboxEngine,
+				lan:    set.DockerExposeLAN,
+				ctrl:   m.engineFeatures().Control,
+				engine: eng,
+			}
+		})
 		tabs := ui.Tabs(m.ContainerDetail,
 			ui.Tab(tr("Logs"), containerLogsView(m)),
-			ui.Tab(tr("Connect"), ggui.View(m.Container, func(c dockerapi.Container) ggui.Widget { return containerConnect(m, c) })),
+			ui.Tab(tr("Connect"), ggui.View(conn, func(v connState) ggui.Widget {
+				return containerConnect(m, v.c, v.se, v.lan, v.ctrl, v.engine)
+			})),
 			ui.Tab(tr("Terminal"), containerTerminal(m)),
 		).Line().Name(tr("Container details"))
 		return ui.Card(widget.Column(header, tabs).Gap(12).Stretch())
 	})
 }
 
-func containerHeader(m *Model, c dockerapi.Container) ggui.Widget {
-	se := ggui.Peek(m.Settings).SandboxEngine
+func containerHeader(m *Model, c dockerapi.Container, se, busy bool) ggui.Widget {
 	var actions []ggui.Widget
 	switch {
 	case c.State == "paused":
 		if !se || m.canControlContainer(c.ID) {
-			actions = append(actions, ui.Button(tr("Resume"), func() { m.DockerAction("unpause", c) }).Icon(glyph(lucide.Play, 14)))
+			actions = append(actions, ui.Button(tr("Resume"), func() { m.DockerAction("unpause", c) }).Icon(glyph(lucide.Play, 14)).Disabled(busy))
 		}
-		actions = append(actions, ui.Button(tr("Stop"), func() { m.DockerAction("stop", c) }).Outline().Icon(glyph(lucide.Square, 14)))
+		actions = append(actions, ui.Button(tr("Stop"), func() { m.DockerAction("stop", c) }).Outline().Icon(glyph(lucide.Square, 14)).Disabled(busy))
 	case c.State == "running" || c.State == "restarting":
+		if containerPauseAction(c, se, m.canControlContainer(c.ID)) == "pause" {
+			actions = append(actions, ui.Button(tr("Pause"), func() { m.DockerAction("pause", c) }).Outline().Icon(glyph(lucide.Pause, 14)).Disabled(busy))
+		}
 		actions = append(actions,
-			ui.Button(tr("Stop"), func() { m.DockerAction("stop", c) }).Outline().Icon(glyph(lucide.Square, 14)),
-			ui.Button(tr("Restart"), func() { m.DockerAction("restart", c) }).Outline().Icon(glyph(lucide.RotateCcw, 14)),
+			ui.Button(tr("Stop"), func() { m.DockerAction("stop", c) }).Outline().Icon(glyph(lucide.Square, 14)).Disabled(busy),
+			ui.Button(tr("Restart"), func() { m.DockerAction("restart", c) }).Outline().Icon(glyph(lucide.RotateCcw, 14)).Disabled(busy),
 		)
 	default:
-		actions = append(actions, ui.Button(tr("Start"), func() { m.DockerAction("start", c) }).Icon(glyph(lucide.Play, 14)))
+		actions = append(actions, ui.Button(tr("Start"), func() { m.DockerAction("start", c) }).Icon(glyph(lucide.Play, 14)).Disabled(busy))
 	}
 	actions = append(actions, containerMenu(m, c))
 	meta := ui.CaptionOf(ggui.Map(m.Now, func(now time.Time) string {
 		parts := []string{c.Image, c.ShortID()}
-		if c.Created != 0 {
+		if c.Status != "" {
+			parts = append(parts, c.Status)
+		} else if c.Created != 0 {
 			parts = append(parts, tr("created %s", since(time.Unix(c.Created, 0), now)))
 		}
 		if p := c.Project(); p != "" {
@@ -614,12 +748,52 @@ func containerBinds(c dockerapi.Container, engine sandbox.Spec, sandboxEngine bo
 	return parts
 }
 
+// containerOtherMounts lists volume and tmpfs mounts on a container.
+func containerOtherMounts(c dockerapi.Container) []ggui.Widget {
+	var vols, tmpfs []dockerapi.Mount
+	for _, mt := range c.Mounts {
+		switch mt.Type {
+		case "volume":
+			vols = append(vols, mt)
+		case "tmpfs":
+			tmpfs = append(tmpfs, mt)
+		}
+	}
+	if len(vols) == 0 && len(tmpfs) == 0 {
+		return nil
+	}
+	parts := []ggui.Widget{sectionTitle(tr("Volumes & tmpfs"), tr("Named volumes and memory-backed mounts attached to this container."))}
+	for _, mt := range vols {
+		src := mt.Source
+		if src == "" {
+			src = tr("volume")
+		}
+		label := src + " → " + mt.Destination
+		if !mt.RW {
+			label += " (ro)"
+		}
+		parts = append(parts, widget.Row(
+			glyph(lucide.HardDrive, 14).Color(colorGray),
+			widget.Expanded(ui.Mono(label).Size(12).NoWrap().Ellipsis()),
+		).Gap(10).Align(widget.AlignCenter))
+	}
+	for _, mt := range tmpfs {
+		label := "tmpfs → " + mt.Destination
+		if !mt.RW {
+			label += " (ro)"
+		}
+		parts = append(parts, widget.Row(
+			glyph(lucide.MemoryStick, 14).Color(colorGray),
+			widget.Expanded(ui.Mono(label).Size(12).NoWrap().Ellipsis()),
+		).Gap(10).Align(widget.AlignCenter))
+	}
+	return parts
+}
+
 // containerConnect tells how to reach what the container serves, and the
 // commands that reach the container itself.
-func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
-	parts := []ggui.Widget{sectionTitle(tr("Published ports"), publishedPortsNote(m))}
-	se := ggui.Peek(m.Settings).SandboxEngine
-	engine, _ := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker)
+func containerConnect(m *Model, c dockerapi.Container, se, exposeLAN, canExec bool, engine Row) ggui.Widget {
+	parts := []ggui.Widget{sectionTitle(tr("Published ports"), publishedPortsNoteFor(se, exposeLAN, engine))}
 	hostPorts := engineHostPorts(m, se, engine)
 	ports := containerPorts(c)
 	inside := false
@@ -644,7 +818,7 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 		case portWaiting:
 			text = widget.Column(text, ui.Caption(tr("Not published on this computer yet: the engine publishes it once the container listens on it.")).Size(11)).Gap(1)
 		}
-		var act ggui.Widget = iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(host, host) })
+		var act ggui.Widget = tip(iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(host, host) }), tr("Copy address"))
 		if p.Type == "tcp" {
 			url := "http://" + host
 			if open && reach == portReached {
@@ -652,7 +826,7 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 			}
 			act = widget.Row(
 				ui.Button(tr("Open"), func() { m.Open(url) }).Outline().Size(ui.ButtonExtraSmall).Icon(glyph(lucide.ExternalLink, 12)).Disabled(!open),
-				iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(url, url) }),
+				tip(iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(url, url) }), tr("Copy address")),
 			).Gap(4)
 		}
 		parts = append(parts, widget.Row(mark, widget.Expanded(text), act).Gap(10).Align(widget.AlignCenter))
@@ -670,12 +844,13 @@ func containerConnect(m *Model, c dockerapi.Container) ggui.Widget {
 	}
 	parts = append(parts, containerNetworks(m, c, se)...)
 	parts = append(parts, containerBinds(c, engine.Spec, se, dockerLiveMountsOf(m))...)
+	parts = append(parts, containerOtherMounts(c)...)
 	name := c.Name()
 	parts = append(parts,
 		sectionTitle(tr("Commands"), tr("For a terminal where docker uses the gvx context.")),
 		copyable(m, "docker logs -f "+name, "docker logs"),
 	)
-	if !se || m.peekEngineFeatures().Control {
+	if !se || canExec {
 		parts = append(parts, copyable(m, "docker exec -it "+name+" sh", "docker exec"))
 	}
 	parts = append(parts, copyable(m, "docker inspect "+name, "docker inspect"))
@@ -719,7 +894,7 @@ func containerNetworks(m *Model, c dockerapi.Container, se bool) []ggui.Widget {
 			addr = ""
 		}
 		if addr != "" {
-			row = append(row, ui.Mono(addr).Size(12).NoWrap(), iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(addr, addr) }))
+			row = append(row, ui.Mono(addr).Size(12).NoWrap(), tip(iconButton(lucide.Copy, tr("Copy address"), func() { m.Copy(addr, addr) }), tr("Copy address")))
 		}
 		name := n.Name
 		row = append(row, tip(iconButton(lucide.ArrowRight, tr("Show %s", name), func() { m.ShowNetwork(name) }), tr("Show network")))
@@ -771,15 +946,19 @@ func (h hostPorts) reach(p dockerapi.Port) portReach {
 	return portReached
 }
 
-// publishedPortsNote tells where a container's published port is reached:
-// under its own number when the engine's sandbox publishes ports as they
-// come, and inside the range it opened at start otherwise.
-func publishedPortsNote(m *Model) string {
-	if ggui.Peek(m.Settings).SandboxEngine {
+// publishedPortsNoteFor tells where a container's published port is reached.
+func publishedPortsNoteFor(se, exposeLAN bool, engine Row) string {
+	if se {
+		if exposeLAN {
+			return tr("Published container ports reach this computer on 127.0.0.1 and your local network (0.0.0.0).")
+		}
 		return tr("Published container ports reach this computer on 127.0.0.1.")
 	}
-	if engine, ok := m.RecipeSandbox(ggui.Peek(m.Rows), recipes.Docker); ok && !sandbox.HasAutoPublish(engine.Spec) {
+	if engine.Spec.ID != "" && !sandbox.HasAutoPublish(engine.Spec) {
 		return tr("Published container ports must be inside 9000–9019, the range the sandbox opened at start.")
+	}
+	if exposeLAN {
+		return tr("Published container ports reach this computer and your local network (0.0.0.0) under the same number, unless something here has that port already.")
 	}
 	return tr("A published container port reaches this computer at 127.0.0.1 under the same number, unless something here has that port already.")
 }

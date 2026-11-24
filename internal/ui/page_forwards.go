@@ -30,10 +30,13 @@ func forwardsCard(m *Model) ggui.Widget {
 // its connections went, and its actions.
 func forwardRow(m *Model, f PortForward) ggui.Widget {
 	col, state := colorGreen, trn(f.Served, "%d connection carried", "%d connections carried")
+	var statusParts []ggui.Widget
 	if f.Err != "" {
 		col, state = colorAmber, tr("The last connection failed")
+		statusParts = append(statusParts, glyph(lucide.TriangleExclamationPoint, 12).Color(colorAmber))
 	}
-	status := widget.Row(ui.Caption(f.Target.Namespace + " · " + state).Size(12).NoWrap().Ellipsis()).Gap(6)
+	statusParts = append(statusParts, widget.Flexible(ui.Caption(f.Target.Namespace+" · "+state).Size(12).NoWrap().Ellipsis()))
+	status := widget.Row(statusParts...).Gap(5).Align(widget.AlignCenter)
 	var line ggui.Widget = status
 	if f.Err != "" {
 		line = tip(status, f.Err)
@@ -74,32 +77,60 @@ func forwardDialog(m *Model) ggui.Widget {
 		}
 		return tr("Connections to a port of this computer are carried to the pod in %s, through the cluster's API server, as kubectl port-forward does.", d.Target.Namespace)
 	}))
+	clearErr := func(string) { m.ForwardErr.Set("") }
+	portHint := func(val ggui.Readable[string]) ggui.Widget {
+		return ggui.View(ggui.Map(val, func(s string) bool {
+			if strings.TrimSpace(s) == "" {
+				return false
+			}
+			_, ok := parsePort(s)
+			return !ok
+		}), func(bad bool) ggui.Widget {
+			if !bad {
+				return widget.Box()
+			}
+			return ui.Caption(tr("Port must be between 1 and 65535.")).Color(colorRed).Size(11)
+		})
+	}
 	remote := ggui.View(m.ForwardDraft, func(d ForwardDraft) ggui.Widget {
 		label, help := tr("Port of the pod"), tr("The pod declares no ports; type the one it listens on.")
 		if d.Target.Service != "" {
 			label, help = tr("Port of the service"), tr("The service has no TCP ports; type one.")
 		}
-		field := ui.TextField(m.ForwardRemote).Filter(digits).Placeholder("80").Name(label).OnSubmit(func(string) { m.SubmitForward() })
+		field := ui.TextField(m.ForwardRemote).Filter(digits).Placeholder("80").Name(label).
+			OnChange(clearErr).OnSubmit(func(string) { m.SubmitForward() })
 		f := ui.Field(label, field)
 		switch len(d.Ports) {
 		case 0:
-			return f.Help(help)
+			return widget.Column(f.Help(help), portHint(m.ForwardRemote)).Gap(4).Stretch()
 		case 1:
-			return f // the one it has is in the field
+			return widget.Column(f, portHint(m.ForwardRemote)).Gap(4).Stretch() // the one it has is in the field
 		}
-		var chips []ggui.Widget
-		for _, p := range d.Ports {
-			text := itoa(p.Port)
-			if p.Name != "" {
-				text += " · " + p.Name
+		chips := ggui.View(m.ForwardRemote, func(cur string) ggui.Widget {
+			var list []ggui.Widget
+			for _, p := range d.Ports {
+				num := itoa(p.Port)
+				text := num
+				if p.Name != "" {
+					text += " · " + p.Name
+				}
+				b := ui.Badge(text).OnTap(func() { m.PickForwardPort(p.Port) })
+				if strings.TrimSpace(cur) != num {
+					b = b.Outline()
+				}
+				list = append(list, b)
 			}
-			chips = append(chips, ui.Badge(text).Outline().OnTap(func() { m.PickForwardPort(p.Port) }))
-		}
-		return widget.Column(f, widget.Wrap(chips...).Gap(6)).Gap(8).Stretch()
+			return widget.Wrap(list...).Gap(6)
+		})
+		return widget.Column(f, portHint(m.ForwardRemote), chips).Gap(8).Stretch()
 	})
-	local := ui.Field(tr("Port of this computer"),
-		ui.TextField(m.ForwardLocal).Filter(digits).Placeholder("8080").Name(tr("Port of this computer")).OnSubmit(func(string) { m.SubmitForward() })).
-		Help(tr("On 127.0.0.1, so only this computer reaches it. The same number is offered when it is free, and past 8000 for one below 1024."))
+	local := widget.Column(
+		ui.Field(tr("Port of this computer"),
+			ui.TextField(m.ForwardLocal).Filter(digits).Placeholder("8080").Name(tr("Port of this computer")).
+				OnChange(clearErr).OnSubmit(func(string) { m.SubmitForward() })).
+			Help(tr("On 127.0.0.1, so only this computer reaches it. The same number is offered when it is free, and past 8000 for one below 1024.")),
+		portHint(m.ForwardLocal),
+	).Gap(4).Stretch()
 	failed := ggui.View(m.ForwardErr, func(err string) ggui.Widget {
 		if err == "" {
 			return widget.Box()
@@ -112,7 +143,7 @@ func forwardDialog(m *Model) ggui.Widget {
 		return !okR || !okL
 	})
 	return ui.Dialog(m.ForwardOpen, widget.Column(
-		widget.Column(title, text).Gap(4).Stretch(),
+		widget.Padding(widget.Column(title, text).Gap(4).Stretch(), 0, 28, 0, 0),
 		remote,
 		local,
 		failed,

@@ -72,6 +72,7 @@ type terminalView struct {
 
 	// From the last layout and paint, in logical pixels.
 	pal          termPalette
+	focusRing    color.Color
 	origin       ggui.Point // the grid's top-left
 	rect         ggui.Rect  // the whole widget
 	cellW, cellH float64
@@ -99,7 +100,9 @@ func newTerminalView(s *term.Session, autoFocus bool) *terminalView {
 }
 
 func (t *terminalView) Layout(c ggui.Constraints, env ggui.Env) ggui.Size {
-	t.pal = terminalPalette(uitheme.Of(env))
+	th := uitheme.Of(env)
+	t.pal = terminalPalette(th)
+	t.focusRing = th.Ring
 	// The editor is never painted as itself, but PaintCustom wants it laid
 	// out first.
 	t.ime.Layout(ggui.Loose(c.Max()), env)
@@ -163,6 +166,9 @@ func (t *terminalView) Paint(dst *ggui.Canvas, r ggui.Rect) {
 		}
 		return caret
 	})
+	if t.focused && t.focusRing != nil {
+		strokeRect(dst, r, t.focusRing)
+	}
 }
 
 // paintCursor draws the cursor in the shape the program asked for, lit or

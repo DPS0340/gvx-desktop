@@ -103,6 +103,7 @@ func (m *Model) SelectNetwork(id string) {
 
 // ShowNetwork opens the Networks page on a network, by name or ID.
 func (m *Model) ShowNetwork(id string) {
+	m.NetworkQuery.Set("")
 	m.SelectNetwork(id)
 	m.Go(PageNetworks)
 }
@@ -120,6 +121,10 @@ func (m *Model) LoadDockerNetworks() {
 	if ggui.Peek(m.Settings).SandboxEngine {
 		if pe := ggui.Peek(m.DockerProxyErr); pe != "" {
 			m.DockerNetworks.Set(Listing[dockerapi.Network]{Loaded: true, Err: pe})
+			return
+		}
+		if seErr := ggui.Peek(m.SandboxEngineStatus).Err; seErr != "" {
+			m.DockerNetworks.Set(Listing[dockerapi.Network]{Loaded: true, Err: seErr})
 			return
 		}
 	}
@@ -161,7 +166,13 @@ func (m *Model) LoadDockerNetworks() {
 
 // networkCall runs fn against the engine and lists the networks and
 // containers again after it, saying how it went.
-func (m *Model) networkCall(fn func(context.Context, *dockerapi.Client) error, failed string, done func()) {
+func (m *Model) networkCall(busyKey string, fn func(context.Context, *dockerapi.Client) error, failed string, done func()) {
+	if busyKey != "" {
+		if m.isBusy(busyKey) {
+			return
+		}
+		m.setBusy(busyKey, true)
+	}
 	host := m.dockerBackendHost()
 	m.async(func(ctx context.Context) error {
 		c, err := dockerapi.New(host)
@@ -173,6 +184,9 @@ func (m *Model) networkCall(fn func(context.Context, *dockerapi.Client) error, f
 		defer cancel()
 		return fn(ctx, c)
 	}, func(err error) {
+		if busyKey != "" {
+			m.setBusy(busyKey, false)
+		}
 		if err != nil {
 			m.toastError(failed, err)
 		} else if done != nil {
@@ -185,8 +199,12 @@ func (m *Model) networkCall(fn func(context.Context, *dockerapi.Client) error, f
 
 // AskRemoveNetwork confirms and removes a network no container is on.
 func (m *Model) AskRemoveNetwork(n dockerapi.Network) {
+	busyKey := "net:" + n.ID
+	if m.isBusy(busyKey) {
+		return
+	}
 	m.Confirm(tr("Remove %s?", n.Name), tr("The network is removed from the engine. Compose makes its project's network again at the next up."), tr("Remove network"), func() {
-		m.networkCall(func(ctx context.Context, c *dockerapi.Client) error {
+		m.networkCall(busyKey, func(ctx context.Context, c *dockerapi.Client) error {
 			return c.RemoveNetwork(ctx, n.ID)
 		}, tr("Could not remove %s", n.Name), func() { m.toastOK(tr("Removed %s", n.Name), "") })
 	})
@@ -194,9 +212,13 @@ func (m *Model) AskRemoveNetwork(n dockerapi.Network) {
 
 // AskPruneNetworks removes the networks no container is on.
 func (m *Model) AskPruneNetworks() {
+	const busyKey = "net:prune"
+	if m.isBusy(busyKey) {
+		return
+	}
 	m.Confirm(tr("Remove unused networks?"), tr("Every network that no container is on is removed. The built-in ones stay."), tr("Remove unused"), func() {
 		var deleted []string
-		m.networkCall(func(ctx context.Context, c *dockerapi.Client) error {
+		m.networkCall(busyKey, func(ctx context.Context, c *dockerapi.Client) error {
 			var err error
 			deleted, err = c.PruneNetworks(ctx)
 			return err

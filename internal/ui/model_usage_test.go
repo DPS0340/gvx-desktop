@@ -59,10 +59,10 @@ func TestContainerRows(t *testing.T) {
 	}{
 		{"", nil, "migrate,[blog 1/1],blog-db-1,[shop 1/2],shop-web-1,shop-redis-1"},
 		{"", map[string]bool{"shop": true}, "migrate,[blog 1/1],blog-db-1,[shop 1/2 folded]"},
-		// A project shows while one of its containers is left, and counts
-		// them all.
+		// A project shows while one of its containers is left, counts
+		// them all, and auto-unfolds while searching so matches are visible.
 		{"redis", nil, "[shop 1/2],shop-redis-1"},
-		{"redis", map[string]bool{"shop": true}, "[shop 1/2 folded]"},
+		{"redis", map[string]bool{"shop": true}, "[shop 1/2],shop-redis-1"},
 		{"SHOP", nil, "[shop 1/2],shop-web-1,shop-redis-1"},
 		{"dev", nil, "migrate"},
 		{"nothing", nil, ""},
@@ -342,8 +342,8 @@ func TestTheContainersTableGroupsProjects(t *testing.T) {
 	if row("shop-web-1") || !row("blog-db-1") || !shows("Unfold shop") || !row("Compose project shop") {
 		t.Errorf("folded:\n%s", p.Semantics())
 	}
-	// Choosing a head leaves the container chosen, and its fold button
-	// folds it.
+	// Clicking a head leaves the container chosen and unfolds the project;
+	// its fold button folds and unfolds it without double-toggling.
 	m.SelectContainer("d4")
 	p.Frame()
 	f, ok := p.FindRole(ggui.RoleRow, "Compose project shop")
@@ -352,8 +352,18 @@ func TestTheContainersTableGroupsProjects(t *testing.T) {
 	}
 	p.Click(f.Center())
 	p.Frame()
+	p.Frame()
 	if got := ggui.Peek(m.Container).ID; got != "d4" {
 		t.Errorf("chosen %s after the head", got)
+	}
+	if !row("shop-web-1") {
+		t.Errorf("clicking folded head did not unfold shop:\n%s", p.Semantics())
+	}
+	p.Tap("Fold shop")
+	p.Frame()
+	p.Frame()
+	if row("shop-web-1") {
+		t.Errorf("Fold button did not fold shop:\n%s", p.Semantics())
 	}
 	p.Tap("Unfold shop")
 	p.Frame()

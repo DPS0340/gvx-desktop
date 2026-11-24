@@ -38,6 +38,10 @@ func dashboardPage(m *Model) ggui.Widget {
 // engineAlert explains why the engine cannot run sandboxes, with the fix,
 // and says when there is a newer rungv to have.
 func engineAlert(m *Model) ggui.Widget {
+	return engineAlertFor(m, false)
+}
+
+func engineAlertFor(m *Model, onSettings bool) ggui.Widget {
 	type state struct {
 		e Engine
 		u Update
@@ -50,11 +54,14 @@ func engineAlert(m *Model) ggui.Widget {
 		case !e.Checked:
 			return widget.Box()
 		case e.Path == "":
+			acts := []ggui.Widget{installButton(m, u, tr("Install rungv"))}
+			if !onSettings {
+				acts = append(acts, ui.Button(tr("Open Settings"), func() { m.Go(PageSettings) }).Outline())
+			}
 			return shown(noticeBanner(lucide.TriangleExclamationPoint, 0xef4444, true,
 				tr("rungv was not found"),
 				tr("GVX Desktop drives the rungv command line. Install the newest release into ~/.gvx/bin here, or put your own on your PATH or choose its location in Settings."),
-				installButton(m, u, tr("Install rungv")),
-				ui.Button(tr("Open Settings"), func() { m.Go(PageSettings) }).Outline(),
+				acts...,
 			))
 		case e.Err != "":
 			return shown(noticeBanner(lucide.TriangleExclamationPoint, 0xef4444, true,
@@ -143,8 +150,17 @@ func metrics(m *Model) ggui.Widget {
 			ui.CaptionOf(sub).Size(13).NoWrap(),
 		).Gap(8).Align(widget.AlignBaseline)
 	}
-	running := ggui.Map(m.Running, func(n int) string { return itoa(n) })
-	total := ggui.Map(m.Specs, func(s []sandbox.Spec) string { return tr("of %s", itoa(len(s))) })
+	running := ggui.Combine(m.Running, m.EngineRunning, func(sb, ctr int) string { return itoa(sb + ctr) })
+	total := ggui.Derived(func() string {
+		sb, ctr, specs := m.Running.Get(), m.EngineRunning.Get(), len(m.Specs.Get())
+		if ctr > 0 {
+			if specs == 0 {
+				return trn(ctr, "%d container", "%d containers")
+			}
+			return tr("%d sandboxes · %d containers", sb, ctr)
+		}
+		return tr("of %s", itoa(specs))
+	})
 	imageCount := ggui.Map(m.Images, func(l Listing[rungv.Image]) string { return itoa(len(l.Items)) })
 	imageSize := ggui.Map(m.Disk, func(d []rungv.DiskUsage) string { return diskSize(d, "Images") })
 	volCount := ggui.Map(m.Volumes, func(l Listing[rungv.Volume]) string { return itoa(len(l.Items)) })
@@ -293,11 +309,40 @@ func recipeCards(m *Model) ggui.Widget {
 				for _, h := range highlights {
 					points = append(points, widget.Row(glyph(lucide.Check, 14).Color(colorGreen), ui.Caption(h)).Gap(8).Align(widget.AlignStart))
 				}
-				action := widget.Row(
-					stateLabel(colorGreen, tr("Running"), false, ""),
-					widget.Spacer(),
-					ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall),
-				).Align(widget.AlignCenter)
+				type dockerCardState struct {
+					engine   Engine
+					status   SandboxEngineStatus
+					proxyErr string
+				}
+				dcs := ggui.Derived(func() dockerCardState {
+					return dockerCardState{
+						engine:   m.Engine.Get(),
+						status:   m.SandboxEngineStatus.Get(),
+						proxyErr: m.DockerProxyErr.Get(),
+					}
+				})
+				action := ggui.View(dcs, func(s dockerCardState) ggui.Widget {
+					st := stateLabel(colorGreen, tr("Running"), false, "")
+					var extra ggui.Widget
+					switch {
+					case s.engine.Checked && !s.engine.Ready():
+						st = stateLabel(colorRed, tr("Engine unavailable"), false, s.engine.Err)
+					case s.status.Opening:
+						st = stateLabel(colorAmber, tr("Starting"), true, "")
+					case s.status.Err != "":
+						st = stateLabel(colorRed, tr("Failed"), false, s.status.Err)
+						extra = ui.Button(tr("Retry"), m.RetrySandboxEngine).Outline().Size(ui.ButtonSmall)
+					case s.proxyErr != "":
+						st = stateLabel(colorAmber, tr("Listener failed"), false, s.proxyErr)
+						extra = ui.Button(tr("Retry"), m.RetrySandboxEngine).Outline().Size(ui.ButtonSmall)
+					}
+					row := []ggui.Widget{st, widget.Spacer()}
+					if extra != nil {
+						row = append(row, extra)
+					}
+					row = append(row, ui.Button(tr("Open"), open).Outline().Size(ui.ButtonSmall))
+					return widget.Row(row...).Gap(6).Align(widget.AlignCenter)
+				})
 				cards = append(cards, ui.Card(widget.Column(
 					widget.Row(
 						widget.Box(glyph(icon, 20).Color(colorBlue)).Pad(8).Radius(10).Fill(rgbA(0x3b82f6, 0x22)),

@@ -18,6 +18,7 @@ import (
 	"github.com/ironpark/ggui"
 	"github.com/ironpark/ggui/ui"
 
+	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/dockerproxy"
 	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
@@ -25,6 +26,13 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 	"github.com/ironpark/gvx-desktop/internal/store"
 )
+
+// SandboxEngineStatus tracks the in-app sandbox engine's startup lifecycle.
+type SandboxEngineStatus struct {
+	Opening bool
+	Ready   bool
+	Err     string
+}
 
 // sandboxEngine is the in-app Docker Engine API (*engine.Engine). Tests may
 // substitute a fake to verify the switch's Open/Close/SetLocal lifecycle.
@@ -111,6 +119,10 @@ func (m *Model) initDockerProxy(dataDir string) {
 			m.refreshAmd64State()
 			m.LoadDocker()
 			m.LoadDockerImages()
+			if ggui.Peek(m.Settings).SandboxEngine {
+				m.LoadImages()
+				m.LoadDisk()
+			}
 		})
 	}
 	engineDir := filepath.Join(dataDir, "engine")
@@ -152,7 +164,56 @@ func (m *Model) sandboxKeepImages() []string {
 	return nil
 }
 
-// SetSandboxEngine turns the experimental in-app sandbox engine on or off.
+// OpenDocker opens the Docker page; in compatibility mode it also ensures the
+// docker:dind sandbox is set up and started, while in sandbox-engine mode it
+// retries opening the engine if a previous attempt failed.
+func (m *Model) OpenDocker() {
+	if ggui.Peek(m.Settings).SandboxEngine {
+		if st := ggui.Peek(m.SandboxEngineStatus); st.Err != "" && !st.Opening {
+			m.RetrySandboxEngine()
+		}
+		m.Go(PageDocker)
+		return
+	}
+	m.CreateFromRecipe(recipes.Docker)
+	m.Go(PageDocker)
+}
+
+// RetrySandboxEngine re-attempts binding the Docker API proxy (if it failed)
+// and opening the in-app sandbox engine.
+func (m *Model) RetrySandboxEngine() {
+	if m.Offline || !ggui.Peek(m.Settings).SandboxEngine {
+		return
+	}
+	if ggui.Peek(m.DockerProxyErr) != "" && m.dockerProxy != nil {
+		m.bindDockerProxy(m.DockerAPI())
+	}
+	m.openSandboxEngine()
+}
+
+// SwitchSandboxEngine switches Docker engine mode from the UI, confirming first
+// when switching to compatibility mode would stop running containers.
+func (m *Model) SwitchSandboxEngine(on bool) {
+	if ggui.Peek(m.Settings).SandboxEngine == on {
+		return
+	}
+	if !on {
+		if n := max(m.sandboxEngineRunningCount(), ggui.Peek(m.EngineRunning)); n > 0 {
+			m.Confirm(
+				tr("Switch to compatibility mode?"),
+				trn(n,
+					"%d running container in the sandbox engine will be stopped. Your images and volumes stay.",
+					"%d running containers in the sandbox engine will be stopped. Your images and volumes stay."),
+				tr("Stop and switch"),
+				func() { m.SetSandboxEngine(false) },
+			)
+			return
+		}
+	}
+	m.SetSandboxEngine(on)
+}
+
+// SetSandboxEngine turns the in-app sandbox engine on or off.
 // Turning it on routes the Docker API proxy to the engine handler immediately
 // (answering 503 until Open completes) and opens the engine asynchronously;
 // turning it off routes the proxy back to the Docker Engine sandbox immediately
@@ -162,6 +223,7 @@ func (m *Model) SetSandboxEngine(on bool) {
 		return
 	}
 	m.UpdateSettings(func(s *store.Settings) { s.SandboxEngine = on })
+	m.DockerVersion.Set(dockerapi.Version{})
 	if m.Offline {
 		return
 	}
@@ -193,6 +255,7 @@ func (m *Model) openSandboxEngine() {
 	// Route traffic to the in-app engine right away so requests and LoadDocker
 	// never hit the dind backend while Open is in flight; Handler answers 503
 	// until Open finishes.
+	m.SandboxEngineStatus.Set(SandboxEngineStatus{Opening: true})
 	m.dockerProxy.SetLocal(eng.Handler())
 	var (
 		bxStatus         BuildxStatus
@@ -250,9 +313,11 @@ func (m *Model) openSandboxEngine() {
 			return
 		}
 		if err != nil {
+			m.SandboxEngineStatus.Set(SandboxEngineStatus{Err: err.Error()})
 			m.toastError(tr("Could not start the sandbox engine"), err)
 			return
 		}
+		m.SandboxEngineStatus.Set(SandboxEngineStatus{Ready: true})
 		if bxChecked {
 			m.BuildxStatus.Set(bxStatus)
 		}
@@ -266,10 +331,12 @@ func (m *Model) openSandboxEngine() {
 		}
 		m.LoadDocker()
 		m.LoadDockerImages()
+		m.LoadDockerNetworks()
 	})
 }
 
 func (m *Model) closeSandboxEngine() {
+	m.SandboxEngineStatus.Set(SandboxEngineStatus{})
 	if m.dockerProxy != nil {
 		m.dockerProxy.SetLocal(nil)
 	}
@@ -300,6 +367,7 @@ func (m *Model) closeSandboxEngine() {
 		m.refreshAmd64State()
 		m.LoadDocker()
 		m.LoadDockerImages()
+		m.LoadDockerNetworks()
 	})
 }
 

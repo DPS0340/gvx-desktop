@@ -64,7 +64,7 @@ func appUpdateSettings(m *Model) ggui.Widget {
 		appUpdateRow(m),
 		settingRow(tr("Check for updates automatically"),
 			tr("Asks GitHub for the newest release of GVX Desktop when the app starts and once a day. Nothing is installed until you say so."),
-			ui.Switch(auto, "")),
+			ui.Switch(auto, "").Name(tr("Check for updates automatically"))),
 	)
 }
 
@@ -89,11 +89,17 @@ func appUpdateRow(m *Model) ggui.Widget {
 		case u.Available():
 			text = tr("GVX Desktop %s is available.", u.Name()) + " " + appUpdateText(u)
 			row = append(row, appUpdateButton(m, u, ui.ButtonSmall))
-			if u.Command != "" {
+			if u.Command != "" && u.Install.Method != appupdate.Homebrew {
 				more = append(more, ui.CodeBlock(u.Command).Small().CopyButton(true))
 			}
 		default:
 			text = tr("GVX Desktop is up to date: %s is the newest release.", AppVersion)
+		}
+		if u.Tag != "" && u.Err != "" && !u.Checking && !u.Downloading {
+			more = append(more, widget.Row(
+				glyph(lucide.TriangleExclamationPoint, 14).Color(colorAmber),
+				widget.Expanded(ui.Caption(tr("Last check failed: %s", u.Err))),
+			).Gap(8).Align(widget.AlignStart))
 		}
 		row = append(row,
 			ui.Button(tr("Check for updates"), func() { m.CheckAppUpdate(false) }).Outline().Size(ui.ButtonSmall).

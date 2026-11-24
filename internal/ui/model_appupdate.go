@@ -284,7 +284,7 @@ func (m *Model) beforeAppUpdateInstall(rel *updater.Release, proceed func()) {
 			"%d sandboxes are running and will be stopped: sandboxes live only while the app runs.") + " " +
 			tr("GVX Desktop quits, puts %s in place, and opens again.", name)
 		m.Confirm(tr("Restart to update?"), text, tr("Restart to update"), func() {
-			m.StopAllAndThen(proceed)
+			m.StopAllForUpdate(proceed)
 		})
 		return
 	}
@@ -389,6 +389,13 @@ func (m *Model) checkAppUpdateSilentWithFallback() {
 				return
 			}
 			if !ok || rel == nil {
+				m.AppUpdate.Update(func(au AppUpdate) AppUpdate {
+					au.Checking, au.Err = false, ""
+					if au.Tag == "" && appupdate.Comparable(AppVersion) {
+						au.Tag = "v" + appupdate.Plain(AppVersion)
+					}
+					return au
+				})
 				return
 			}
 			switch ggui.Peek(ctrl.Phase) {

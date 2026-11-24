@@ -210,54 +210,71 @@ func installShortcuts(app *ggui.App, m *ui.Model) {
 	// ⌘1 and on go to the sidebar's pages in its order. Go does not open the
 	// Containers page while the Docker Engine is not running, nor the Pods
 	// page while the cluster is not.
-	pages := []string{ui.PageDashboard, ui.PageSandboxes, ui.PageContainers, ui.PagePods, ui.PageImages, ui.PageVolumes, ui.PageSnapshots, ui.PageDocker, ui.PageKubernetes}
+	pages := []string{
+		ui.PageDashboard,
+		ui.PageSandboxes,
+		ui.PageImages,
+		ui.PageVolumes,
+		ui.PageSnapshots,
+		ui.PageDocker,
+		ui.PageContainers,
+		ui.PageKubernetes,
+		ui.PagePods,
+	}
 	for i, p := range pages {
 		app.Shortcut(fmt.Sprintf("cmd+%d", i+1), func() { m.Go(p) })
 	}
 	app.Shortcut("cmd+k", func() { m.PaletteQuery.Set(""); m.PaletteOpen.Set(true) })
-	if !ggui.NativeMenu() {
-		app.Shortcut("cmd+n", func() { m.NewSandbox("") })
-		app.Shortcut("cmd+r", m.RefreshAll)
-		app.Shortcut("cmd+,", func() { m.Go(ui.PageSettings) })
-	}
 }
 
 func installMenus(app *ggui.App, m *ui.Model) {
+	dockerMenuLabel := ui.T("Start Docker Engine")
+	if ggui.Peek(m.Settings).SandboxEngine {
+		dockerMenuLabel = ui.T("Open Docker")
+	}
+	viewItems := []ggui.MenuItem{
+		ggui.MenuAction(ui.T("Command Palette"), "cmd+k", func() { m.PaletteQuery.Set(""); m.PaletteOpen.Set(true) }),
+		ggui.MenuAction(ui.T("Refresh"), "cmd+r", m.RefreshAll),
+		ggui.MenuSeparator(),
+		ggui.MenuAction(ui.T("Dashboard"), "cmd+1", func() { m.Go(ui.PageDashboard) }),
+		ggui.MenuAction(ui.T("Sandboxes"), "cmd+2", func() { m.Go(ui.PageSandboxes) }),
+		ggui.MenuAction(ui.T("Images"), "cmd+3", func() { m.Go(ui.PageImages) }),
+		ggui.MenuAction(ui.T("Volumes"), "cmd+4", func() { m.Go(ui.PageVolumes) }),
+		ggui.MenuAction(ui.T("Snapshots"), "cmd+5", func() { m.Go(ui.PageSnapshots) }),
+		ggui.MenuSeparator(),
+		ggui.MenuAction("Docker", "cmd+6", func() { m.Go(ui.PageDocker) }),
+		ggui.MenuAction(ui.T("Networks"), "", func() { m.Go(ui.PageNetworks) }).BindEnabled(m.ContainersOpen),
+		ggui.MenuAction(ui.T("Containers"), "cmd+7", func() { m.Go(ui.PageContainers) }).BindEnabled(m.ContainersOpen),
+		ggui.MenuSeparator(),
+		ggui.MenuAction("Kubernetes", "cmd+8", func() { m.Go(ui.PageKubernetes) }),
+		ggui.MenuAction(ui.T("Pods"), "cmd+9", func() { m.GoKube(ui.KubePods) }).BindEnabled(m.PodsOpen),
+		ggui.MenuAction(ui.T("Workloads"), "", func() { m.GoKube(ui.KubeWorkloads) }).BindEnabled(m.PodsOpen),
+		ggui.MenuAction(ui.T("Services"), "", func() { m.GoKube(ui.KubeServices) }).BindEnabled(m.PodsOpen),
+		ggui.MenuSeparator(),
+		ggui.MenuAction(ui.T("Image registry"), "", m.OpenRegistry),
+	}
+	if ui.LabsSupported() {
+		viewItems = append(viewItems, ggui.MenuAction(ui.T("Labs"), "", func() { m.Go(ui.PageLabs) }))
+	}
 	app.SetMenu(
 		ggui.Menu(ui.T("File"),
 			ggui.MenuAction(ui.T("New Sandbox…"), "cmd+n", func() { m.NewSandbox("") }),
 			ggui.MenuAction(ui.T("Pull Image…"), "cmd+shift+p", func() { m.OpenPull("") }),
-			ggui.MenuAction(ui.T("Create Volume…"), "", func() { m.VolumeOpen.Set(true) }),
+			ggui.MenuAction(ui.T("Create Volume…"), "", m.OpenVolumeDialog),
 			ggui.MenuSeparator(),
 			ggui.MenuAction(ui.T("Settings…"), "cmd+,", func() { m.Go(ui.PageSettings) }),
 			ggui.MenuAction(ui.T("Check for Updates…"), "", func() { m.CheckAppUpdate(false) }),
 		),
 		ggui.EditMenu(ggui.EditActions{}),
 		ggui.Menu(ui.T("Sandbox"),
-			ggui.MenuAction(ui.T("Start Docker Engine"), "", func() { m.CreateFromRecipe(recipes.Docker); m.Go(ui.PageDocker) }),
+			ggui.MenuAction(dockerMenuLabel, "", m.OpenDocker),
 			ggui.MenuAction(ui.T("Start Kubernetes"), "", func() { m.CreateFromRecipe(recipes.Kubernetes); m.Go(ui.PageKubernetes) }),
 			ggui.MenuSeparator(),
-			ggui.MenuAction(ui.T("Stop All"), "", m.StopAll),
+			ggui.MenuAction(ui.T("Stop All"), "", m.StopAll).BindEnabled(ggui.Map(m.TotalRunning, func(n int) bool { return n > 0 })),
 		),
 		ggui.Menu("Docker", m.RecipeMenu(recipes.Docker, app.ShowFromTray)...),
 		ggui.Menu("Kubernetes", m.RecipeMenu(recipes.Kubernetes, app.ShowFromTray)...),
-		ggui.Menu(ui.T("View"),
-			ggui.MenuAction(ui.T("Command Palette"), "cmd+k", func() { m.PaletteQuery.Set(""); m.PaletteOpen.Set(true) }),
-			ggui.MenuAction(ui.T("Refresh"), "cmd+r", m.RefreshAll),
-			ggui.MenuSeparator(),
-			ggui.MenuAction(ui.T("Dashboard"), "", func() { m.Go(ui.PageDashboard) }),
-			ggui.MenuAction(ui.T("Sandboxes"), "", func() { m.Go(ui.PageSandboxes) }),
-			ggui.MenuAction(ui.T("Containers"), "", func() { m.Go(ui.PageContainers) }).BindEnabled(m.ContainersOpen),
-			ggui.MenuAction(ui.T("Pods"), "", func() { m.GoKube(ui.KubePods) }).BindEnabled(m.PodsOpen),
-			ggui.MenuAction(ui.T("Workloads"), "", func() { m.GoKube(ui.KubeWorkloads) }).BindEnabled(m.PodsOpen),
-			ggui.MenuAction(ui.T("Services"), "", func() { m.GoKube(ui.KubeServices) }).BindEnabled(m.PodsOpen),
-			ggui.MenuAction(ui.T("Images"), "", func() { m.Go(ui.PageImages) }),
-			ggui.MenuAction(ui.T("Volumes"), "", func() { m.Go(ui.PageVolumes) }),
-			ggui.MenuAction(ui.T("Snapshots"), "", func() { m.Go(ui.PageSnapshots) }),
-			ggui.MenuSeparator(),
-			ggui.MenuAction("Docker Engine", "", func() { m.Go(ui.PageDocker) }),
-			ggui.MenuAction("Kubernetes", "", func() { m.Go(ui.PageKubernetes) }),
-		),
+		ggui.Menu(ui.T("View"), viewItems...),
 	)
 }
 
@@ -270,13 +287,19 @@ func installTray(app *ggui.App, m *ui.Model) {
 	}
 	var tray *ggui.Tray
 	show := app.ShowFromTray
-	// The newest app the tray offers, as its menu tells it: not how far
-	// its download is.
-	appUpdate := ggui.Combine(m.AppUpdate, m.Settings, func(u ui.AppUpdate, s store.Settings) string {
-		if !u.Offered(s) || u.Downloading {
-			return ""
+	type trayUpdate struct {
+		name        string
+		downloading bool
+		ready       bool
+	}
+	// The newest app the tray offers, as its menu tells it: coarse state
+	// (available / downloading / ready) so a download does not rebuild the
+	// menu on every percentage tick.
+	appUpdate := ggui.Combine(m.AppUpdate, m.Settings, func(u ui.AppUpdate, s store.Settings) trayUpdate {
+		if !u.Offered(s) {
+			return trayUpdate{}
 		}
-		return u.Name()
+		return trayUpdate{name: u.Name(), downloading: u.Downloading, ready: u.Ready}
 	})
 	rebuild := func() {
 		if tray == nil {
@@ -291,8 +314,15 @@ func installTray(app *ggui.App, m *ui.Model) {
 		if update.Available(engine) && !update.Installing {
 			items = append(items, ggui.MenuAction(ui.T("Update rungv to %s", update.Name()), "", m.InstallRungv))
 		}
-		if name := ggui.Peek(appUpdate); name != "" {
-			items = append(items, ggui.MenuAction(ui.T("Update GVX Desktop to %s", name), "", func() { show(); m.UpdateApp() }))
+		if tu := ggui.Peek(appUpdate); tu.name != "" {
+			switch {
+			case tu.downloading:
+				items = append(items, ggui.MenuAction(ui.T("Downloading GVX Desktop %s…", tu.name), "", nil).BindEnabled(ggui.Const(false)))
+			case tu.ready:
+				items = append(items, ggui.MenuAction(ui.T("Restart to update to %s", tu.name), "", func() { show(); m.UpdateApp() }))
+			default:
+				items = append(items, ggui.MenuAction(ui.T("Update GVX Desktop to %s", tu.name), "", func() { show(); m.UpdateApp() }))
+			}
 		}
 		items = append(items, ggui.MenuSeparator())
 		rows := ggui.Peek(m.Rows)
@@ -324,10 +354,14 @@ func installTray(app *ggui.App, m *ui.Model) {
 			actions = append(actions, ggui.MenuAction(ui.T("Show Logs"), "", func() { show(); m.ShowSandbox(id, 0) }))
 			items = append(items, ggui.Menu(label, actions...))
 		}
-		if len(rows) == 0 {
-			items = append(items, ggui.MenuAction(ui.T("No sandboxes"), "", nil).BindEnabled(ggui.Const(false)))
-		}
 		engRunning := ggui.Peek(m.EngineRunning)
+		if len(rows) == 0 {
+			if engRunning > 0 {
+				items = append(items, ggui.MenuAction(ui.TN(engRunning, "%d container running", "%d containers running"), "", func() { show(); m.Go(ui.PageContainers) }))
+			} else {
+				items = append(items, ggui.MenuAction(ui.T("No sandboxes"), "", nil).BindEnabled(ggui.Const(false)))
+			}
+		}
 		totalRunning := running + engRunning
 		totalActive := active + engRunning
 		items = append(items,
@@ -383,7 +417,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 	ggui.Watch(m.Menus, func(ui.MenuState) { rebuild() })
 	ggui.Watch(m.Engine, func(ui.Engine) { rebuild() })
 	ggui.Watch(m.Update, func(ui.Update) { rebuild() })
-	ggui.Watch(appUpdate, func(string) { rebuild() })
+	ggui.Watch(appUpdate, func(trayUpdate) { rebuild() })
 	ggui.Watch(m.Lang, func(string) { rebuild() })
 }
 

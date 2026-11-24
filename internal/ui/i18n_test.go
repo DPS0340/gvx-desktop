@@ -61,8 +61,13 @@ func sourceKeys(t *testing.T) map[string]key {
 			case *ast.Ident:
 				fn = f.Name
 			case *ast.SelectorExpr:
-				if pkg, ok := f.X.(*ast.Ident); ok && pkg.Name == "ui" && f.Sel.Name == "T" {
-					fn = "T"
+				if pkg, ok := f.X.(*ast.Ident); ok && pkg.Name == "ui" {
+					switch f.Sel.Name {
+					case "T":
+						fn = "T"
+					case "TN":
+						fn = "trn"
+					}
 				}
 			}
 			switch fn {

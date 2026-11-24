@@ -83,8 +83,9 @@ func newInstallerApp() *installer.App {
 			}
 			ctx.ReportProgress(0.95, "Configuring bundled Docker CLI PATH…")
 			if _, err := dockercli.SyncFromDir(ctx.Dir(), true); err != nil {
-				// Non-fatal: GVX Desktop also syncs on launch.
-				return nil
+				// Report progress but continue registering PATH so the bundled CLI
+				// is available once GVX Desktop completes syncing on first launch.
+				ctx.ReportProgress(0.96, "Docker CLI sync deferred to first launch; updating user PATH…")
 			}
 			if binDir, err := dockercli.BinDir(); err == nil && binDir != "" {
 				return ctx.AddToUserPath(binDir)
@@ -106,9 +107,10 @@ func newInstallerApp() *installer.App {
 
 func optionsStep() installer.Step {
 	return installer.CustomStep("options", "Options", func(ctx *installer.Context) ggui.Widget {
-		addDocker := ctx.Bool(optAddDockerPath, false)
+		defaultAdd := ctx.IsUpgrade() && dockercli.PathStatus().InProfile
+		addDocker := ctx.Bool(optAddDockerPath, defaultAdd)
 		return widget.Column(
-			ui.Checkbox(addDocker, "Add bundled Docker CLI (~/.gvx/bin) to user PATH"),
+			ui.Checkbox(addDocker, `Add bundled Docker CLI (%USERPROFILE%\.gvx\bin) to user PATH`),
 			ui.Caption("Exposes the bundled docker, docker buildx, and docker compose commands in new terminal windows. You can also change this anytime in Settings → Docker."),
 			ui.Divider(),
 			ui.Caption("GVX sandboxes use the Windows Hypervisor Platform (WHP). If it is not enabled yet, GVX Desktop will guide you after launch."),

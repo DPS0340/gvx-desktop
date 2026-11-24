@@ -37,7 +37,9 @@ func imagesPage(m *Model) ggui.Widget {
 			}))
 			return pageHeader(tr("Images"), summary,
 				tip(iconButton(lucide.RefreshCw, tr("Refresh Docker images"), m.LoadDockerImages).BindDisabled(ggui.Not(m.ContainersOpen)), tr("Refresh")),
-				ui.Button(tr("Prune"), m.AskPruneDockerImages).Outline().Icon(glyph(lucide.Eraser, 16)).BindDisabled(ggui.Not(m.ContainersOpen)),
+				ui.Button(tr("Prune"), m.AskPruneDockerImages).Outline().Icon(glyph(lucide.Eraser, 16)).BindDisabled(ggui.Derived(func() bool {
+					return !m.ContainersOpen.Get() || m.BusyOps.Get()["dimg:prune"]
+				})),
 				ui.Button(tr("Pull image"), func() { m.OpenDockerPull("") }).Icon(glyph(lucide.Download, 16)).BindDisabled(ggui.Not(m.ContainersOpen)),
 			)
 		}
@@ -53,21 +55,38 @@ func imagesPage(m *Model) ggui.Widget {
 		}))
 		return pageHeader(tr("Images"), summary,
 			tip(iconButton(lucide.RefreshCw, tr("Refresh images"), m.LoadImages), tr("Refresh")),
-			ui.Button(tr("Prune"), m.AskPruneImages).Outline().Icon(glyph(lucide.Eraser, 16)),
+			ui.Button(tr("Prune"), m.AskPruneImages).Outline().Icon(glyph(lucide.Eraser, 16)).BindDisabled(ggui.Map(m.BusyOps, func(b map[string]bool) bool { return b["img:prune"] })),
 			ui.Button(tr("Pull image"), func() { m.OpenPull("") }).Icon(glyph(lucide.Download, 16)),
 		)
 	})
 	tabs := ui.Tabs(m.ImageView,
 		ui.Tab(tr("GVX Sandboxes"), widget.Padding(gvxImagesView(m), 12, 0, 0, 0)).
 			Header(tabHeader(lucide.Box, tr("GVX Sandboxes"))),
-		ui.Tab("Docker Engine", widget.Padding(dockerImagesView(m), 12, 0, 0, 0)).
-			Header(tabHeader(dockerIcon, "Docker Engine")),
+		ui.Tab("Docker", widget.Padding(dockerImagesView(m), 12, 0, 0, 0)).
+			Header(tabHeader(dockerIcon, "Docker")),
 	).Name(tr("Image sources"))
 	return page(header, tabs)
 }
 
 func tabHeader(icon *icons.Glyph, label string) ggui.Widget {
 	return widget.Row(glyph(icon, 14), widget.Text(label).NoWrap()).Gap(6).Align(widget.AlignCenter)
+}
+
+func normalizeImageRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if !strings.Contains(ref, "@") {
+		lastSlash := strings.LastIndex(ref, "/")
+		if !strings.Contains(ref[lastSlash+1:], ":") {
+			ref += ":latest"
+		}
+	}
+	ref = strings.TrimPrefix(ref, "docker.io/")
+	ref = strings.TrimPrefix(ref, "index.docker.io/")
+	ref = strings.TrimPrefix(ref, "library/")
+	return ref
 }
 
 func gvxImagesView(m *Model) ggui.Widget {
@@ -82,9 +101,10 @@ func gvxImagesView(m *Model) ggui.Widget {
 		return out
 	}).WithEqual(nil)
 	used := func(ref string) []string {
+		norm := normalizeImageRef(ref)
 		var names []string
 		for _, r := range ggui.Peek(m.Rows) {
-			if r.Spec.Image == ref || r.Spec.Image+":latest" == ref {
+			if normalizeImageRef(r.Spec.Image) == norm {
 				names = append(names, r.Spec.Name)
 			}
 		}
@@ -94,8 +114,8 @@ func gvxImagesView(m *Model) ggui.Widget {
 		ui.Col(tr("Repository"), func(r ggui.Readable[rungv.Image]) ggui.Widget {
 			return widget.Row(
 				glyph(lucide.Layers, 16).Color(colorGray),
-				widget.TextOf(ggui.Map(r, func(i rungv.Image) string { return i.Repository })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
-			).Gap(10)
+				widget.Flexible(widget.TextOf(ggui.Map(r, func(i rungv.Image) string { return i.Repository })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
+			).Gap(10).Align(widget.AlignCenter)
 		}).Grow(3),
 		ui.Col(tr("Tag"), func(r ggui.Readable[rungv.Image]) ggui.Widget {
 			return ui.MonoOf(ggui.Map(r, func(i rungv.Image) string { return i.Tag })).Size(12).NoWrap().Ellipsis()
@@ -108,7 +128,14 @@ func gvxImagesView(m *Model) ggui.Widget {
 		}).W(130),
 		ui.TextCol(tr("Size"), func(i rungv.Image) string { return formatSize(i.Size) }).W(96).Right(),
 		ui.Col("", func(r ggui.Readable[rungv.Image]) ggui.Widget {
-			return ggui.View(r, func(img rungv.Image) ggui.Widget {
+			type actState struct {
+				img  rungv.Image
+				busy bool
+			}
+			return ggui.View(ggui.Combine(r, m.BusyOps, func(img rungv.Image, b map[string]bool) actState {
+				return actState{img: img, busy: b["img:"+img.Key()]}
+			}), func(st actState) ggui.Widget {
+				img := st.img
 				ref := img.Ref()
 				return widget.Row(
 					tip(iconButton(lucide.FolderSearch, tr("Browse files of %s", ref), func() { m.ExploreGVXImage(img, ExploreFiles) }), tr("Browse files")),
@@ -120,37 +147,37 @@ func gvxImagesView(m *Model) ggui.Widget {
 						ui.MenuItem(tr("Pull again"), func() { m.OpenPull(ref); m.Pull() }),
 						ui.MenuItem(tr("Copy reference"), func() { m.Copy(ref, ref) }),
 						ui.MenuDivider(),
-						ui.MenuItem(tr("Remove"), func() {
-							if users := used(ref); len(users) > 0 {
-								m.Confirm(tr("Remove %s?", ref), tr("Used by %s. They pull it again at their next start.", strings.Join(users, ", ")), tr("Remove image"), func() { m.AskRemoveImage(img) })
-								return
-							}
-							m.AskRemoveImage(img)
-						}).Destructive(),
+						ui.MenuItem(tr("Remove…"), func() {
+							m.AskRemoveImageWithUsers(img, used(ref))
+						}).Destructive().Disabled(st.busy),
 					),
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(112).Identified("actions"),
 	).BindSelected(m.SelectedImage).RowName(rungv.Image.Ref).RowHeight(tableRow).OnSelect(func(img rungv.Image) { m.ExploreGVXImage(img, ExploreFiles) })
 
-	return ggui.View(ggui.Map(m.Images, func(l Listing[rungv.Image]) int {
+	type imgViewState struct {
+		state int
+		err   string
+	}
+	return ggui.View(ggui.Map(m.Images, func(l Listing[rungv.Image]) imgViewState {
 		switch {
 		case l.Err != "":
-			return 2
+			return imgViewState{state: 2, err: l.Err}
 		case l.Loaded && len(l.Items) == 0:
-			return 1
+			return imgViewState{state: 1}
 		case !l.Loaded:
-			return 3
+			return imgViewState{state: 3}
 		}
-		return 0
-	}), func(state int) ggui.Widget {
-		switch state {
+		return imgViewState{}
+	}), func(st imgViewState) ggui.Widget {
+		switch st.state {
 		case 1:
 			return ui.Empty(tr("No images cached"), tr("Pull an image, or start a sandbox: a missing image is pulled on first run.")).
 				Media(glyph(lucide.Layers, 32).Color(colorGray)).
 				Action(ui.Button(tr("Pull an image"), func() { m.OpenPull("") }).Icon(glyph(lucide.Download, 16))).Outline()
 		case 2:
-			return ui.Alert(tr("Could not list images"), ggui.Peek(m.Images).Err).Destructive().Icon(icons.Alert)
+			return ui.Alert(tr("Could not list images"), st.err).Destructive().Icon(icons.Alert)
 		case 3:
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Reading the image cache…"))).Gap(8)
 		}
@@ -230,7 +257,14 @@ func dockerImagesView(m *Model) ggui.Widget {
 		}).W(130),
 		ui.TextCol(tr("Size"), func(i DockerImageRow) string { return formatBytes(i.Size) }).W(96).Right(),
 		ui.Col("", func(r ggui.Readable[DockerImageRow]) ggui.Widget {
-			return ggui.View(r, func(img DockerImageRow) ggui.Widget {
+			type dimgActState struct {
+				img  DockerImageRow
+				busy bool
+			}
+			return ggui.View(ggui.Combine(r, m.BusyOps, func(img DockerImageRow, b map[string]bool) dimgActState {
+				return dimgActState{img: img, busy: b["dimg:"+img.Key()]}
+			}), func(st dimgActState) ggui.Widget {
+				img := st.img
 				ref := img.Ref()
 				entries := []ggui.Widget{
 					ui.MenuItem(tr("Browse files"), func() { m.ExploreDockerImage(img, ExploreFiles) }),
@@ -246,32 +280,38 @@ func dockerImagesView(m *Model) ggui.Widget {
 				}
 				entries = append(entries,
 					ui.MenuDivider(),
-					ui.MenuItem(tr("Remove"), func() { m.AskRemoveDockerImage(img) }).Destructive(),
+					ui.MenuItem(tr("Remove…"), func() { m.AskRemoveDockerImage(img) }).Destructive().Disabled(st.busy),
 				)
 				return widget.Row(
 					tip(iconButton(lucide.FolderSearch, tr("Browse files of %s", ref), func() { m.ExploreDockerImage(img, ExploreFiles) }), tr("Browse files")),
-					tip(iconButton(lucide.Trash, tr("Remove %s", ref), func() { m.AskRemoveDockerImage(img) }), tr("Remove")),
+					tip(iconButton(lucide.Trash, tr("Remove %s", ref), func() { m.AskRemoveDockerImage(img) }).Disabled(st.busy), tr("Remove")),
 					moreMenu(tr("More actions for %s", ref), entries...),
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
 		}).W(112).Identified("actions"),
 	).BindSelected(m.SelectedDockerImage).RowName(DockerImageRow.Ref).RowHeight(tableRow).OnSelect(func(img DockerImageRow) { m.ExploreDockerImage(img, ExploreFiles) })
 
-	state := ggui.Combine(m.ContainersAccess, listing, func(a ContainersAccess, l Listing[dockerapi.Image]) int {
+	type dimgViewState struct {
+		state int
+		err   string
+		se    bool
+	}
+	state := ggui.Derived(func() dimgViewState {
+		a, l, se := m.ContainersAccess.Get(), listing.Get(), m.Settings.Get().SandboxEngine
 		switch {
 		case a != ContainersOpen:
-			return 0
+			return dimgViewState{state: 0, se: se}
 		case l.Err != "":
-			return 2
+			return dimgViewState{state: 2, err: l.Err, se: se}
 		case !l.Loaded:
-			return 3
+			return dimgViewState{state: 3, se: se}
 		case len(l.Items) == 0:
-			return 1
+			return dimgViewState{state: 1, se: se}
 		}
-		return 4
+		return dimgViewState{state: 4, se: se}
 	})
-	return ggui.View(state, func(s int) ggui.Widget {
-		switch s {
+	return ggui.View(state, func(s dimgViewState) ggui.Widget {
+		switch s.state {
 		case 0:
 			stage := ggui.Map(m.ContainersAccess, func(a ContainersAccess) int { return int(a) })
 			return ggui.View(gateOf(m, recipes.Docker, stage), func(g engineGate) ggui.Widget { return engineNotRunning(m, g, dockerImagesGate()) })
@@ -280,10 +320,10 @@ func dockerImagesView(m *Model) ggui.Widget {
 				Media(glyph(lucide.Layers, 32).Color(colorGray)).
 				Action(ui.Button(tr("Pull an image"), func() { m.OpenDockerPull("") }).Icon(glyph(lucide.Download, 16))).Outline()
 		case 2:
-			return ui.Alert(tr("Could not list Docker images"), ggui.Peek(listing).Err).Destructive().Icon(icons.Alert)
+			return ui.Alert(tr("Could not list Docker images"), s.err).Destructive().Icon(icons.Alert)
 		case 3:
 			msg := tr("Asking dockerd…")
-			if ggui.Peek(m.Settings).SandboxEngine {
+			if s.se {
 				msg = tr("Loading images…")
 			}
 			return widget.Row(ui.Spinner(), ui.Caption(msg)).Gap(8)
@@ -334,8 +374,8 @@ func volumesPage(m *Model) ggui.Widget {
 		ui.Col(tr("Name"), func(r ggui.Readable[rungv.Volume]) ggui.Widget {
 			return widget.Row(
 				glyph(lucide.HardDrive, 16).Color(colorGray),
-				widget.TextOf(ggui.Map(r, func(v rungv.Volume) string { return v.Name })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis(),
-			).Gap(10)
+				widget.Flexible(widget.TextOf(ggui.Map(r, func(v rungv.Volume) string { return v.Name })).Size(13).Weight(ggui.WeightMedium).NoWrap().Ellipsis()),
+			).Gap(10).Align(widget.AlignCenter)
 		}).Grow(2),
 		ui.TextCol(tr("Driver"), func(v rungv.Volume) string { return v.Driver }).W(100),
 		ui.Col(tr("Status"), func(r ggui.Readable[rungv.Volume]) ggui.Widget {
@@ -355,7 +395,7 @@ func volumesPage(m *Model) ggui.Widget {
 				case st.inUse:
 					return widget.Row(dot(colorGreen, 7), widget.Text(tr("In use")).Size(12)).Gap(6).Align(widget.AlignCenter)
 				case st.users != "":
-					return tip(ui.Caption(tr("used by ")+st.users).Size(12).NoWrap().Ellipsis(), tr("Used by %s", st.users))
+					return tip(ui.Caption(tr("used by %s", st.users)).Size(12).NoWrap().Ellipsis(), tr("Used by %s", st.users))
 				}
 				return ui.Caption(tr("unused")).Size(12)
 			})
@@ -363,7 +403,14 @@ func volumesPage(m *Model) ggui.Widget {
 		ui.TextCol(tr("Size"), func(v rungv.Volume) string { return formatSize(v.Size) }).W(96).Right(),
 		ui.TextCol(tr("Created"), func(v rungv.Volume) string { return shortDate(v.CreatedAt) }).W(140),
 		ui.Col("", func(r ggui.Readable[rungv.Volume]) ggui.Widget {
-			return ggui.View(r, func(v rungv.Volume) ggui.Widget {
+			type volActState struct {
+				v    rungv.Volume
+				busy bool
+			}
+			return ggui.View(ggui.Combine(r, m.BusyOps, func(v rungv.Volume, b map[string]bool) volActState {
+				return volActState{v: v, busy: b["vol:"+v.Name]}
+			}), func(st volActState) ggui.Widget {
+				v := st.v
 				menuItems := []ggui.Widget{
 					ui.MenuItem(tr("Reveal in file manager"), func() { m.Open(v.Mountpoint) }).Disabled(v.Mountpoint == ""),
 					ui.MenuItem(tr("Copy name"), func() { m.Copy(v.Name, v.Name) }),
@@ -373,11 +420,15 @@ func volumesPage(m *Model) ggui.Widget {
 				}
 				menuItems = append(menuItems,
 					ui.MenuDivider(),
-					ui.MenuItem(tr("Delete"), func() { m.AskRemoveVolume(v) }).Destructive().Disabled(v.InUse),
+					ui.MenuItem(tr("Delete…"), func() { m.AskRemoveVolume(v) }).Destructive().Disabled(v.InUse || st.busy),
 				)
+				delTip := tr("Delete")
+				if v.InUse {
+					delTip = tr("In use — stop the sandbox or container first.")
+				}
 				return widget.Row(
 					tip(iconButton(lucide.FolderOpen, tr("Reveal %s", v.Name), func() { m.Open(v.Mountpoint) }).Disabled(v.Mountpoint == ""), tr("Reveal in file manager")),
-					tip(iconButton(lucide.Trash, tr("Delete %s", v.Name), func() { m.AskRemoveVolume(v) }).Disabled(v.InUse), tr("Delete")),
+					tip(iconButton(lucide.Trash, tr("Delete %s", v.Name), func() { m.AskRemoveVolume(v) }).Disabled(v.InUse || st.busy), delTip),
 					moreMenu(tr("More actions for %s", v.Name), menuItems...),
 				).Gap(2).Justify(widget.JustifyEnd)
 			})
@@ -385,24 +436,28 @@ func volumesPage(m *Model) ggui.Widget {
 	).BindSelected(m.SelectedVolume).RowName(func(v rungv.Volume) string { return v.Name }).RowHeight(tableRow).
 		Toolbar(filterBar(m.VolumeQuery, tr("Filter by name, driver or sandbox"), count))
 
-	body := ggui.View(ggui.Map(m.Volumes, func(l Listing[rungv.Volume]) int {
+	type volViewState struct {
+		state int
+		err   string
+	}
+	body := ggui.View(ggui.Map(m.Volumes, func(l Listing[rungv.Volume]) volViewState {
 		switch {
 		case l.Err != "":
-			return 2
+			return volViewState{state: 2, err: l.Err}
 		case l.Loaded && len(l.Items) == 0:
-			return 1
+			return volViewState{state: 1}
 		case !l.Loaded:
-			return 3
+			return volViewState{state: 3}
 		}
-		return 0
-	}), func(state int) ggui.Widget {
-		switch state {
+		return volViewState{}
+	}), func(st volViewState) ggui.Widget {
+		switch st.state {
 		case 1:
 			return ui.Empty(tr("No volumes"), tr("A sandbox creates a named volume the first time it mounts one, or create one here.")).
 				Media(glyph(lucide.HardDrive, 32).Color(colorGray)).
-				Action(ui.Button(tr("Create volume"), func() { m.VolumeOpen.Set(true) }).Icon(glyph(lucide.Plus, 16))).Outline()
+				Action(ui.Button(tr("Create volume"), m.OpenVolumeDialog).Icon(glyph(lucide.Plus, 16))).Outline()
 		case 2:
-			return ui.Alert(tr("Could not list volumes"), ggui.Peek(m.Volumes).Err).Destructive().Icon(icons.Alert)
+			return ui.Alert(tr("Could not list volumes"), st.err).Destructive().Icon(icons.Alert)
 		case 3:
 			return widget.Row(ui.Spinner(), ui.Caption(tr("Reading volumes…"))).Gap(8)
 		}
@@ -414,8 +469,8 @@ func volumesPage(m *Model) ggui.Widget {
 	return page(
 		pageHeader(tr("Volumes"), summary,
 			tip(iconButton(lucide.RefreshCw, tr("Refresh volumes"), m.LoadVolumes), tr("Refresh")),
-			ui.Button(tr("Prune"), m.AskPruneVolumes).Outline().Icon(glyph(lucide.Eraser, 16)),
-			ui.Button(tr("Create volume"), func() { m.VolumeOpen.Set(true) }).Icon(glyph(lucide.Plus, 16)),
+			ui.Button(tr("Prune"), m.AskPruneVolumes).Outline().Icon(glyph(lucide.Eraser, 16)).BindDisabled(ggui.Map(m.BusyOps, func(b map[string]bool) bool { return b["vol:prune"] })),
+			ui.Button(tr("Create volume"), m.OpenVolumeDialog).Icon(glyph(lucide.Plus, 16)),
 		),
 		body,
 	)
@@ -461,16 +516,18 @@ func snapshotsPage(m *Model) ggui.Widget {
 	})
 	visible := ggui.Derived(func() []sandbox.Snapshot {
 		all := m.Snapshots.Get()
+		specs := m.Specs.Get()
 		q := strings.ToLower(strings.TrimSpace(m.SnapshotQuery.Get()))
 		if q == "" {
 			return all
 		}
+		names := make(map[string]string, len(specs))
+		for _, sp := range specs {
+			names[sp.ID] = sp.Name
+		}
 		var out []sandbox.Snapshot
 		for _, s := range all {
-			sbName := ""
-			if spec, ok := m.spec(s.SandboxID); ok {
-				sbName = spec.Name
-			}
+			sbName := names[s.SandboxID]
 			if strings.Contains(strings.ToLower(sbName+" "+s.Name+" "+s.Dir), q) {
 				out = append(out, s)
 			}
@@ -478,16 +535,34 @@ func snapshotsPage(m *Model) ggui.Widget {
 		return out
 	}).WithEqual(nil)
 	count := ggui.Combine(visible, m.Snapshots, func(v, all []sandbox.Snapshot) string { return showing(len(v), len(all)) })
-	hasSnaps := ggui.Map(m.Snapshots, func(s []sandbox.Snapshot) bool { return len(s) > 0 })
-	body := ggui.If(hasSnaps, func() ggui.Widget {
+	emptyText := ggui.Map(m.SnapshotQuery, func(q string) string {
+		if strings.TrimSpace(q) != "" {
+			return tr("No matching snapshots.")
+		}
+		return tr("No snapshots yet.")
+	})
+	snapState := ggui.Combine(m.SnapshotsLoaded, m.Snapshots, func(loaded bool, s []sandbox.Snapshot) int {
+		if !loaded && len(s) == 0 {
+			return 0
+		}
+		if len(s) == 0 {
+			return 1
+		}
+		return 2
+	})
+	body := ggui.View(snapState, func(st int) ggui.Widget {
+		switch st {
+		case 0:
+			return widget.Row(ui.Spinner(), ui.Caption(tr("Reading snapshots…"))).Gap(8)
+		case 1:
+			return ui.Empty(tr("No snapshots yet"), tr("Checkpoint a running sandbox from its Snapshots tab to resume it later in milliseconds.")).
+				Media(glyph(lucide.Camera, 32).Color(colorGray)).
+				Action(ui.Button(tr("Open Sandboxes"), func() { m.Go(PageSandboxes) }).Outline()).Outline()
+		}
 		return widget.Column(
 			ui.Card(filterBar(m.SnapshotQuery, tr("Filter snapshots"), count)).Pad(6, 10),
-			snapshotList(m, visible, true),
+			snapshotList(m, visible, true, emptyText),
 		).Gap(12).Stretch()
-	}).Else(func() ggui.Widget {
-		return ui.Empty(tr("No snapshots yet"), tr("Checkpoint a running sandbox from its Snapshots tab to resume it later in milliseconds.")).
-			Media(glyph(lucide.Camera, 32).Color(colorGray)).
-			Action(ui.Button(tr("Open Sandboxes"), func() { m.Go(PageSandboxes) }).Outline()).Outline()
 	})
 	return page(
 		pageHeader(tr("Snapshots"), summary,

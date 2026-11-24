@@ -193,7 +193,7 @@ func (m *Model) AskScale(w kubeapi.Workload) {
 // AskRestart confirms and restarts a workload's pods, as kubectl rollout
 // restart does.
 func (m *Model) AskRestart(w kubeapi.Workload) {
-	m.Confirm(tr("Restart %s %s?", w.Kind, w.Name()),
+	m.Offer(tr("Restart %s %s?", w.Kind, w.Name()),
 		tr("Its pods are replaced from its template, a few at a time, as kubectl rollout restart does."),
 		tr("Restart"), func() {
 			m.kubeDo(tr("Could not restart %s", w.Name()), func(ctx context.Context, c *kubeapi.Client) error {

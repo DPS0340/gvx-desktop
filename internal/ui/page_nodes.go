@@ -8,18 +8,30 @@ import (
 	"github.com/ironpark/ggui/icons/lucide"
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/widget"
+
+	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
-// nodesCard lists the cluster's nodes on the Nodes page, with Add node,
+// nodesCard lists the cluster's nodes on the Kubernetes page, with Add node,
 // and Remove for each agent.
 func nodesCard(m *Model) ggui.Widget {
 	nodes := ggui.Combine(m.Rows, m.KubeNodes, clusterNodes).
 		WithEqual(func(a, b []ClusterNode) bool { return slices.EqualFunc(a, b, ClusterNode.Equal) })
-	blocked := ggui.Map(m.Rows, AddNodeBlocked)
-	add := ggui.View(blocked, func(why string) ggui.Widget {
-		b := ui.Button(tr("Add node"), m.AddNode).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.Plus, 14)).Disabled(why != "")
-		if why != "" {
-			return tip(b, why)
+	type addState struct {
+		why    string
+		adding bool
+	}
+	blocked := ggui.Combine(m.Rows, m.AddingNode, func(rows []Row, adding bool) addState {
+		return addState{why: AddNodeBlocked(rows), adding: adding}
+	})
+	add := ggui.View(blocked, func(st addState) ggui.Widget {
+		if st.adding {
+			return ui.ButtonOf(widget.Row(ui.Spinner().Size(12), widget.Text(tr("Adding node…"))).Gap(6).Align(widget.AlignCenter), nil).
+				Outline().Size(ui.ButtonSmall).Name(tr("Add node")).Disabled(true)
+		}
+		b := ui.Button(tr("Add node"), m.AddNode).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.Plus, 14)).Disabled(st.why != "")
+		if st.why != "" {
+			return tip(b, st.why)
 		}
 		return b
 	})
@@ -56,6 +68,10 @@ func nodeRow(m *Model, n ClusterNode) ggui.Widget {
 	}
 	switch {
 	case !n.Row.State.Status.Active():
+	case n.Row.State.Status == sandbox.Stopping:
+		facts = append(facts, tr("Stopping"))
+	case n.Row.State.Paused:
+		facts = append(facts, tr("Paused"))
 	case n.Ready:
 		facts = append(facts, tr("Ready"))
 	case n.Registered:

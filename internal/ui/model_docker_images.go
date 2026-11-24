@@ -280,6 +280,10 @@ func (m *Model) LoadDockerImages() {
 			m.DockerImages.Set(Listing[dockerapi.Image]{Loaded: true, Err: pe})
 			return
 		}
+		if seErr := ggui.Peek(m.SandboxEngineStatus).Err; seErr != "" {
+			m.DockerImages.Set(Listing[dockerapi.Image]{Loaded: true, Err: seErr})
+			return
+		}
 	}
 	if m.dockerImagesLoading {
 		m.dockerImagesAgain = true
@@ -339,6 +343,10 @@ func (m *Model) InspectDockerImage(img DockerImageRow) {
 // sandboxes are refused rather than force-deleted.
 func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 	ref := img.Ref()
+	busyKey := "dimg:" + img.Key()
+	if m.isBusy(busyKey) {
+		return
+	}
 	if ggui.Peek(m.Settings).SandboxEngine {
 		if sbs := sandboxImageUsers(ggui.Peek(m.Rows), img); len(sbs) > 0 {
 			m.Toasts.Push(ui.Toast(
@@ -354,6 +362,10 @@ func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 		text = tr("Used by %s. Force removing untags or deletes the image from the Docker Engine (%s).", strings.Join(users, ", "), formatBytes(img.Size))
 	}
 	m.Confirm(tr("Remove %s?", ref), text, tr("Remove image"), func() {
+		if m.isBusy(busyKey) {
+			return
+		}
+		m.setBusy(busyKey, true)
 		host := m.dockerBackendHost()
 		m.async(func(ctx context.Context) error {
 			c, err := dockerapi.New(host)
@@ -365,6 +377,7 @@ func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 			defer cancel()
 			return c.RemoveImagePlatform(ctx, img.Target(), true, img.Platform())
 		}, func(err error) {
+			m.setBusy(busyKey, false)
 			if err != nil {
 				m.toastError(tr("Could not remove %s", ref), err)
 			} else {
@@ -372,15 +385,27 @@ func (m *Model) AskRemoveDockerImage(img DockerImageRow) {
 			}
 			m.LoadDockerImages()
 			m.LoadDocker()
+			if ggui.Peek(m.Settings).SandboxEngine {
+				m.LoadImages()
+				m.LoadDisk()
+			}
 		})
 	})
 }
 
 // AskPruneDockerImages removes dangling images from the Docker Engine.
 func (m *Model) AskPruneDockerImages() {
+	const busyKey = "dimg:prune"
+	if m.isBusy(busyKey) {
+		return
+	}
 	m.Confirm(tr("Remove unused Docker images?"),
 		tr("Dangling images in the Docker Engine are deleted."),
 		tr("Prune images"), func() {
+			if m.isBusy(busyKey) {
+				return
+			}
+			m.setBusy(busyKey, true)
 			host := m.dockerBackendHost()
 			var res dockerapi.PruneResult
 			m.async(func(ctx context.Context) error {
@@ -394,12 +419,17 @@ func (m *Model) AskPruneDockerImages() {
 				res, err = c.PruneImages(ctx, false)
 				return err
 			}, func(err error) {
+				m.setBusy(busyKey, false)
 				if err != nil {
 					m.toastError(tr("Prune failed"), err)
 				} else {
 					m.toastOK(tr("Docker images pruned"), tr("Reclaimed %s.", formatBytes(res.SpaceReclaimed)))
 				}
 				m.LoadDockerImages()
+				if ggui.Peek(m.Settings).SandboxEngine {
+					m.LoadImages()
+					m.LoadDisk()
+				}
 			})
 		})
 }

@@ -686,11 +686,34 @@ jobs:
           APP_NAME: ${{ needs.prepare.outputs.app_name }}
         run: |
           set -eu
-          gh release create "$TAG" dist/* meta/* \
-            --verify-tag \
-            --title "$APP_NAME $VERSION" \
-            --generate-notes \
-            --notes "On an Apple silicon Mac (macOS 13 or later), install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. On Windows, run the setup installer (\`-setup.exe\`) or unzip the portable archive for your PC: amd64 for Intel and AMD, arm64 for Arm. On Linux, install the .deb or .rpm for your CPU, or unpack the tarball. Verify downloads with \`SHA256SUMS\` and SLSA build provenance via \`gh attestation verify <file> --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG --deny-self-hosted-runners --bundle gvx-desktop-$TAG.sigstore.json\`."
+          install_note="On an Apple silicon Mac (macOS 13 or later), install with \`brew install --cask ironpark/tap/gvx-desktop\`, or open the disk image and drag the app to Applications. On Windows, run the setup installer (\`-setup.exe\`), use \`irm https://raw.githubusercontent.com/$GH_REPO/main/install.ps1 | iex\`, or unzip the portable archive for your PC: amd64 for Intel and AMD, arm64 for Arm. On Linux, install the .deb or .rpm for your CPU, or unpack the tarball. Verify downloads with \`SHA256SUMS\` and SLSA build provenance via \`gh attestation verify <file> --repo $GH_REPO --signer-workflow $GH_REPO/.github/workflows/release.yml --source-ref refs/tags/$TAG --deny-self-hosted-runners --bundle gvx-desktop-$TAG.sigstore.json\`."
+
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          rm -f "$notes_file"
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$VERSION" '
+              $0 ~ "^## \\[?" ver "\\]?([[:space:]]|$)" { found = 1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md > "$notes_file"
+          fi
+
+          if [ -s "$notes_file" ]; then
+            {
+              printf '%s\n\n' "$install_note"
+              cat "$notes_file"
+            } > "$notes_file.full"
+            gh release create "$TAG" dist/* meta/* \
+              --verify-tag \
+              --title "$APP_NAME $VERSION" \
+              --notes-file "$notes_file.full"
+          else
+            gh release create "$TAG" dist/* meta/* \
+              --verify-tag \
+              --title "$APP_NAME $VERSION" \
+              --generate-notes \
+              --notes "$install_note"
+          fi
       - name: Upload rebuilt artifacts to existing release
         if: needs.prepare.outputs.publish_mode == 'upload'
         env:

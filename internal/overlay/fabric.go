@@ -58,10 +58,13 @@ type Fabric struct {
 	members map[string]Member
 	closed  bool
 
-	view atomic.Pointer[view]
+	view   atomic.Pointer[view]
+	router atomic.Pointer[router]
 }
 
-// peer is a container that joined: a running sandbox with a link.
+// peer is a container that joined: either a running gvx sandbox with a
+// WireGuard link (dns != nil, direct == nil) or a direct L3 peer such as a
+// micro-VM connected over vsock (direct != nil, dns == nil).
 type peer struct {
 	priv     []byte
 	pub      []byte
@@ -70,6 +73,8 @@ type peer struct {
 	prefixes []netip.Prefix
 	live     []netip.Addr // addresses configured on its link
 	dns      *dnsServer
+	direct   *DirectPeer
+	isolated bool
 }
 
 // view is what packets and queries are checked against, rebuilt on every
@@ -79,6 +84,92 @@ type view struct {
 	nets    map[string]map[string]struct{} // container → network IDs
 	members map[string]Member
 	live    map[string][]netip.Addr
+	direct  map[netip.Addr]*DirectPeer // live address → direct L3 peer
+}
+
+// DirectPeer is a handle for a container that exchanges raw IPv4 packets and
+// DNS queries directly with Fabric (for example, a micro-VM container bridged
+// over a vsock TUN + DNS stream) while interoperating seamlessly with
+// WireGuard-connected gvx sandboxes on the same user networks.
+type DirectPeer struct {
+	f        *Fabric
+	id       string
+	isolated bool
+	rx       chan []byte
+	closed   chan struct{}
+	once     sync.Once
+}
+
+func (p *DirectPeer) deliver(pkt []byte) {
+	select {
+	case <-p.closed:
+		return
+	default:
+	}
+	select {
+	case p.rx <- append([]byte(nil), pkt...):
+	case <-p.closed:
+	default: // full: drop, as a congested link does
+	}
+}
+
+func (p *DirectPeer) close() {
+	p.once.Do(func() {
+		close(p.closed)
+	})
+}
+
+// Recv blocks until an IPv4 packet arrives for this peer or the peer leaves
+// the fabric.
+func (p *DirectPeer) Recv() ([]byte, bool) {
+	select {
+	case pkt := <-p.rx:
+		return pkt, true
+	case <-p.closed:
+		return nil, false
+	}
+}
+
+// Send injects a raw IPv4 packet sent by this peer into the fabric. Packets
+// whose source address does not belong to this peer or whose destination is
+// not reachable on a shared network are dropped.
+func (p *DirectPeer) Send(pkt []byte) {
+	src, dst, ok := ipv4Addrs(pkt)
+	if !ok {
+		return
+	}
+	v := p.f.view.Load()
+	if v.owner[src] != p.id {
+		return
+	}
+	dstID, ok := v.owner[dst]
+	if !ok || !shares(v.nets[p.id], v.nets[dstID]) {
+		return
+	}
+	if dstPeer := v.direct[dst]; dstPeer != nil {
+		dstPeer.deliver(pkt)
+		return
+	}
+	if r := p.f.router.Load(); r != nil {
+		r.enqueue(pkt)
+	}
+}
+
+// ExchangeDNS answers a raw DNS wire query ("udp" or "tcp") for this peer.
+// Container names on shared networks are answered from the fabric's view;
+// other names go to the host's upstream resolvers (or return REFUSED when
+// Joined with Isolated: true).
+func (p *DirectPeer) ExchangeDNS(q []byte, network string) []byte {
+	select {
+	case <-p.closed:
+		return nil
+	default:
+	}
+	var up *upstreams
+	if !p.isolated {
+		up = p.f.up
+	}
+	return answerDNS(q, network, func(name string) []netip.Addr { return p.f.resolve(p.id, name) }, up)
 }
 
 // New returns a Fabric. It starts nothing until a container joins.
@@ -120,11 +211,12 @@ func (f *Fabric) Join(id string, addrs []netip.Prefix, opts JoinOptions) (guestc
 		return guestcfg.Config{}, netip.AddrPort{}, errors.New("overlay: closed")
 	}
 	if f.hub == nil {
-		h, err := startHub(f.allow, f.logf)
+		h, err := startHub(f.allow, f.deliverDirect, f.logf)
 		if err != nil {
 			return guestcfg.Config{}, netip.AddrPort{}, err
 		}
 		f.hub = h
+		f.router.Store(h.router)
 	}
 	var prevGen uint64
 	if old, ok := f.peers[id]; ok {
@@ -175,6 +267,64 @@ func (f *Fabric) Join(id string, addrs []netip.Prefix, opts JoinOptions) (guestc
 	}, dns.addr, nil
 }
 
+// JoinDirect attaches a container that communicates via raw IPv4 packets and
+// direct DNS exchanges (such as a micro-VM over vsock) without starting a
+// WireGuard UDP peer or per-container host DNS listener.
+func (f *Fabric) JoinDirect(id string, addrs []netip.Prefix, opts JoinOptions) (*DirectPeer, guestcfg.Config, error) {
+	if len(addrs) == 0 {
+		return nil, guestcfg.Config{}, errors.New("overlay: no addresses")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return nil, guestcfg.Config{}, errors.New("overlay: closed")
+	}
+	var prevGen uint64
+	if old, ok := f.peers[id]; ok {
+		prevGen = old.gen
+	}
+	f.leaveLocked(id)
+
+	live, strs, routes := expandAddrs(addrs)
+	mtu := opts.MTU
+	if mtu <= 0 {
+		mtu = LinkMTU
+	}
+	dp := &DirectPeer{
+		f:        f,
+		id:       id,
+		isolated: opts.Isolated,
+		rx:       make(chan []byte, routerQueued),
+		closed:   make(chan struct{}),
+	}
+	f.peers[id] = &peer{
+		mtu:      mtu,
+		gen:      prevGen + 1,
+		prefixes: slices.Clone(addrs),
+		live:     live,
+		direct:   dp,
+		isolated: opts.Isolated,
+	}
+	f.rebuildLocked()
+
+	return dp, guestcfg.Config{
+		Addresses: strs,
+		Routes:    routes,
+		MTU:       mtu,
+		Isolated:  opts.Isolated,
+	}, nil
+}
+
+func (f *Fabric) deliverDirect(dst netip.Addr, pkt []byte) bool {
+	v := f.view.Load()
+	dp := v.direct[dst]
+	if dp == nil {
+		return false
+	}
+	dp.deliver(pkt)
+	return true
+}
+
 func expandAddrs(addrs []netip.Prefix) (live []netip.Addr, strs []string, routes []string) {
 	if len(addrs) == 0 {
 		return nil, nil, nil
@@ -214,7 +364,7 @@ func (f *Fabric) PeerAddrs(id string) ([]netip.Prefix, bool) {
 func (f *Fabric) SetAddrs(id string, addrs []netip.Prefix) (cfg guestcfg.Config, gen uint64, ok bool, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.closed || f.hub == nil {
+	if f.closed {
 		return guestcfg.Config{}, 0, false, nil
 	}
 	p, exists := f.peers[id]
@@ -222,6 +372,21 @@ func (f *Fabric) SetAddrs(id string, addrs []netip.Prefix) (cfg guestcfg.Config,
 		return guestcfg.Config{}, 0, false, nil
 	}
 	live, strs, routes := expandAddrs(addrs)
+	if p.direct != nil {
+		p.gen++
+		p.prefixes = slices.Clone(addrs)
+		p.live = live
+		f.rebuildLocked()
+		return guestcfg.Config{
+			Addresses: strs,
+			Routes:    routes,
+			MTU:       p.mtu,
+			Isolated:  p.isolated,
+		}, p.gen, true, nil
+	}
+	if f.hub == nil {
+		return guestcfg.Config{}, 0, false, nil
+	}
 	if err := f.hub.setPeer(p.pub, live); err != nil {
 		return guestcfg.Config{}, 0, true, err
 	}
@@ -245,7 +410,7 @@ func (f *Fabric) SetAddrs(id string, addrs []netip.Prefix) (cfg guestcfg.Config,
 func (f *Fabric) RevertAddrs(id string, expectedGen uint64, prev []netip.Prefix) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.closed || f.hub == nil {
+	if f.closed {
 		return false
 	}
 	p, exists := f.peers[id]
@@ -253,9 +418,14 @@ func (f *Fabric) RevertAddrs(id string, expectedGen uint64, prev []netip.Prefix)
 		return false
 	}
 	live, _, _ := expandAddrs(prev)
-	if err := f.hub.setPeer(p.pub, live); err != nil {
-		f.logf("overlay: revert peer: %v", err)
-		return false
+	if p.direct == nil {
+		if f.hub == nil {
+			return false
+		}
+		if err := f.hub.setPeer(p.pub, live); err != nil {
+			f.logf("overlay: revert peer: %v", err)
+			return false
+		}
 	}
 	p.gen++
 	p.prefixes = slices.Clone(prev)
@@ -279,12 +449,18 @@ func (f *Fabric) leaveLocked(id string) bool {
 		return false
 	}
 	delete(f.peers, id)
+	if p.direct != nil {
+		p.direct.close()
+		return true
+	}
 	if f.hub != nil {
 		if err := f.hub.removePeer(p.pub); err != nil {
 			f.logf("overlay: remove peer: %v", err)
 		}
 	}
-	go p.dns.close()
+	if p.dns != nil {
+		go p.dns.close()
+	}
 	return true
 }
 
@@ -307,10 +483,14 @@ func (f *Fabric) rebuildLocked() {
 		nets:    map[string]map[string]struct{}{},
 		members: f.members,
 		live:    map[string][]netip.Addr{},
+		direct:  map[netip.Addr]*DirectPeer{},
 	}
 	for id, p := range f.peers {
 		for _, a := range p.live {
 			v.owner[a] = id
+			if p.direct != nil {
+				v.direct[a] = p.direct
+			}
 		}
 		v.live[id] = p.live
 	}
@@ -333,6 +513,7 @@ func (f *Fabric) Close() {
 		f.leaveLocked(id)
 	}
 	if f.hub != nil {
+		f.router.Store(nil)
 		f.hub.close()
 		f.hub = nil
 	}

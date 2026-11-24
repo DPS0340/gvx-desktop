@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,6 +27,9 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/dns/dnsmessage"
+
+	"github.com/ironpark/gvx-desktop-vm/guestproto"
 	"github.com/ironpark/gvx-desktop-vm/vmassets"
 	"github.com/ironpark/gvx-desktop-vm/vmclient"
 	"github.com/ironpark/gvx-desktop-vm/vmhelper"
@@ -137,6 +142,9 @@ type fakeMicroVMClient struct {
 	copyToData   [][]byte
 	exportReqs   []vmproto.ContainerExportRequest
 	dialReqs     []vmproto.DialRequest
+	netAttachCfg *vmproto.ContainerNetConfig
+	netStream    *fakeMicroVMNetStream
+	netUpdates   []vmproto.ContainerNetConfig
 
 	attach  *fakeMicroVMStream
 	paused  bool
@@ -277,6 +285,92 @@ func (c *fakeMicroVMClient) ContainerStart(ctx context.Context, spec vmproto.Con
 
 func (c *fakeMicroVMClient) ContainerAttach(ctx context.Context) (microVMStream, error) {
 	return c.attach, nil
+}
+
+type fakeNetFrame struct {
+	kind    byte
+	payload []byte
+}
+
+type fakeMicroVMNetStream struct {
+	guestToHost chan fakeNetFrame
+	hostToGuest chan fakeNetFrame
+	closed      chan struct{}
+	once        sync.Once
+}
+
+func newFakeMicroVMNetStream() *fakeMicroVMNetStream {
+	return &fakeMicroVMNetStream{
+		guestToHost: make(chan fakeNetFrame, 32),
+		hostToGuest: make(chan fakeNetFrame, 32),
+		closed:      make(chan struct{}),
+	}
+}
+
+func (s *fakeMicroVMNetStream) ReadFrame() (byte, []byte, error) {
+	select {
+	case f := <-s.guestToHost:
+		return f.kind, f.payload, nil
+	case <-s.closed:
+		return 0, nil, io.EOF
+	}
+}
+
+func (s *fakeMicroVMNetStream) SendPacket(pkt []byte) error {
+	select {
+	case <-s.closed:
+		return net.ErrClosed
+	default:
+	}
+	select {
+	case s.hostToGuest <- fakeNetFrame{kind: guestproto.FrameNetPacket, payload: append([]byte(nil), pkt...)}:
+		return nil
+	case <-s.closed:
+		return net.ErrClosed
+	}
+}
+
+func (s *fakeMicroVMNetStream) SendDNSReply(seq uint32, reply []byte) error {
+	buf := make([]byte, 4+len(reply))
+	binary.BigEndian.PutUint32(buf[0:4], seq)
+	copy(buf[4:], reply)
+	select {
+	case <-s.closed:
+		return net.ErrClosed
+	default:
+	}
+	select {
+	case s.hostToGuest <- fakeNetFrame{kind: guestproto.FrameDNSReply, payload: buf}:
+		return nil
+	case <-s.closed:
+		return net.ErrClosed
+	}
+}
+
+func (s *fakeMicroVMNetStream) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
+
+func (c *fakeMicroVMClient) ContainerNetAttach(ctx context.Context, cfg vmproto.ContainerNetConfig) (microVMNetStream, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cp := cfg
+	cp.Addresses = slices.Clone(cfg.Addresses)
+	cp.Routes = slices.Clone(cfg.Routes)
+	c.netAttachCfg = &cp
+	c.netStream = newFakeMicroVMNetStream()
+	return c.netStream, nil
+}
+
+func (c *fakeMicroVMClient) ContainerNetUpdate(ctx context.Context, cfg vmproto.ContainerNetConfig) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cp := cfg
+	cp.Addresses = slices.Clone(cfg.Addresses)
+	cp.Routes = slices.Clone(cfg.Routes)
+	c.netUpdates = append(c.netUpdates, cp)
+	return nil
 }
 
 func (c *fakeMicroVMClient) ContainerSignal(ctx context.Context, req vmproto.ContainerSignalRequest) error {
@@ -1226,7 +1320,7 @@ func TestMicroVMTCPPortForwardingAndWarnings(t *testing.T) {
 	}, 1)
 	getClients, _ := setupFakeMicroVM(t, te, true, nil)
 
-	// Create a user-defined network to verify warning.
+	// Create a user-defined network: micro-VM containers join the overlay cleanly with no NAT warning.
 	if st, b := te.do(t, http.MethodPost, "/networks/create", map[string]any{"Name": "custom-net"}); st != http.StatusCreated {
 		t.Fatalf("network create = %d %s", st, b)
 	}
@@ -1251,8 +1345,8 @@ func TestMicroVMTCPPortForwardingAndWarnings(t *testing.T) {
 	if !strings.Contains(joinedWarn, "UDP") {
 		t.Errorf("expected UDP warning in %v", cr.Warnings)
 	}
-	if !strings.Contains(joinedWarn, "NAT") {
-		t.Errorf("expected user-defined network NAT warning in %v", cr.Warnings)
+	if strings.Contains(joinedWarn, "not yet bridged") {
+		t.Errorf("unexpected obsolete user-network warning in %v", cr.Warnings)
 	}
 
 	if st, b := te.do(t, http.MethodPost, "/containers/"+cr.ID+"/start", nil); st != http.StatusNoContent {
@@ -2005,4 +2099,177 @@ func TestMicroVMInFlightStartAbort(t *testing.T) {
 			t.Errorf("MicroVMState after abort during download = %+v, want clean disabled state", mst)
 		}
 	})
+}
+
+func TestMicroVMOverlayNetworkingAndLiveConnect(t *testing.T) {
+	te := newTestEngine(t)
+	addCachedMicroVMImage(t, te, hostImageArch, "app:1", ImageConfig{Cmd: []string{"/bin/sh"}}, 1)
+	getClients, _ := setupFakeMicroVM(t, te, true, nil)
+
+	if st, b := te.do(t, http.MethodPost, "/networks/create", map[string]any{"Name": "net-a"}); st != http.StatusCreated {
+		t.Fatalf("create net-a = %d %s", st, b)
+	}
+	if st, b := te.do(t, http.MethodPost, "/networks/create", map[string]any{"Name": "net-b"}); st != http.StatusCreated {
+		t.Fatalf("create net-b = %d %s", st, b)
+	}
+	if st, b := te.do(t, http.MethodPost, "/networks/create", map[string]any{"Name": "net-int", "Internal": true}); st != http.StatusCreated {
+		t.Fatalf("create net-int = %d %s", st, b)
+	}
+
+	createAndStart := func(name, netName string, aliases []string) (string, string, *fakeMicroVMClient) {
+		t.Helper()
+		body := map[string]any{
+			"Image":      "app:1",
+			"HostConfig": map[string]any{"Runtime": "microvm", "NetworkMode": netName},
+		}
+		if len(aliases) > 0 {
+			body["NetworkingConfig"] = map[string]any{
+				"EndpointsConfig": map[string]any{
+					netName: map[string]any{"Aliases": aliases},
+				},
+			}
+		}
+		st, b := te.do(t, http.MethodPost, "/containers/create?name="+name, body)
+		if st != http.StatusCreated {
+			t.Fatalf("create %s = %d %s", name, st, b)
+		}
+		var cr containerCreateResponse
+		_ = json.Unmarshal(b, &cr)
+		if len(cr.Warnings) != 0 {
+			t.Fatalf("create %s unexpected warnings = %v", name, cr.Warnings)
+		}
+		prevN := len(getClients())
+		if st, b := te.do(t, http.MethodPost, "/containers/"+cr.ID+"/start", nil); st != http.StatusNoContent {
+			t.Fatalf("start %s = %d %s", name, st, b)
+		}
+		clients := getClients()
+		if len(clients) != prevN+1 {
+			t.Fatalf("expected new fake client for %s", name)
+		}
+		_, ib := te.do(t, http.MethodGet, "/containers/"+cr.ID+"/json", nil)
+		var ins containerInspectResponse
+		_ = json.Unmarshal(ib, &ins)
+		ip := ins.NetworkSettings.Networks[netName].IPAddress
+		if ip == "" {
+			t.Fatalf("%s has no IP on %s", name, netName)
+		}
+		return cr.ID, ip, clients[len(clients)-1]
+	}
+
+	idA, ipA, fcA := createAndStart("mvm-api", "net-a", []string{"api"})
+	_, ipB, fcB := createAndStart("mvm-db", "net-a", []string{"db"})
+	_, _, fcInt := createAndStart("mvm-int", "net-int", []string{"secret"})
+
+	// Verify ContainerNetAttach & ContainerSpec.Network & VMSpec.Network.
+	fcA.mu.Lock()
+	nsA := fcA.netStream
+	cfgA := fcA.netAttachCfg
+	vmNetA := fcA.vmSpec.Network
+	ctrNetA := fcA.ctrSpec.Network
+	fcA.mu.Unlock()
+	if nsA == nil || cfgA == nil || !cfgA.DNS || cfgA.Isolated || !vmNetA || ctrNetA == nil || !ctrNetA.DNS {
+		t.Fatalf("mvm-api net setup: ns=%v cfg=%+v vmNet=%v ctrNet=%+v", nsA != nil, cfgA, vmNetA, ctrNetA)
+	}
+
+	fcInt.mu.Lock()
+	nsInt := fcInt.netStream
+	cfgInt := fcInt.netAttachCfg
+	vmNetInt := fcInt.vmSpec.Network
+	fcInt.mu.Unlock()
+	if nsInt == nil || cfgInt == nil || !cfgInt.Isolated || vmNetInt {
+		t.Fatalf("mvm-int isolated setup: ns=%v cfg=%+v vmNet=%v (want vmNet=false, isolated=true)", nsInt != nil, cfgInt, vmNetInt)
+	}
+
+	// 1. Packet forwarding between two micro-VMs via overlay.Fabric.
+	a4 := netip.MustParseAddr(ipA).As4()
+	b4 := netip.MustParseAddr(ipB).As4()
+	pkt := make([]byte, 24)
+	pkt[0] = 0x45
+	copy(pkt[12:16], a4[:])
+	copy(pkt[16:20], b4[:])
+	pkt[20] = 0xab
+
+	fcB.mu.Lock()
+	nsB := fcB.netStream
+	fcB.mu.Unlock()
+
+	nsA.guestToHost <- fakeNetFrame{kind: guestproto.FrameNetPacket, payload: pkt}
+	select {
+	case got := <-nsB.hostToGuest:
+		if got.kind != guestproto.FrameNetPacket || !bytes.Equal(got.payload, pkt) {
+			t.Fatalf("nsB received (%d, %x), want packet %x", got.kind, got.payload, pkt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for packet from mvm-api to mvm-db")
+	}
+
+	// 2. DNS resolution over FrameDNSQuery / FrameDNSReply.
+	buildDNS := func(name string) []byte {
+		b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 123, RecursionDesired: true})
+		_ = b.StartQuestions()
+		_ = b.Question(dnsmessage.Question{Name: dnsmessage.MustNewName(name + "."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET})
+		q, _ := b.Finish()
+		return q
+	}
+	sendDNS := func(ns *fakeMicroVMNetStream, seq uint32, name string) dnsmessage.Message {
+		t.Helper()
+		q := buildDNS(name)
+		payload := make([]byte, 5+len(q))
+		binary.BigEndian.PutUint32(payload[0:4], seq)
+		payload[4] = 0 // udp
+		copy(payload[5:], q)
+		ns.guestToHost <- fakeNetFrame{kind: guestproto.FrameDNSQuery, payload: payload}
+		select {
+		case f := <-ns.hostToGuest:
+			if f.kind != guestproto.FrameDNSReply || len(f.payload) < 4 {
+				t.Fatalf("unexpected frame (%d, len=%d)", f.kind, len(f.payload))
+			}
+			if gotSeq := binary.BigEndian.Uint32(f.payload[0:4]); gotSeq != seq {
+				t.Fatalf("dns reply seq = %d, want %d", gotSeq, seq)
+			}
+			var m dnsmessage.Message
+			if err := m.Unpack(f.payload[4:]); err != nil {
+				t.Fatalf("unpack dns reply: %v", err)
+			}
+			return m
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for DNS reply for %s", name)
+			return dnsmessage.Message{}
+		}
+	}
+
+	m := sendDNS(nsA, 1, "db")
+	if len(m.Answers) != 1 {
+		t.Fatalf("mvm-api DNS db answers = %+v", m.Answers)
+	}
+	if ar, ok := m.Answers[0].Body.(*dnsmessage.AResource); !ok || netip.AddrFrom4(ar.A).String() != ipB {
+		t.Fatalf("mvm-api DNS db answer = %+v, want %s", m.Answers[0].Body, ipB)
+	}
+	// Isolated container refuses external DNS queries.
+	mInt := sendDNS(nsInt, 2, "example.com")
+	if mInt.RCode != dnsmessage.RCodeRefused {
+		t.Fatalf("isolated DNS example.com RCode = %v, want REFUSED", mInt.RCode)
+	}
+
+	// 3. Live docker network connect / disconnect updates gvx0 via ContainerNetUpdate.
+	if st, b := te.do(t, http.MethodPost, "/networks/net-b/connect", map[string]any{"Container": idA}); st != http.StatusOK {
+		t.Fatalf("connect net-b = %d %s", st, b)
+	}
+	if st, b := te.do(t, http.MethodPost, "/networks/net-a/disconnect", map[string]any{"Container": idA}); st != http.StatusOK {
+		t.Fatalf("disconnect net-a = %d %s", st, b)
+	}
+	fcA.mu.Lock()
+	updates := slices.Clone(fcA.netUpdates)
+	fcA.mu.Unlock()
+	if len(updates) != 2 || len(updates[0].Addresses) != 2 || len(updates[1].Addresses) != 1 {
+		t.Fatalf("live netUpdates = %+v, want 2 updates (2 addrs -> 1 addr)", updates)
+	}
+
+	// Stopping leaves overlay cleanly.
+	if st, b := te.do(t, http.MethodPost, "/containers/"+idA+"/stop?t=1", nil); st != http.StatusNoContent {
+		t.Fatalf("stop mvm-api = %d %s", st, b)
+	}
+	if _, joined := te.fabric().PeerAddrs(idA); joined {
+		t.Fatal("mvm-api still in overlay fabric after stop")
+	}
 }

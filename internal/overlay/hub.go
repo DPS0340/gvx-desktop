@@ -33,6 +33,7 @@ func newKey() (priv, pub []byte, err error) {
 // WireGuard has already checked that the source is the sending peer's.
 type router struct {
 	allow   func(src, dst netip.Addr) bool
+	deliver func(dst netip.Addr, pkt []byte) bool
 	queue   chan []byte
 	events  chan tun.Event
 	closing chan struct{}
@@ -60,9 +61,10 @@ const (
 	routerQueued = 256
 )
 
-func newRouter(allow func(src, dst netip.Addr) bool) *router {
+func newRouter(allow func(src, dst netip.Addr) bool, deliver func(dst netip.Addr, pkt []byte) bool) *router {
 	r := &router{
 		allow:   allow,
+		deliver: deliver,
 		queue:   make(chan []byte, routerQueued),
 		events:  make(chan tun.Event, 1),
 		closing: make(chan struct{}),
@@ -107,6 +109,22 @@ func (r *router) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	}
 }
 
+func (r *router) enqueue(p []byte) {
+	if r == nil {
+		return
+	}
+	select {
+	case <-r.closing:
+		return
+	default:
+	}
+	select {
+	case r.queue <- append([]byte(nil), p...):
+	case <-r.closing:
+	default: // full: drop, as a congested link does
+	}
+}
+
 func (r *router) Write(bufs [][]byte, offset int) (int, error) {
 	for _, b := range bufs {
 		p := b[offset:]
@@ -114,10 +132,10 @@ func (r *router) Write(bufs [][]byte, offset int) (int, error) {
 		if !ok || !r.allow(src, dst) {
 			continue
 		}
-		select {
-		case r.queue <- append([]byte(nil), p...):
-		default: // full: drop, as a congested link does
+		if r.deliver != nil && r.deliver(dst, p) {
+			continue
 		}
+		r.enqueue(p)
 	}
 	return len(bufs), nil
 }
@@ -224,12 +242,13 @@ func (b *loopbackBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 
 // hub is the WireGuard device every container's link has as its one peer.
 type hub struct {
-	dev  *device.Device
-	pub  []byte
-	port uint16
+	dev    *device.Device
+	router *router
+	pub    []byte
+	port   uint16
 }
 
-func startHub(allow func(src, dst netip.Addr) bool, logf func(string, ...any)) (*hub, error) {
+func startHub(allow func(src, dst netip.Addr) bool, deliver func(dst netip.Addr, pkt []byte) bool, logf func(string, ...any)) (*hub, error) {
 	priv, pub, err := newKey()
 	if err != nil {
 		return nil, err
@@ -239,7 +258,8 @@ func startHub(allow func(src, dst netip.Addr) bool, logf func(string, ...any)) (
 		Errorf:   func(format string, args ...any) { logf("overlay: wireguard: "+format, args...) },
 	}
 	bind := &loopbackBind{}
-	dev := device.NewDevice(newRouter(allow), bind, logger)
+	r := newRouter(allow, deliver)
+	dev := device.NewDevice(r, bind, logger)
 	if err := dev.IpcSet("private_key=" + hex.EncodeToString(priv) + "\nlisten_port=0\n"); err != nil {
 		dev.Close()
 		return nil, err
@@ -255,7 +275,7 @@ func startHub(allow func(src, dst netip.Addr) bool, logf func(string, ...any)) (
 		dev.Close()
 		return nil, errors.New("overlay: the hub did not open its socket")
 	}
-	return &hub{dev: dev, pub: pub, port: uint16(pc.LocalAddr().(*net.UDPAddr).Port)}, nil
+	return &hub{dev: dev, router: r, pub: pub, port: uint16(pc.LocalAddr().(*net.UDPAddr).Port)}, nil
 }
 
 // setPeer adds or updates a container's peer with its addresses.

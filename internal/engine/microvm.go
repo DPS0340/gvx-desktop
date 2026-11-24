@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -19,11 +20,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ironpark/gvx-desktop-vm/guestproto"
 	"github.com/ironpark/gvx-desktop-vm/vmassets"
 	"github.com/ironpark/gvx-desktop-vm/vmclient"
 	"github.com/ironpark/gvx-desktop-vm/vmhelper"
 	"github.com/ironpark/gvx-desktop-vm/vmproto"
 	"github.com/ironpark/gvx-desktop/internal/imagefs"
+	"github.com/ironpark/gvx-desktop/internal/overlay"
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
@@ -125,6 +128,14 @@ type microVMStream interface {
 	Close() error
 }
 
+// microVMNetStream is the subset of *vmclient.ContainerNetStream used by microvm.go.
+type microVMNetStream interface {
+	ReadFrame() (kind byte, payload []byte, err error)
+	SendPacket(pkt []byte) error
+	SendDNSReply(seq uint32, reply []byte) error
+	Close() error
+}
+
 // microVMClient is the subset of *vmclient.Client that microVMState drives.
 // Unit tests replace launchFn to return a fake implementation.
 type microVMClient interface {
@@ -148,6 +159,8 @@ type microVMClient interface {
 	ContainerCopyFrom(ctx context.Context, req vmproto.ContainerCopyRequest) (io.ReadCloser, error)
 	ContainerCopyTo(ctx context.Context, req vmproto.ContainerCopyRequest, r io.Reader) error
 	ContainerExport(ctx context.Context, req vmproto.ContainerExportRequest) (io.ReadCloser, error)
+	ContainerNetAttach(ctx context.Context, cfg vmproto.ContainerNetConfig) (microVMNetStream, error)
+	ContainerNetUpdate(ctx context.Context, cfg vmproto.ContainerNetConfig) error
 }
 
 type realMicroVMClient struct {
@@ -202,6 +215,12 @@ func (r realMicroVMClient) ContainerCopyTo(ctx context.Context, req vmproto.Cont
 }
 func (r realMicroVMClient) ContainerExport(ctx context.Context, req vmproto.ContainerExportRequest) (io.ReadCloser, error) {
 	return r.c.ContainerExport(ctx, req)
+}
+func (r realMicroVMClient) ContainerNetAttach(ctx context.Context, cfg vmproto.ContainerNetConfig) (microVMNetStream, error) {
+	return r.c.ContainerNetAttach(ctx, cfg)
+}
+func (r realMicroVMClient) ContainerNetUpdate(ctx context.Context, cfg vmproto.ContainerNetConfig) error {
+	return r.c.ContainerNetUpdate(ctx, cfg)
 }
 
 type microVMVolRef struct {
@@ -262,6 +281,7 @@ type microVMInstance struct {
 	helperPath string
 	unlocks    []func()
 	forwarders *microVMForwarders
+	netStream  microVMNetStream
 	control    *microvmControl
 	done       chan struct{}
 
@@ -1514,12 +1534,26 @@ func (e *Engine) microVMStart(c *Container, gen uint64, resolvedPorts map[string
 		return fmt.Errorf("launch microvm helper: %w", err)
 	}
 
+	var (
+		netStream     microVMNetStream
+		joinedOverlay bool
+	)
 	abort := func(reason error) error {
+		if netStream != nil {
+			_ = netStream.Close()
+			netStream = nil
+		}
+		if joinedOverlay {
+			e.leaveOverlay(c.ID)
+			joinedOverlay = false
+		}
 		_ = client.Close(microVMHelperCloseGrace)
 		cleanupSockDir()
 		cleanupLocks()
 		return reason
 	}
+
+	ovlAddrs, ovlIsolated := e.overlayAddrs(c)
 
 	res := resolveMicroVMResources(cfg, c.HostConfig)
 	vmSpec := vmproto.VMSpec{
@@ -1529,7 +1563,7 @@ func (e *Engine) microVMStart(c *Container, gen uint64, resolvedPorts map[string
 		MemoryMiB:  res.memMiB,
 		Disk:       &vmproto.DiskSpec{Path: rootfsPath, Size: defaultMicroVMRootfsSize},
 		Rosetta:    rosetta,
-		Network:    c.HostConfig.NetworkMode != "none",
+		Network:    c.HostConfig.NetworkMode != "none" && !ovlIsolated,
 		Shares:     plan.shares,
 		ExtraDisks: plan.extraDisks,
 	}
@@ -1550,6 +1584,34 @@ func (e *Engine) microVMStart(c *Container, gen uint64, resolvedPorts map[string
 			msg = "micro-VM failed to start"
 		}
 		return abort(errors.New(msg))
+	}
+
+	var ctrNetCfg *vmproto.ContainerNetConfig
+	if len(ovlAddrs) > 0 {
+		peer, ovlCfg, jerr := e.fabric().JoinDirect(c.ID, ovlAddrs, overlay.JoinOptions{
+			Isolated: ovlIsolated,
+			MTU:      e.linkMTU(),
+		})
+		if jerr != nil {
+			return abort(fmt.Errorf("join overlay network: %w", jerr))
+		}
+		joinedOverlay = true
+		e.syncOverlay()
+
+		nc := vmproto.ContainerNetConfig{
+			Addresses: ovlCfg.Addresses,
+			Routes:    ovlCfg.Routes,
+			MTU:       ovlCfg.MTU,
+			Isolated:  ovlIsolated,
+			DNS:       true,
+		}
+		ns, aerr := client.ContainerNetAttach(ctx, nc)
+		if aerr != nil {
+			return abort(fmt.Errorf("attach microvm overlay network: %w", mapVMProtoErr(aerr)))
+		}
+		netStream = ns
+		ctrNetCfg = &nc
+		startMicroVMOverlayRelay(ns, peer)
 	}
 
 	argv := make([]string, 0, len(c.Config.Entrypoint)+len(c.Config.Cmd))
@@ -1590,6 +1652,7 @@ func (e *Engine) microVMStart(c *Container, gen uint64, resolvedPorts map[string
 		PidsLimit:      res.pidsLimit,
 		Layers:         plan.layers,
 		Mounts:         plan.mounts,
+		Network:        ctrNetCfg,
 	}
 
 	ctrState, err := client.ContainerStart(ctx, ctrSpec)
@@ -1634,6 +1697,7 @@ func (e *Engine) microVMStart(c *Container, gen uint64, resolvedPorts map[string
 		helperPath: launcher.Path,
 		unlocks:    unlocks,
 		forwarders: forwarders,
+		netStream:  netStream,
 		done:       make(chan struct{}),
 		state:      initState,
 	}
@@ -1757,8 +1821,12 @@ func (e *Engine) watchMicroVM(inst *microVMInstance, pumpWG *sync.WaitGroup) {
 	pumpWG.Wait()
 	_ = inst.stream.Close()
 
-	// Tear down host TCP forwarders immediately so ports are released cleanly.
+	// Tear down host TCP forwarders and overlay relay immediately.
 	inst.forwarders.Close()
+	if inst.netStream != nil {
+		_ = inst.netStream.Close()
+	}
+	e.leaveOverlay(inst.id)
 
 	// Shut down the VM cleanly (guest syncs & unmounts ext4 disks and powers off).
 	_ = inst.client.Close(microVMHelperCloseGrace)
@@ -1910,6 +1978,110 @@ func (e *Engine) microVMUnpause(ctx context.Context, id string) error {
 	inst.mu.Unlock()
 	e.onRunnerEvent(sandbox.Event{ID: id, Kind: sandbox.EventChanged, State: st})
 	return nil
+}
+
+// ---- Micro-VM overlay network relay & live connect/disconnect (Phase 4) ----
+
+func startMicroVMOverlayRelay(ns microVMNetStream, peer *overlay.DirectPeer) {
+	// Host Fabric -> guest gvx0 TUN.
+	go func() {
+		for {
+			pkt, ok := peer.Recv()
+			if !ok {
+				return
+			}
+			if err := ns.SendPacket(pkt); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Guest gvx0 TUN / 127.0.0.11:53 DNS -> Host Fabric.
+	go func() {
+		dnsSem := make(chan struct{}, 64)
+		for {
+			kind, payload, err := ns.ReadFrame()
+			if err != nil {
+				return
+			}
+			switch kind {
+			case guestproto.FrameNetPacket:
+				peer.Send(payload)
+			case guestproto.FrameDNSQuery:
+				if len(payload) < 6 {
+					continue
+				}
+				seq := binary.BigEndian.Uint32(payload[0:4])
+				proto := "udp"
+				if payload[4] == 1 {
+					proto = "tcp"
+				}
+				q := append([]byte(nil), payload[5:]...)
+				select {
+				case dnsSem <- struct{}{}:
+					go func(seq uint32, proto string, query []byte) {
+						defer func() { <-dnsSem }()
+						reply := peer.ExchangeDNS(query, proto)
+						_ = ns.SendDNSReply(seq, reply)
+					}(seq, proto, q)
+				default:
+					// Saturated: drop to preserve packet throughput.
+				}
+			}
+		}
+	}()
+}
+
+// applyMicroVMOverlayLive reconciles a running micro-VM container's gvx0 link
+// via OpContainerNetUpdate after docker network connect/disconnect. Caller
+// holds overlayApplyLock(cid).
+func (e *Engine) applyMicroVMOverlayLive(cid string, c *Container) {
+	inst := e.microVMInstance(cid)
+	if inst == nil || inst.netStream == nil {
+		return
+	}
+	e.ovl.mu.Lock()
+	fab := e.ovl.fab
+	e.ovl.mu.Unlock()
+	if fab == nil {
+		return
+	}
+	prevAddrs, joined := fab.PeerAddrs(cid)
+	if !joined {
+		return
+	}
+	addrs, isolated := e.overlayAddrs(c)
+	cfg, gen, ok, err := fab.SetAddrs(cid, addrs)
+	if err != nil {
+		e.logf("engine: microvm overlay set addrs %s: %v", shortHex(cid), err)
+		return
+	}
+	if !ok {
+		return
+	}
+	revertIfUnchanged := func() {
+		if latest, lerr := e.lookup(cid); lerr == nil && latest.State.Status == StatusRunning {
+			curAddrs, _ := e.overlayAddrs(&latest)
+			if !slices.Equal(curAddrs, addrs) {
+				return
+			}
+		}
+		fab.RevertAddrs(cid, gen, prevAddrs)
+	}
+
+	updCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err = inst.client.ContainerNetUpdate(updCtx, vmproto.ContainerNetConfig{
+		Addresses: cfg.Addresses,
+		Routes:    cfg.Routes,
+		MTU:       cfg.MTU,
+		Isolated:  isolated,
+		DNS:       true,
+	})
+	if err != nil {
+		revertIfUnchanged()
+		e.logf("engine: microvm live network update %s: %v", shortHex(cid), err)
+	}
 }
 
 // ---- microvmControl implementing sandbox.Control ----

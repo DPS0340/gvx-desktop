@@ -131,6 +131,10 @@ func (s *dnsServer) serveTCP() {
 
 // answer returns the response to the query q, or nil to drop it.
 func (s *dnsServer) answer(q []byte, network string) []byte {
+	return answerDNS(q, network, s.resolve, s.up)
+}
+
+func answerDNS(q []byte, network string, resolve func(string) []netip.Addr, up *upstreams) []byte {
 	var p dnsmessage.Parser
 	h, err := p.Start(q)
 	if err != nil {
@@ -144,15 +148,15 @@ func (s *dnsServer) answer(q []byte, network string) []byte {
 		return nil
 	}
 	name := strings.ToLower(strings.TrimSuffix(question.Name.String(), "."))
-	if addrs := s.resolve(name); len(addrs) > 0 {
+	if addrs := resolve(name); len(addrs) > 0 {
 		return local(h, question, addrs)
 	}
-	if s.up == nil {
+	if up == nil {
 		return failure(h, question, dnsmessage.RCodeRefused)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := s.up.exchange(ctx, q, network, question)
+	out, err := up.exchange(ctx, q, network, question)
 	if err != nil {
 		return failure(h, question, dnsmessage.RCodeServerFailure)
 	}

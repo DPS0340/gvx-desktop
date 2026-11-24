@@ -10,7 +10,7 @@ require (
 	github.com/ironpark/ggui/icons/tabler v0.0.0-20261123195024-7077e9fcdd75
 	github.com/ironpark/ggwd v0.0.0-20261123092851-969c1988e18d
 	github.com/ironpark/gostty v0.0.0-20261108124048-de82fbcca291
-	github.com/ironpark/gvx-desktop-vm v0.1.1
+	github.com/ironpark/gvx-desktop-vm v0.2.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0
@@ -33,6 +33,3 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
-
-// Temporary local replace until github.com/ironpark/gvx-desktop-vm v0.2.0 is tagged.
-replace github.com/ironpark/gvx-desktop-vm => ../gvx-desktop-vm

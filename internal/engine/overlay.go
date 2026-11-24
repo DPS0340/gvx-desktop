@@ -254,6 +254,10 @@ func (e *Engine) applyOverlayLive(cid string) {
 	if e.isContainerPaused(c) {
 		return
 	}
+	if c.isMicroVM() {
+		e.applyMicroVMOverlayLive(cid, &c)
+		return
+	}
 	ctl := e.runner.Control(cid)
 	if ctl == nil {
 		return

@@ -322,7 +322,7 @@ func TestIsolatedContainersResolveOnlyContainers(t *testing.T) {
 }
 
 func TestRouterDropsWhatItMayNotPass(t *testing.T) {
-	r := newRouter(func(src, dst netip.Addr) bool { return dst == addr("10.89.1.3") })
+	r := newRouter(func(src, dst netip.Addr) bool { return dst == addr("10.89.1.3") }, nil)
 	pkt := func(dst [4]byte) []byte {
 		p := make([]byte, 28)
 		p[0] = 0x45
@@ -391,5 +391,130 @@ func TestServeUDPSurvivesTransientError(t *testing.T) {
 
 	if got := aRecords(query(t, s.addr, "udp", "web", dnsmessage.TypeA)); !slices.Equal(got, []string{"10.89.1.9"}) {
 		t.Fatalf("UDP query after transient errors = %v, want [10.89.1.9]", got)
+	}
+}
+
+func makeIPv4Packet(src, dst [4]byte, payload byte) []byte {
+	p := make([]byte, 24)
+	p[0] = 0x45
+	copy(p[12:16], src[:])
+	copy(p[16:20], dst[:])
+	p[20] = payload
+	return p
+}
+
+func TestDirectPeerPacketsDNSAndHubBridge(t *testing.T) {
+	f := newTestFabric(t)
+	f.SetMembers([]Member{
+		{ID: "mvm-a", Endpoints: map[string]Endpoint{
+			"app": {Addr: addr("10.89.1.2"), Names: []string{"mvm-a", "api"}},
+		}},
+		{ID: "mvm-b", Endpoints: map[string]Endpoint{
+			"app": {Addr: addr("10.89.1.3"), Names: []string{"mvm-b", "db"}},
+		}},
+		{ID: "gvx-c", Endpoints: map[string]Endpoint{
+			"app": {Addr: addr("10.89.1.4"), Names: []string{"gvx-c", "cache"}},
+		}},
+		{ID: "other", Endpoints: map[string]Endpoint{
+			"isolated-net": {Addr: addr("10.89.2.2"), Names: []string{"other"}},
+		}},
+	})
+
+	dpA, cfgA, err := f.JoinDirect("mvm-a", []netip.Prefix{pfx("10.89.1.2/24")}, JoinOptions{MTU: 60000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(cfgA.Addresses, []string{"10.89.1.2/24"}) || cfgA.MTU != 60000 {
+		t.Fatalf("cfgA = %+v", cfgA)
+	}
+	dpB, _, err := f.JoinDirect("mvm-b", []netip.Prefix{pfx("10.89.1.3/24")}, JoinOptions{Isolated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dpOther, _, err := f.JoinDirect("other", []netip.Prefix{pfx("10.89.2.2/24")}, JoinOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. DirectPeer -> DirectPeer on shared network succeeds.
+	dpA.Send(makeIPv4Packet([4]byte{10, 89, 1, 2}, [4]byte{10, 89, 1, 3}, 0x55))
+	pkt, ok := dpB.Recv()
+	if !ok || pkt[20] != 0x55 {
+		t.Fatalf("dpB.Recv = (%x, %v)", pkt, ok)
+	}
+
+	// 2. Spoofed source IP and unshared network packets are dropped.
+	dpA.Send(makeIPv4Packet([4]byte{10, 89, 1, 99}, [4]byte{10, 89, 1, 3}, 0x66))
+	dpA.Send(makeIPv4Packet([4]byte{10, 89, 1, 2}, [4]byte{10, 89, 2, 2}, 0x77))
+	select {
+	case p := <-dpB.rx:
+		t.Fatalf("spoofed packet delivered to dpB: %x", p)
+	case p := <-dpOther.rx:
+		t.Fatalf("cross-network packet delivered to dpOther: %x", p)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	// 3. DirectPeer <-> WireGuard hub bridge (mvm-a <-> gvx-c).
+	_, gvxDNS, err := f.Join("gvx-c", []netip.Prefix{pfx("10.89.1.4/24")}, JoinOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// gvx-c's DNS resolves direct peer mvm-a!
+	if got := aRecords(query(t, gvxDNS, "udp", "api", dnsmessage.TypeA)); !slices.Equal(got, []string{"10.89.1.2"}) {
+		t.Fatalf("gvx-c DNS api = %v, want [10.89.1.2]", got)
+	}
+	// WireGuard router.Write delivers directly to dpA without going back to router.queue.
+	if _, err := f.hub.router.Write([][]byte{makeIPv4Packet([4]byte{10, 89, 1, 4}, [4]byte{10, 89, 1, 2}, 0x88)}, 0); err != nil {
+		t.Fatal(err)
+	}
+	pkt, ok = dpA.Recv()
+	if !ok || pkt[20] != 0x88 {
+		t.Fatalf("dpA.Recv from hub = (%x, %v)", pkt, ok)
+	}
+	// DirectPeer -> WireGuard peer enqueues onto hub router.
+	dpA.Send(makeIPv4Packet([4]byte{10, 89, 1, 2}, [4]byte{10, 89, 1, 4}, 0x99))
+	if !f.CanReach(addr("10.89.1.2"), addr("10.89.1.4")) {
+		t.Fatal("CanReach(mvm-a, gvx-c) = false")
+	}
+
+	// 4. DirectPeer.ExchangeDNS: local names, upstream, and isolated refusal.
+	buildQuery := func(name string, typ dnsmessage.Type) []byte {
+		b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 55, RecursionDesired: true})
+		_ = b.StartQuestions()
+		_ = b.Question(dnsmessage.Question{Name: dnsmessage.MustNewName(name + "."), Type: typ, Class: dnsmessage.ClassINET})
+		q, _ := b.Finish()
+		return q
+	}
+	unpack := func(raw []byte) dnsmessage.Message {
+		var m dnsmessage.Message
+		if err := m.Unpack(raw); err != nil {
+			t.Fatalf("unpack dns: %v", err)
+		}
+		return m
+	}
+	if got := aRecords(unpack(dpA.ExchangeDNS(buildQuery("cache", dnsmessage.TypeA), "tcp"))); !slices.Equal(got, []string{"10.89.1.4"}) {
+		t.Fatalf("dpA DNS cache (tcp) = %v, want [10.89.1.4]", got)
+	}
+	if got := aRecords(unpack(dpA.ExchangeDNS(buildQuery("example.com", dnsmessage.TypeA), "udp"))); !slices.Equal(got, []string{"192.0.2.1"}) {
+		t.Fatalf("dpA DNS example.com = %v, want [192.0.2.1]", got)
+	}
+	if m := unpack(dpB.ExchangeDNS(buildQuery("example.com", dnsmessage.TypeA), "udp")); m.RCode != dnsmessage.RCodeRefused {
+		t.Fatalf("isolated dpB DNS example.com RCode = %v, want REFUSED", m.RCode)
+	}
+	if got := aRecords(unpack(dpB.ExchangeDNS(buildQuery("api", dnsmessage.TypeA), "udp"))); !slices.Equal(got, []string{"10.89.1.2"}) {
+		t.Fatalf("isolated dpB DNS api = %v, want [10.89.1.2]", got)
+	}
+
+	// 5. SetAddrs / RevertAddrs / Leave on DirectPeer.
+	upd, gen, ok, err := f.SetAddrs("mvm-a", []netip.Prefix{pfx("10.89.1.2/24"), pfx("10.89.3.5/24")})
+	if err != nil || !ok || gen == 0 || len(upd.Addresses) != 2 {
+		t.Fatalf("SetAddrs direct = (%+v, gen=%d, ok=%v, err=%v)", upd, gen, ok, err)
+	}
+	if !f.RevertAddrs("mvm-a", gen, []netip.Prefix{pfx("10.89.1.2/24")}) {
+		t.Fatal("RevertAddrs direct failed")
+	}
+	f.Leave("mvm-a")
+	if _, ok := dpA.Recv(); ok {
+		t.Fatal("dpA.Recv should return ok=false after Leave")
 	}
 }

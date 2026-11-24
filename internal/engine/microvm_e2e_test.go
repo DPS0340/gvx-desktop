@@ -362,4 +362,208 @@ func TestMicroVMRealE2E(t *testing.T) {
 		}
 		_, _ = doJSON(http.MethodDelete, "/containers/"+cr.ID, nil)
 	})
+
+	t.Run("compose_mixed_gvx_and_microvm_overlay", func(t *testing.T) {
+		if st, b := doJSON(http.MethodPost, "/networks/create", map[string]any{"Name": "e2e-mix-net"}); st != http.StatusCreated {
+			t.Fatalf("create e2e-mix-net = %d %s", st, b)
+		}
+		if st, b := doJSON(http.MethodPost, "/networks/create", map[string]any{"Name": "e2e-mix-net2"}); st != http.StatusCreated {
+			t.Fatalf("create e2e-mix-net2 = %d %s", st, b)
+		}
+		if st, b := doJSON(http.MethodPost, "/networks/create", map[string]any{"Name": "e2e-int-net", "Internal": true}); st != http.StatusCreated {
+			t.Fatalf("create e2e-int-net = %d %s", st, b)
+		}
+
+		httpLoop := func(msg string) []string {
+			// Drain HTTP request headers until the blank line before replying
+			// so closing the socket never sends TCP RST to wget.
+			script := fmt.Sprintf(
+				`while true; do nc -l -p 8080 -e /bin/sh -c 'while IFS= read -r l; do case "$l" in ""|"$(printf "\r")") break;; esac; done; printf "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s\n"'; done`,
+				len(msg)+1, msg,
+			)
+			return []string{"/bin/sh", "-c", script}
+		}
+
+		// 1. Start a gvx (rungv) HTTP server on e2e-mix-net.
+		st, b := doJSON(http.MethodPost, "/containers/create?name=mix-gvx", map[string]any{
+			"Image":      "alpine:3.20",
+			"Cmd":        httpLoop("hello-from-gvx"),
+			"HostConfig": map[string]any{"NetworkMode": "e2e-mix-net"},
+			"NetworkingConfig": map[string]any{
+				"EndpointsConfig": map[string]any{"e2e-mix-net": map[string]any{"Aliases": []string{"gvx-svc"}}},
+			},
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("create mix-gvx = %d %s", st, b)
+		}
+		var cGVX containerCreateResponse
+		_ = json.Unmarshal(b, &cGVX)
+		t.Cleanup(func() { _, _ = doJSON(http.MethodDelete, "/containers/"+cGVX.ID+"?force=1", nil) })
+		if st, b := doJSON(http.MethodPost, "/containers/"+cGVX.ID+"/start", nil); st != http.StatusNoContent {
+			t.Fatalf("start mix-gvx = %d %s", st, b)
+		}
+
+		// 2. Start a micro-VM (arm64) HTTP server on e2e-mix-net.
+		st, b = doJSON(http.MethodPost, "/containers/create?name=mix-mvm", map[string]any{
+			"Image":      "alpine:3.20",
+			"Cmd":        httpLoop("hello-from-mvm"),
+			"HostConfig": map[string]any{"Runtime": "microvm", "NetworkMode": "e2e-mix-net"},
+			"NetworkingConfig": map[string]any{
+				"EndpointsConfig": map[string]any{"e2e-mix-net": map[string]any{"Aliases": []string{"mvm-svc"}}},
+			},
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("create mix-mvm = %d %s", st, b)
+		}
+		var cMVM containerCreateResponse
+		_ = json.Unmarshal(b, &cMVM)
+		t.Cleanup(func() { _, _ = doJSON(http.MethodDelete, "/containers/"+cMVM.ID+"?force=1", nil) })
+		if st, b := doJSON(http.MethodPost, "/containers/"+cMVM.ID+"/start", nil); st != http.StatusNoContent {
+			t.Fatalf("start mix-mvm = %d %s", st, b)
+		}
+
+		// Give nc servers a moment to bind.
+		time.Sleep(400 * time.Millisecond)
+
+		// 3. Run an amd64 Rosetta micro-VM client on e2e-mix-net calling BOTH gvx-svc and mvm-svc by DNS name!
+		st, b = doJSON(http.MethodPost, "/containers/create?name=mix-client-amd64&platform=linux/amd64", map[string]any{
+			"Image": "alpine:3.20",
+			"Cmd": []string{
+				"/bin/sh", "-c",
+				`set -e; A=$(wget -qO- -T 5 http://gvx-svc:8080/); B=$(wget -qO- -T 5 http://mvm-svc:8080/); echo "ARCH=$(uname -m) A=$A B=$B"`,
+			},
+			"HostConfig": map[string]any{"NetworkMode": "e2e-mix-net"},
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("create mix-client-amd64 = %d %s", st, b)
+		}
+		var cCli containerCreateResponse
+		_ = json.Unmarshal(b, &cCli)
+		t.Cleanup(func() { _, _ = doJSON(http.MethodDelete, "/containers/"+cCli.ID+"?force=1", nil) })
+		if st, b := doJSON(http.MethodPost, "/containers/"+cCli.ID+"/start", nil); st != http.StatusNoContent {
+			t.Fatalf("start mix-client-amd64 = %d %s", st, b)
+		}
+		insCli := waitExited(cCli.ID)
+		_, cliLogs := doJSON(http.MethodGet, "/containers/"+cCli.ID+"/logs?stdout=1&stderr=1", nil)
+		t.Logf("mix-client-amd64 exit=%d logs=%q", insCli.State.ExitCode, string(cliLogs))
+		if insCli.State.ExitCode != 0 ||
+			!strings.Contains(string(cliLogs), "ARCH=x86_64") ||
+			!strings.Contains(string(cliLogs), "A=hello-from-gvx") ||
+			!strings.Contains(string(cliLogs), "B=hello-from-mvm") {
+			t.Fatalf("amd64 microvm -> gvx & microvm failed: exit=%d logs=%q", insCli.State.ExitCode, string(cliLogs))
+		}
+
+		// 4. Reverse direction: gvx (rungv) client calling mvm-svc over WireGuard -> Fabric -> vsock TUN!
+		st, b = doJSON(http.MethodPost, "/containers/create?name=mix-gvx-client", map[string]any{
+			"Image":      "alpine:3.20",
+			"Cmd":        []string{"/bin/sh", "-c", `wget -qO- -T 5 http://mvm-svc:8080/`},
+			"HostConfig": map[string]any{"NetworkMode": "e2e-mix-net"},
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("create mix-gvx-client = %d %s", st, b)
+		}
+		var cGCli containerCreateResponse
+		_ = json.Unmarshal(b, &cGCli)
+		t.Cleanup(func() { _, _ = doJSON(http.MethodDelete, "/containers/"+cGCli.ID+"?force=1", nil) })
+		if st, b := doJSON(http.MethodPost, "/containers/"+cGCli.ID+"/start", nil); st != http.StatusNoContent {
+			t.Fatalf("start mix-gvx-client = %d %s", st, b)
+		}
+		insGCli := waitExited(cGCli.ID)
+		_, gcliLogs := doJSON(http.MethodGet, "/containers/"+cGCli.ID+"/logs?stdout=1&stderr=1", nil)
+		t.Logf("mix-gvx-client exit=%d logs=%q", insGCli.State.ExitCode, string(gcliLogs))
+		if insGCli.State.ExitCode != 0 || !strings.Contains(string(gcliLogs), "hello-from-mvm") {
+			t.Fatalf("gvx -> microvm failed: exit=%d logs=%q", insGCli.State.ExitCode, string(gcliLogs))
+		}
+
+		// 5. Live docker network connect on running mix-mvm to reach a container on e2e-mix-net2!
+		st, b = doJSON(http.MethodPost, "/containers/create?name=mix-net2-svc", map[string]any{
+			"Image":      "alpine:3.20",
+			"Cmd":        httpLoop("hello-from-net2"),
+			"HostConfig": map[string]any{"Runtime": "microvm", "NetworkMode": "e2e-mix-net2"},
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("create mix-net2-svc = %d %s", st, b)
+		}
+		var cN2 containerCreateResponse
+		_ = json.Unmarshal(b, &cN2)
+		t.Cleanup(func() { _, _ = doJSON(http.MethodDelete, "/containers/"+cN2.ID+"?force=1", nil) })
+		if st, b := doJSON(http.MethodPost, "/containers/"+cN2.ID+"/start", nil); st != http.StatusNoContent {
+			t.Fatalf("start mix-net2-svc = %d %s", st, b)
+		}
+		time.Sleep(300 * time.Millisecond)
+
+		if st, b := doJSON(http.MethodPost, "/networks/e2e-mix-net2/connect", map[string]any{"Container": cMVM.ID}); st != http.StatusOK {
+			t.Fatalf("live connect mix-mvm -> e2e-mix-net2 = %d %s", st, b)
+		}
+		// Exec inside running mix-mvm to fetch from mix-net2-svc.
+		st, b = doJSON(http.MethodPost, "/containers/"+cMVM.ID+"/exec", map[string]any{
+			"Cmd":          []string{"/bin/sh", "-c", `out=$(wget -qO- -T 5 http://mix-net2-svc:8080/); test "$out" = "hello-from-net2"`},
+			"AttachStdout": true,
+			"AttachStderr": true,
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("exec create live-net2 = %d %s", st, b)
+		}
+		var ex struct{ ID string }
+		_ = json.Unmarshal(b, &ex)
+		if st, b := doJSON(http.MethodPost, "/exec/"+ex.ID+"/start", map[string]any{"Detach": true}); st != http.StatusOK {
+			t.Fatalf("exec start live-net2 = %d %s", st, b)
+		}
+		exDeadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(exDeadline) {
+			_, eb := doJSON(http.MethodGet, "/exec/"+ex.ID+"/json", nil)
+			var exIns execInspectResponse
+			if json.Unmarshal(eb, &exIns) == nil && !exIns.Running && exIns.ExitCode != nil {
+				if *exIns.ExitCode != 0 {
+					t.Fatalf("live-connect exec exit code = %d, want 0", *exIns.ExitCode)
+				}
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if st, b := doJSON(http.MethodPost, "/networks/e2e-mix-net2/disconnect", map[string]any{"Container": cMVM.ID}); st != http.StatusOK {
+			t.Fatalf("live disconnect mix-mvm from e2e-mix-net2 = %d %s", st, b)
+		}
+
+		// 6. --internal network: peer reachable, no eth0, external DNS refused!
+		st, b = doJSON(http.MethodPost, "/containers/create?name=int-srv", map[string]any{
+			"Image":      "alpine:3.20",
+			"Cmd":        httpLoop("hello-internal"),
+			"HostConfig": map[string]any{"Runtime": "microvm", "NetworkMode": "e2e-int-net"},
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("create int-srv = %d %s", st, b)
+		}
+		var cIntSrv containerCreateResponse
+		_ = json.Unmarshal(b, &cIntSrv)
+		t.Cleanup(func() { _, _ = doJSON(http.MethodDelete, "/containers/"+cIntSrv.ID+"?force=1", nil) })
+		if st, b := doJSON(http.MethodPost, "/containers/"+cIntSrv.ID+"/start", nil); st != http.StatusNoContent {
+			t.Fatalf("start int-srv = %d %s", st, b)
+		}
+		time.Sleep(300 * time.Millisecond)
+
+		st, b = doJSON(http.MethodPost, "/containers/create?name=int-cli", map[string]any{
+			"Image": "alpine:3.20",
+			"Cmd": []string{
+				"/bin/sh", "-c",
+				`set -e; P=$(wget -qO- -T 5 http://int-srv:8080/); if ip link show eth0 >/dev/null 2>&1; then echo HAS_ETH0; exit 1; fi; if nslookup example.com >/dev/null 2>&1; then echo EXT_OK; exit 1; fi; echo "INT=$P"`,
+			},
+			"HostConfig": map[string]any{"Runtime": "microvm", "NetworkMode": "e2e-int-net"},
+		})
+		if st != http.StatusCreated {
+			t.Fatalf("create int-cli = %d %s", st, b)
+		}
+		var cIntCli containerCreateResponse
+		_ = json.Unmarshal(b, &cIntCli)
+		t.Cleanup(func() { _, _ = doJSON(http.MethodDelete, "/containers/"+cIntCli.ID+"?force=1", nil) })
+		if st, b := doJSON(http.MethodPost, "/containers/"+cIntCli.ID+"/start", nil); st != http.StatusNoContent {
+			t.Fatalf("start int-cli = %d %s", st, b)
+		}
+		insInt := waitExited(cIntCli.ID)
+		_, intLogs := doJSON(http.MethodGet, "/containers/"+cIntCli.ID+"/logs?stdout=1&stderr=1", nil)
+		t.Logf("int-cli exit=%d logs=%q", insInt.State.ExitCode, string(intLogs))
+		if insInt.State.ExitCode != 0 || !strings.Contains(string(intLogs), "INT=hello-internal") {
+			t.Fatalf("internal network check failed: exit=%d logs=%q", insInt.State.ExitCode, string(intLogs))
+		}
+	})
 }

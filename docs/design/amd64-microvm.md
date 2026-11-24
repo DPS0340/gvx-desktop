@@ -372,9 +372,9 @@ type ContainerMount struct {
 - **아웃바운드 NAT & `host.docker.internal`**: `VZNATNetworkDeviceAttachment` (`gvx.net=1`), 게스트 DHCP(`192.168.64.x/24`), 게이트웨이(`192.168.64.1`)를 `/etc/hosts`에 `host.docker.internal`로 자동 등록. `--network=none`이면 `Network: false`.
 - **인바운드 TCP 포트 퍼블리싱 (`-p`, `-P`)**: 기존 `resolveStartPorts`, `e.ctr.portMu`, `AllowLANPorts` 정책 그대로 재사용. 호스트 TCP 리스너 → `vmclient.Dial(tcp, 127.0.0.1:<guestPort>)` 양방향 파이핑. Labs `*.localhost` HTTPS 프록시 및 내장 MCP 서버가 수정 없이 자동 연동.
 - **UDP 포트**: v1에서는 생성 응답 `Warnings` 반환 후 TCP만 포워딩.
-- **Compose 사용자 정의 네트워크 (`gvx ↔ microvm` 통신)**:
-  - v1(Phase 3)에서는 사용자 정의 네트워크 연결 시 NAT로 실행하며 `Warnings`를 반환.
-  - Phase 4에서는 이미 `vm-assets-v2`에 포함된 `tun.ko`/`wireguard.ko`를 이용해 `gvx-agent`가 게이트웨이(`192.168.64.1:<hubPort>`)를 통해 호스트 `overlay.Fabric`에 직접 조인 → `gvx`(`arm64`)와 `microvm`(`arm64`/`amd64`) 컨테이너가 동일한 Compose 네트워크에서 서비스 이름으로 직접 통신(에셋 재배포 불필요).
+- **Compose 사용자 정의 네트워크 (`gvx ↔ microvm` 통신, Phase 4 구현 완료)**:
+  - 호스트 `overlay.Fabric`의 `DirectPeer` (`JoinDirect`)와 게스트 `gvx-agent`의 `OpContainerNetStream` / `OpContainerNetUpdate` (`FeatureOverlay`)를 통해, 게스트 `gvx0` (`tun.ko`) IPv4 패킷과 `127.0.0.11:53` UDP/TCP DNS 질의를 vsock 프레임(`FrameNetPacket`/`FrameDNSQuery`/`FrameDNSReply`)으로 직접 릴레이합니다.
+  - 호스트에 추가 UDP/TCP 리스너나 `bridge100` 바인딩을 열지 않고도 `gvx`(`arm64`)와 `microvm`(`arm64`/`amd64`) 컨테이너가 동일한 Compose 네트워크에서 서비스 이름으로 양방향 통신하며, 실행 중 `docker network connect`/`disconnect` 및 `--internal` 격리 네트워크까지 지원합니다.
 
 ---
 

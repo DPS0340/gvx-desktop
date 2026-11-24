@@ -1223,14 +1223,7 @@ func (e *Engine) containerCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		netSettings[rn.net.Name] = ep
 	}
-	if isMicroVM {
-		for _, rn := range resolvedNets {
-			if rn.net.Name != "bridge" && rn.net.Name != "host" && rn.net.Name != "none" {
-				warnings = append(warnings, "User-defined networks are not yet bridged into micro-VM containers; running on the default NAT network instead")
-				break
-			}
-		}
-	} else {
+	if !isMicroVM {
 		for _, rn := range resolvedNets {
 			if w := overlayWarning(rn.net); w != "" {
 				warnings = append(warnings, w)

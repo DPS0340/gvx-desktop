@@ -48,8 +48,8 @@ func TestWithOverlayRunsNetinitInFront(t *testing.T) {
 	if !slices.Equal(args, []string{"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"}) {
 		t.Fatalf("command = %q", args)
 	}
-	if out.User != "" {
-		t.Fatalf("user = %q, want root for netinit", out.User)
+	if out.User != overlay.NetinitUser {
+		t.Fatalf("user = %q, want root named outright for netinit", out.User)
 	}
 	var enc []string
 	for _, kv := range out.Env {
@@ -102,7 +102,13 @@ func TestContainersOnUserNetworksJoinTheOverlay(t *testing.T) {
 		"NetworkingConfig": map[string]any{"EndpointsConfig": map[string]any{"gvxd-app": map[string]any{"IPAMConfig": map[string]any{"IPv4Address": "10.89.1.50"}}}},
 	})
 	plain := mustCreate("gvxd-plain", map[string]any{"Image": "alpine", "Cmd": []string{"sleep", "100"}})
-	for _, id := range []string{web.ID, db.ID, plain.ID} {
+	// An image whose USER is not root, as many are (USER app).
+	te.fake.addImage("unprivileged:latest", ImageConfig{Cmd: []string{"sh"}, User: "app"})
+	api := mustCreate("gvxd-api", map[string]any{
+		"Image": "unprivileged", "Cmd": []string{"sleep", "100"},
+		"HostConfig": map[string]any{"NetworkMode": "gvxd-app"},
+	})
+	for _, id := range []string{web.ID, db.ID, plain.ID, api.ID} {
 		if st, body := te.do(t, http.MethodPost, "/containers/"+id+"/start", nil); st != http.StatusNoContent {
 			t.Fatalf("start = %d %s", st, body)
 		}
@@ -127,8 +133,14 @@ func TestContainersOnUserNetworksJoinTheOverlay(t *testing.T) {
 		return guestcfg.Config{}
 	}
 	wcfg := cfgOf(specs[web.ID])
-	if !slices.Equal(wcfg.Addresses, []string{"10.89.1.2/24"}) || wcfg.User != "nobody" || specs[web.ID].User != "" {
+	if !slices.Equal(wcfg.Addresses, []string{"10.89.1.2/24"}) || wcfg.User != "nobody" || specs[web.ID].User != overlay.NetinitUser {
 		t.Fatalf("web config = %+v, user %q", wcfg, specs[web.ID].User)
+	}
+	// The image's USER goes to netinit to drop to, and the sandbox is still
+	// started as root: given no user, rungv would start it as the image's
+	// USER, and netinit could then set up nothing.
+	if acfg := cfgOf(specs[api.ID]); acfg.User != "app" || specs[api.ID].User != overlay.NetinitUser {
+		t.Fatalf("api config = %+v, sandbox user %q", acfg, specs[api.ID].User)
 	}
 	if !strings.Contains(specs[web.ID].ExtraArgs, "-host-dns 127.0.0.1:") || !strings.Contains(specs[web.ID].ExtraArgs, "-tune net.nat.mtu=60080") || wcfg.MTU != 60000 {
 		t.Fatalf("web extra args = %q, mtu %d", specs[web.ID].ExtraArgs, wcfg.MTU)

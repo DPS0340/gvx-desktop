@@ -121,9 +121,17 @@ func run(st store.Store, dir string, hidden bool) error {
 		installMenus(app, m)
 
 		ui.SetQuit(app.Close)
+		// On macOS a quit (⌘Q, the Dock's Quit, or the quit Apple event
+		// that Homebrew sends before it replaces the app) reaches the window
+		// as a close request too, right after OnQuitRequest. Only the close
+		// button hides the app to the tray; a quit goes on to quit.
+		quitAsked := false
+		app.OnQuitRequest(func() { quitAsked = true })
 		app.OnCloseRequest(func() bool {
+			quitting := quitAsked
+			quitAsked = false
 			set := ggui.Peek(m.Settings)
-			if set.HideOnClose && !set.NoTray && trayAvailable() {
+			if !quitting && set.HideOnClose && !set.NoTray && trayAvailable() {
 				app.HideToTray()
 				return false
 			}

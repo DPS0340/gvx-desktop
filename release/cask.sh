@@ -4,11 +4,11 @@
 #	release/cask.sh VERSION SHA256 [adhoc]
 #
 # VERSION is the release without its v, SHA256 that of its disk image. The
-# app's name is read from ggui.toml, so run it from the repository's root.
-# adhoc says the app is signed ad hoc rather than with a Developer ID, which
-# Gatekeeper does not open as downloaded: the cask then takes the quarantine
-# off the app once it is installed. The release workflow puts the cask in
-# ironpark/homebrew-tap.
+# app's name and bundle identifier are read from ggui.toml, so run it from
+# the repository's root. adhoc says the app is signed ad hoc rather than with
+# a Developer ID, which Gatekeeper does not open as downloaded: the cask then
+# takes the quarantine off the app once it is installed. The release workflow
+# puts the cask in ironpark/homebrew-tap.
 set -eu
 
 version=${1:?usage: cask.sh VERSION SHA256 [adhoc]}
@@ -16,6 +16,8 @@ sha256=${2:?usage: cask.sh VERSION SHA256 [adhoc]}
 signing=${3:-}
 app=$(sed -n 's/^name = "\(.*\)"$/\1/p' ggui.toml)
 [ -n "$app" ] || { echo "cask.sh: ggui.toml names no app" >&2; exit 1; }
+id=$(sed -n 's/^id = "\(.*\)"$/\1/p' ggui.toml)
+[ -n "$id" ] || { echo "cask.sh: ggui.toml names no bundle identifier" >&2; exit 1; }
 
 cat <<RUBY
 # Written by the release workflow of github.com/ironpark/gvx-desktop; edits
@@ -33,8 +35,6 @@ cask "gvx-desktop" do
   depends_on macos: ">= :ventura"
 
   app "$app.app"
-
-  zap trash: "~/Library/Application Support/gvx-desktop"
 RUBY
 
 if [ "$signing" = adhoc ]; then
@@ -49,4 +49,14 @@ if [ "$signing" = adhoc ]; then
 RUBY
 fi
 
-echo end
+cat <<RUBY
+
+  # Quit the running app before an upgrade or uninstall replaces it, so the
+  # old version does not keep running from the replaced bundle. The app stops
+  # its sandboxes as it quits (or asks first, as its settings say), and
+  # Homebrew opens the new version again after an upgrade.
+  uninstall quit: "$id"
+
+  zap trash: "~/Library/Application Support/gvx-desktop"
+end
+RUBY

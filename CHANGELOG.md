@@ -4,6 +4,13 @@ All notable changes to GVX Desktop are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- On macOS, quitting with ⌘Q, the Dock's **Quit**, or a quit Apple event now quits the app as the tray's **Quit** does, instead of only hiding it to the tray while **Keep running when the window closes** is on. A quit asked again while the sandboxes stop adds no second stop ([#7](https://github.com/ironpark/gvx-desktop/issues/7)).
+- The Homebrew cask quits the running app before an upgrade or uninstall replaces it, so the old version no longer keeps running after `brew upgrade`. The app's update notice for a Homebrew install and the README now say `brew update && brew upgrade --cask gvx-desktop`, since `brew upgrade` alone may not see a release for up to a day ([#7](https://github.com/ironpark/gvx-desktop/issues/7)).
+
 ## [0.9.0] - 2026-11-24
 
 ### Added
@@ -126,6 +133,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial release of GVX Desktop for Apple silicon macOS with Homebrew cask distribution.
 - Sandbox management, image registry search (Docker Hub & Quay), `ext4lite`/`hostfs` volumes, checkpoint snapshots, `rungv` installer/updater, and English & Korean UI.
 
+[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.9.0...HEAD
 [0.9.0]: https://github.com/ironpark/gvx-desktop/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/ironpark/gvx-desktop/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ironpark/gvx-desktop/compare/v0.6.0...v0.7.0

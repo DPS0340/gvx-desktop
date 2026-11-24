@@ -22,6 +22,13 @@ On an Apple silicon Mac running macOS 13 or later, install with [Homebrew](https
 brew install --cask ironpark/tap/gvx-desktop
 ```
 
+To update, run `brew update` first. Homebrew refreshes its copy of a third-party tap only once every `HOMEBREW_AUTO_UPDATE_SECS` (24 hours by default), so `brew upgrade` alone may not see a new release yet. The cask quits the running app before it replaces it, and Homebrew opens the new version afterwards. An upgrade from 0.9.0 or earlier leaves the old version running, because Homebrew follows the cask that was installed: quit it from the tray menu and open the app again.
+
+```sh
+brew update
+brew upgrade --cask ironpark/tap/gvx-desktop
+```
+
 For a manual install, download `gvx-desktop-<version>-macos-arm64.dmg` and its `.sha256` file from the [release page](https://github.com/ironpark/gvx-desktop/releases). Verify the checksum from the folder containing both files, then open the DMG and drag **GVX Desktop** to **Applications**.
 
 ```sh

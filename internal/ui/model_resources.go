@@ -1103,8 +1103,12 @@ func (m *Model) StopAll() {
 
 // StopAllAndThen stops every sandbox (and closes the in-app sandbox engine) to
 // quit, then runs then on the UI thread. The recipe sandboxes running start
-// again with the app.
+// again with the app. A quit asked again while one is under way, as Homebrew
+// asks until the app is gone, stops nothing more: the first one ends the app.
 func (m *Model) StopAllAndThen(then func()) {
+	if m.quitting {
+		return
+	}
 	m.quitting = true
 	m.stopAll(true, then)
 }

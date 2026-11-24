@@ -52,6 +52,12 @@ var appcastURL = AppcastURL
 // start of its release files' names.
 const Package = "gvx-desktop"
 
+// homebrewCommand updates the cask. brew update comes first: on its own,
+// Homebrew refreshes a third-party tap only once a day
+// (HOMEBREW_AUTO_UPDATE_SECS), so brew upgrade alone may not know the
+// release yet.
+const homebrewCommand = "brew update && brew upgrade --cask " + Package
+
 // Release is a published version of the app.
 type Release = ghrelease.Release
 
@@ -140,7 +146,7 @@ const (
 	// from the tarball, in a folder this user may write to: the new
 	// program goes in its place, and the app starts again.
 	Program
-	// Homebrew is the cask's: brew upgrade --cask gvx-desktop.
+	// Homebrew is the cask's: brew update && brew upgrade --cask gvx-desktop.
 	Homebrew
 	// Chocolatey is the package's: choco upgrade gvx-desktop.
 	Chocolatey
@@ -392,7 +398,7 @@ func (in Install) CommandForVersion(version string) string {
 func (in Install) commandForVersion(version, goarch string) string {
 	switch in.Method {
 	case Homebrew:
-		return "brew upgrade --cask " + Package
+		return homebrewCommand
 	case Chocolatey:
 		return "choco upgrade " + Package + " -y"
 	case Deb, RPM:
@@ -414,7 +420,7 @@ func (in Install) commandForVersion(version, goarch string) string {
 func (in Install) command(rel Release, goarch string) string {
 	switch in.Method {
 	case Homebrew:
-		return "brew upgrade --cask " + Package
+		return homebrewCommand
 	case Chocolatey:
 		return "choco upgrade " + Package + " -y"
 	case Deb, RPM:

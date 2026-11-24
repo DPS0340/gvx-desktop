@@ -622,7 +622,8 @@ no names on Docker either.
   adds the addresses, brings the link up, adds the routes, appends the extra hosts to
   `/etc/hosts`, makes `/etc/resolv.conf` name the relay alone when it names another (rungv
   writes its own only when the image has none, and Debian's base image ships one naming
-  `1.1.1.1`, which would skip the relay and so the containers' names), takes the default
+  `1.1.1.1`, which would skip the relay and so the containers' names; on a read-only root it
+  binds a copy from `/dev/.gvx-resolv.conf` over the file instead), takes the default
   route away from an isolated container, drops to the container's user
   (docker's rules: a name must exist, a bare uid gets gid 0, supplementary groups from
   `/etc/group`, HOME from passwd unless the container set it), removes `GVX_NET`, and

@@ -13,7 +13,8 @@ import (
 // keeps it under rungv, which writes its own only when the image has none.
 // On a user network such a container asked past rungv's DNS relay, so the
 // other containers' names did not resolve. netinit now makes the file name
-// the relay, and a resolv.conf the container mounts stays as it is.
+// the relay, on a read-only root too, and a resolv.conf the container mounts
+// stays as it is.
 func TestImageResolvConfOnUserNetworkHarness(t *testing.T) {
 	h := startHarness(t)
 	if _, errOut, code := h.docker(t, "", "pull", "alpine:3.20"); code != 0 {
@@ -62,6 +63,13 @@ func TestImageResolvConfOnUserNetworkHarness(t *testing.T) {
 		"sh", "-c", "cat /etc/resolv.conf && getent hosts gvxd-resolv-srv")
 	if code != 0 || !strings.Contains(out, "nameserver 10.0.2.3") || strings.Contains(out, "1.1.1.1") || !strings.Contains(out, srvIP) {
 		t.Errorf("on the user network: %q (exit %d), want the relay and %s: %s", out, code, srvIP, errOut)
+	}
+
+	// A read-only root cannot take a new file, so netinit binds one over it.
+	out, errOut, code = h.docker(t, "", "run", "--rm", "--read-only", "--network", "gvxd-resolv-net", "gvxd-resolv:1",
+		"sh", "-c", "! touch /etc/gvxd-probe 2>/dev/null && cat /etc/resolv.conf && getent hosts gvxd-resolv-srv")
+	if code != 0 || !strings.Contains(out, "nameserver 10.0.2.3") || strings.Contains(out, "1.1.1.1") || !strings.Contains(out, srvIP) {
+		t.Errorf("with a read-only root: %q (exit %d), want the relay and %s: %s", out, code, srvIP, errOut)
 	}
 
 	own := filepath.Join(t.TempDir(), "resolv.conf")

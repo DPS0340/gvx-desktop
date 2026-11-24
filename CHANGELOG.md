@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- In the Sandbox Engine, containers with a read-only root filesystem (`docker run --read-only`, Compose `read_only: true`) on a user network now resolve the other containers' names too. `netinit` could not replace their `/etc/resolv.conf` and only printed a warning, so an image's own file (Debian's names `1.1.1.1`) stayed and name lookups skipped the engine's DNS. It now binds a copy naming the relay over the file, as Docker binds its own `resolv.conf`.
+
 ## [0.10.0] - 2026-11-24
 
 ### Added

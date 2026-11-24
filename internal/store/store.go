@@ -22,6 +22,13 @@ const (
 	LocalRegistryOff  = "off"  // disabled
 )
 
+// Default loopback ports for the Labs local proxy and MCP server.
+const (
+	DefaultLocalProxyHTTPPort  = 18080
+	DefaultLocalProxyHTTPSPort = 18443
+	DefaultMCPPort             = 18787
+)
+
 // Settings are the app's preferences.
 type Settings struct {
 	RungvPath      string `json:"rungvPath,omitempty"` // empty: locate automatically
@@ -89,6 +96,16 @@ type Settings struct {
 	// "auto" (default: starts automatically when Docker or Kubernetes is used),
 	// "on" (always running), or "off" (disabled).
 	LocalRegistry string `json:"localRegistry,omitempty"`
+	// LocalProxy runs the built-in *.localhost HTTP/HTTPS reverse proxy (Labs, opt-in).
+	LocalProxy bool `json:"localProxy,omitempty"`
+	// LocalProxyHTTPPort and LocalProxyHTTPSPort configure the local proxy's
+	// loopback ports; 0 selects DefaultLocalProxyHTTPPort / DefaultLocalProxyHTTPSPort.
+	LocalProxyHTTPPort  int `json:"localProxyHttpPort,omitempty"`
+	LocalProxyHTTPSPort int `json:"localProxyHttpsPort,omitempty"`
+	// MCPServer runs the built-in Streamable HTTP MCP server for AI agents (Labs, opt-in).
+	MCPServer bool `json:"mcpServer,omitempty"`
+	// MCPPort configures the MCP server's loopback port; 0 selects DefaultMCPPort.
+	MCPPort int `json:"mcpPort,omitempty"`
 }
 
 // LocalRegistryMode returns the normalized local registry mode
@@ -102,6 +119,30 @@ func (s Settings) LocalRegistryMode() string {
 	default:
 		return LocalRegistryAuto
 	}
+}
+
+func portOrDefault(port, def int) int {
+	if port >= 1 && port <= 65535 {
+		return port
+	}
+	return def
+}
+
+// LocalProxyHTTPPortOrDefault returns LocalProxyHTTPPort when in [1, 65535],
+// or DefaultLocalProxyHTTPPort otherwise.
+func (s Settings) LocalProxyHTTPPortOrDefault() int {
+	return portOrDefault(s.LocalProxyHTTPPort, DefaultLocalProxyHTTPPort)
+}
+
+// LocalProxyHTTPSPortOrDefault returns LocalProxyHTTPSPort when in [1, 65535],
+// or DefaultLocalProxyHTTPSPort otherwise.
+func (s Settings) LocalProxyHTTPSPortOrDefault() int {
+	return portOrDefault(s.LocalProxyHTTPSPort, DefaultLocalProxyHTTPSPort)
+}
+
+// MCPPortOrDefault returns MCPPort when in [1, 65535], or DefaultMCPPort otherwise.
+func (s Settings) MCPPortOrDefault() int {
+	return portOrDefault(s.MCPPort, DefaultMCPPort)
 }
 
 // Equal makes Settings comparable for signals, which a list in it keeps

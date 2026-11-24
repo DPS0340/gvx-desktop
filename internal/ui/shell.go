@@ -142,10 +142,11 @@ func sidebar(m *Model) ggui.Widget {
 	return ggui.View(open, func(o [2]bool) ggui.Widget { return sidebarFor(m, o[0], o[1]) })
 }
 
-// LabsSupported reports whether the current platform has any Labs features
-// (currently Rosetta amd64 builds on Apple silicon macOS).
+// LabsSupported reports whether the current platform has any Labs features.
+// Local HTTPS routing and the built-in MCP server work on macOS, Windows, and
+// Linux; Rosetta amd64 builds remains Apple silicon macOS only inside Labs.
 func LabsSupported() bool {
-	return runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
+	return true
 }
 
 // sidebarFor is the sidebar with Docker's Networks/Containers and
@@ -755,7 +756,7 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Icon(ic(lucide.Settings)).Group(tr("Go to")).Shortcut("cmd+,"),
 		)
 		if LabsSupported() {
-			out = append(out, ui.CommandItem(tr("Labs"), close(func() { m.Go(PageLabs) })).Icon(ic(lucide.FlaskConical)).Group(tr("Go to")))
+			out = append(out, ui.CommandItem(tr("Labs"), close(func() { m.Go(PageLabs) })).Icon(ic(lucide.FlaskConical)).Group(tr("Go to")).Keywords("experimental local proxy https localhost mcp ai agent rosetta"))
 		}
 		out = append(out,
 			ui.CommandItem(tr("Refresh"), close(m.RefreshAll)).Icon(ic(lucide.RefreshCw)).Group(tr("App")).Shortcut("cmd+r"),

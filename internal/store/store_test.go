@@ -145,3 +145,179 @@ func TestSettingsLocalRegistryEqual(t *testing.T) {
 		t.Fatal("Settings with LocalRegistry=on and LocalRegistry=off should not be Equal")
 	}
 }
+
+func TestSettingsLabsDefaultsAndPorts(t *testing.T) {
+	def := DefaultSettings()
+	if def.LocalProxy {
+		t.Fatal("DefaultSettings().LocalProxy = true, want false")
+	}
+	if def.MCPServer {
+		t.Fatal("DefaultSettings().MCPServer = true, want false")
+	}
+	if def.LocalProxyHTTPPort != 0 || def.LocalProxyHTTPSPort != 0 || def.MCPPort != 0 {
+		t.Fatalf("DefaultSettings() ports = (%d, %d, %d), want (0, 0, 0)",
+			def.LocalProxyHTTPPort, def.LocalProxyHTTPSPort, def.MCPPort)
+	}
+	if DefaultLocalProxyHTTPPort != 18080 {
+		t.Fatalf("DefaultLocalProxyHTTPPort = %d, want 18080", DefaultLocalProxyHTTPPort)
+	}
+	if DefaultLocalProxyHTTPSPort != 18443 {
+		t.Fatalf("DefaultLocalProxyHTTPSPort = %d, want 18443", DefaultLocalProxyHTTPSPort)
+	}
+	if DefaultMCPPort != 18787 {
+		t.Fatalf("DefaultMCPPort = %d, want 18787", DefaultMCPPort)
+	}
+	if got := def.LocalProxyHTTPPortOrDefault(); got != DefaultLocalProxyHTTPPort {
+		t.Fatalf("DefaultSettings().LocalProxyHTTPPortOrDefault() = %d, want %d", got, DefaultLocalProxyHTTPPort)
+	}
+	if got := def.LocalProxyHTTPSPortOrDefault(); got != DefaultLocalProxyHTTPSPort {
+		t.Fatalf("DefaultSettings().LocalProxyHTTPSPortOrDefault() = %d, want %d", got, DefaultLocalProxyHTTPSPort)
+	}
+	if got := def.MCPPortOrDefault(); got != DefaultMCPPort {
+		t.Fatalf("DefaultSettings().MCPPortOrDefault() = %d, want %d", got, DefaultMCPPort)
+	}
+
+	portCases := []struct {
+		in        int
+		wantHTTP  int
+		wantHTTPS int
+		wantMCP   int
+	}{
+		{-100, DefaultLocalProxyHTTPPort, DefaultLocalProxyHTTPSPort, DefaultMCPPort},
+		{-1, DefaultLocalProxyHTTPPort, DefaultLocalProxyHTTPSPort, DefaultMCPPort},
+		{0, DefaultLocalProxyHTTPPort, DefaultLocalProxyHTTPSPort, DefaultMCPPort},
+		{1, 1, 1, 1},
+		{8080, 8080, 8080, 8080},
+		{65535, 65535, 65535, 65535},
+		{65536, DefaultLocalProxyHTTPPort, DefaultLocalProxyHTTPSPort, DefaultMCPPort},
+		{100000, DefaultLocalProxyHTTPPort, DefaultLocalProxyHTTPSPort, DefaultMCPPort},
+	}
+	for _, tc := range portCases {
+		s := Settings{
+			LocalProxyHTTPPort:  tc.in,
+			LocalProxyHTTPSPort: tc.in,
+			MCPPort:             tc.in,
+		}
+		if got := s.LocalProxyHTTPPortOrDefault(); got != tc.wantHTTP {
+			t.Errorf("LocalProxyHTTPPortOrDefault(%d) = %d, want %d", tc.in, got, tc.wantHTTP)
+		}
+		if got := s.LocalProxyHTTPSPortOrDefault(); got != tc.wantHTTPS {
+			t.Errorf("LocalProxyHTTPSPortOrDefault(%d) = %d, want %d", tc.in, got, tc.wantHTTPS)
+		}
+		if got := s.MCPPortOrDefault(); got != tc.wantMCP {
+			t.Errorf("MCPPortOrDefault(%d) = %d, want %d", tc.in, got, tc.wantMCP)
+		}
+	}
+}
+
+func TestSettingsLabsJSONOmitEmptyAndStoreRoundTrip(t *testing.T) {
+	labsKeys := []string{
+		`"localProxy"`,
+		`"localProxyHttpPort"`,
+		`"localProxyHttpsPort"`,
+		`"mcpServer"`,
+		`"mcpPort"`,
+	}
+
+	// Zero-value Labs fields must be omitted for clean backwards-compatible JSON.
+	rawDefault, err := json.Marshal(DefaultSettings())
+	if err != nil {
+		t.Fatalf("json.Marshal(DefaultSettings()): %v", err)
+	}
+	for _, key := range labsKeys {
+		if strings.Contains(string(rawDefault), key) {
+			t.Errorf("DefaultSettings JSON %s unexpectedly contains %s", rawDefault, key)
+		}
+	}
+
+	st := Store{Dir: t.TempDir()}
+
+	initial, err := st.Settings()
+	if err != nil {
+		t.Fatalf("Settings() on empty dir: %v", err)
+	}
+	if initial.LocalProxy || initial.MCPServer ||
+		initial.LocalProxyHTTPPort != 0 || initial.LocalProxyHTTPSPort != 0 || initial.MCPPort != 0 {
+		t.Fatalf("initial Labs settings not zero: %+v", initial)
+	}
+
+	// Enable Labs features with custom ports and verify JSON keys + store round-trip.
+	custom := DefaultSettings()
+	custom.LocalProxy = true
+	custom.LocalProxyHTTPPort = 28080
+	custom.LocalProxyHTTPSPort = 28443
+	custom.MCPServer = true
+	custom.MCPPort = 28787
+
+	rawCustom, err := json.Marshal(custom)
+	if err != nil {
+		t.Fatalf("json.Marshal(custom): %v", err)
+	}
+	for _, key := range labsKeys {
+		if !strings.Contains(string(rawCustom), key) {
+			t.Errorf("custom Settings JSON %s missing %s", rawCustom, key)
+		}
+	}
+
+	if err := st.SaveSettings(custom); err != nil {
+		t.Fatalf("SaveSettings(custom): %v", err)
+	}
+	reloaded, err := st.Settings()
+	if err != nil {
+		t.Fatalf("Settings() after save custom: %v", err)
+	}
+	if !custom.Equal(reloaded) {
+		t.Fatalf("store round-trip mismatch:\ngot:  %+v\nwant: %+v", reloaded, custom)
+	}
+	if reloaded.LocalProxyHTTPPortOrDefault() != 28080 ||
+		reloaded.LocalProxyHTTPSPortOrDefault() != 28443 ||
+		reloaded.MCPPortOrDefault() != 28787 {
+		t.Fatalf("reloaded helper ports = (%d, %d, %d), want (28080, 28443, 28787)",
+			reloaded.LocalProxyHTTPPortOrDefault(),
+			reloaded.LocalProxyHTTPSPortOrDefault(),
+			reloaded.MCPPortOrDefault())
+	}
+
+	// Turning Labs features back off and clearing ports persists cleanly.
+	reset := DefaultSettings()
+	if err := st.SaveSettings(reset); err != nil {
+		t.Fatalf("SaveSettings(reset): %v", err)
+	}
+	reloadedReset, err := st.Settings()
+	if err != nil {
+		t.Fatalf("Settings() after save reset: %v", err)
+	}
+	if !reset.Equal(reloadedReset) {
+		t.Fatalf("store reset round-trip mismatch:\ngot:  %+v\nwant: %+v", reloadedReset, reset)
+	}
+}
+
+func TestSettingsLabsEqual(t *testing.T) {
+	base := DefaultSettings()
+
+	mutations := []struct {
+		name   string
+		mutate func(*Settings)
+	}{
+		{"LocalProxy", func(s *Settings) { s.LocalProxy = true }},
+		{"LocalProxyHTTPPort", func(s *Settings) { s.LocalProxyHTTPPort = 18081 }},
+		{"LocalProxyHTTPSPort", func(s *Settings) { s.LocalProxyHTTPSPort = 18444 }},
+		{"MCPServer", func(s *Settings) { s.MCPServer = true }},
+		{"MCPPort", func(s *Settings) { s.MCPPort = 18788 }},
+	}
+
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			a := DefaultSettings()
+			b := DefaultSettings()
+			tc.mutate(&a)
+			tc.mutate(&b)
+			if base.Equal(a) {
+				t.Errorf("Settings with mutated %s should not be Equal to DefaultSettings", tc.name)
+			}
+			if !a.Equal(b) {
+				t.Errorf("Settings with matching %s should be Equal", tc.name)
+			}
+		})
+	}
+}

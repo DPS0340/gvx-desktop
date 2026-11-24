@@ -22,6 +22,10 @@ import (
 )
 
 func TestAmd64BuilderSwitchGatingAndRequirementsUI(t *testing.T) {
+	prevPlatform := amd64BuilderPlatform
+	amd64BuilderPlatform = func() bool { return true }
+	defer func() { amd64BuilderPlatform = prevPlatform }()
+
 	dir := t.TempDir()
 	st := store.Store{Dir: dir}
 	set := store.DefaultSettings()

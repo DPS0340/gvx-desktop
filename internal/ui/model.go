@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,7 +27,9 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/engine"
 	"github.com/ironpark/gvx-desktop/internal/imagefs"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
+	"github.com/ironpark/gvx-desktop/internal/localproxy"
 	"github.com/ironpark/gvx-desktop/internal/localreg"
+	"github.com/ironpark/gvx-desktop/internal/mcpserver"
 	"github.com/ironpark/gvx-desktop/internal/nodenet"
 	"github.com/ironpark/gvx-desktop/internal/recipes"
 	"github.com/ironpark/gvx-desktop/internal/registry"
@@ -170,6 +173,8 @@ type Model struct {
 	LocalRegistryImages        *ggui.StateValue[Listing[localreg.ImageEntry]]
 	LocalRegistryQuery         *ggui.StateValue[string]
 	SelectedLocalRegistryImage *ggui.StateValue[string]
+	LocalProxy                 *ggui.StateValue[LocalProxyState]
+	MCPServer                  *ggui.StateValue[MCPServerState]
 
 	DockerContainers *ggui.StateValue[Listing[dockerapi.Container]]
 	DockerVersion    *ggui.StateValue[dockerapi.Version]
@@ -402,6 +407,33 @@ type Model struct {
 	localRegLoading                            bool
 	localRegAgain                              bool
 	localRegChangePending                      atomic.Bool
+
+	localProxyMu         sync.Mutex
+	localProxyOpMu       sync.Mutex
+	localProxy           *localproxy.Server
+	localProxyTestPorts  bool // when true, bind ephemeral 127.0.0.1:0 ports (tests)
+	localProxyDesired    bool
+	localProxyWant       bool
+	localProxyWantHTTP   int
+	localProxyWantHTTPS  int
+	localProxyBoundHTTP  int // configured HTTP port the current localProxy was created for
+	localProxyBoundHTTPS int // configured HTTPS port the current localProxy was created for
+	localProxyInFlight   string
+	localProxySyncGen    int
+	localProxyRoutes     []localproxy.Route
+
+	mcpMu        sync.Mutex
+	mcpOpMu      sync.Mutex
+	mcpSrv       *mcpserver.Server
+	mcpTestPort  int // when <0, bind ephemeral 127.0.0.1:0 port (tests)
+	mcpDesired   bool
+	mcpWant      bool
+	mcpWantPort  int
+	mcpBoundPort int // configured port the current mcpSrv was created for
+	mcpInFlight  string
+	mcpSyncGen   int
+	mcpSnapMu    sync.RWMutex
+	mcpSnap      mcpSnapshot
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -471,6 +503,15 @@ func NewModel(st store.Store, dataDir string) *Model {
 		LocalRegistryImages:        ggui.State(Listing[localreg.ImageEntry]{}).WithEqual(localRegistryImagesEqual),
 		LocalRegistryQuery:         ggui.State(""),
 		SelectedLocalRegistryImage: ggui.State(""),
+		LocalProxy: ggui.State(LocalProxyState{
+			Enabled:   settings.LocalProxy,
+			HTTPPort:  settings.LocalProxyHTTPPortOrDefault(),
+			HTTPSPort: settings.LocalProxyHTTPSPortOrDefault(),
+		}).WithEqual(LocalProxyState.Equal),
+		MCPServer: ggui.State(MCPServerState{
+			Enabled: settings.MCPServer,
+			Port:    settings.MCPPortOrDefault(),
+		}).WithEqual(MCPServerState.Equal),
 
 		DockerContainers:    ggui.State(Listing[dockerapi.Container]{}).WithEqual(nil),
 		DockerVersion:       ggui.State(dockerapi.Version{}),
@@ -583,6 +624,8 @@ func NewModel(st store.Store, dataDir string) *Model {
 	m.dockerSSHAgent.Store(settings.DockerSSHAgent)
 	ggui.OnCleanup(m.Toasts.Close)
 	ggui.OnCleanup(m.CloseLocalRegistry)
+	ggui.OnCleanup(m.CloseLocalProxy)
+	ggui.OnCleanup(m.CloseMCPServer)
 	m.nodes = &nodenet.Network{Dir: filepath.Join(dataDir, "nodes"), Client: m.Client}
 	m.sup = &sandbox.Supervisor{
 		Client:    m.Client,
@@ -876,8 +919,10 @@ func (m *Model) Go(page string) {
 		m.LoadDisk()
 		m.LoadLocalRegistry()
 	case PageLabs:
-		m.CheckAmd64()
-		m.refreshAmd64State()
+		if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+			m.CheckAmd64()
+			m.refreshAmd64State()
+		}
 	case PageDocker:
 		m.LoadDocker()
 		m.LoadDockerImages()
@@ -922,6 +967,8 @@ func (m *Model) Start() {
 	m.refreshRungvPathState()
 	m.startDockerProxy()
 	m.followLocalRegistry()
+	m.followLocalProxy()
+	m.followMCPServer()
 	m.followDocker()
 	m.followPods()
 	m.followForwards()

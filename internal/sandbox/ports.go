@@ -17,7 +17,7 @@ import (
 // What rungv writes of the ports it publishes: -p as it starts, and
 // -auto-publish as the guest listens on a port and lets it go.
 var (
-	publishRe     = regexp.MustCompile(`^rungv: publishing (\S+) -> (\d+)/(\w+)`)
+	publishRe     = regexp.MustCompile(`^rungvx?: publishing (\S+) -> (\d+)/(\w+)`)
 	autoPublishRe = regexp.MustCompile(`^gvx: auto-published (\S+) -> (\d+)/(\w+)`)
 	unpublishRe   = regexp.MustCompile(`^gvx: unpublished (\S+) -> (\d+)/(\w+)`)
 	// busyRe is what -auto-publish says of a port the guest listens on
@@ -80,7 +80,7 @@ func (st *State) clearBusy(host, proto string) bool {
 // reports a line about ports; busy is the host address -auto-publish could
 // not take, for EventPortBusy (non-empty only when newly recorded).
 func (st *State) portLine(line string) (busy string, ok bool) {
-	if !strings.HasPrefix(line, "gvx: ") && !strings.HasPrefix(line, "rungv: publishing ") {
+	if rest, own := rungv.CutProgram(line, ": "); !strings.HasPrefix(line, "gvx: ") && !(own && strings.HasPrefix(rest, "publishing ")) {
 		return "", false
 	}
 	if m := busyRe.FindStringSubmatch(line); m != nil {

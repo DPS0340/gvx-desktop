@@ -55,6 +55,30 @@ func TestParseVersion(t *testing.T) {
 	if v.Version != "v0.16.1" || v.Commit != "a9bfd06" || v.Go != "go1.27.4 darwin/arm64 GOARM64=v8.0" {
 		t.Errorf("%+v", v)
 	}
+	// gvx v0.23 names the program rungvx and adds its build options.
+	v = ParseVersion("rungvx v0.23.10022026112300\ncommit 52e9405 (2026-11-25T05:53:27Z)\ngo go1.27.4 darwin/arm64 GOARM64=v8.4\nbuild options: cgo=0 tags=none extensions=none\n")
+	if v.Version != "v0.23.10022026112300" || v.Commit != "52e9405" || v.Go != "go1.27.4 darwin/arm64 GOARM64=v8.4" {
+		t.Errorf("%+v", v)
+	}
+}
+
+func TestCutProgram(t *testing.T) {
+	for _, c := range []struct {
+		line, sep, rest string
+		ok              bool
+	}{
+		{"rungv: platform=hvf", ": ", "platform=hvf", true},
+		{"rungvx: platform=hvf", ": ", "platform=hvf", true},
+		{"rungv exec: NOT_FOUND: x", " ", "exec: NOT_FOUND: x", true},
+		{"rungvx exec: NOT_FOUND: x", " ", "exec: NOT_FOUND: x", true},
+		{"rungvx exec: NOT_FOUND: x", ": ", "", false},
+		{"gvx: auto-published", ": ", "", false},
+		{"rungvy: x", ": ", "", false},
+	} {
+		if rest, ok := CutProgram(c.line, c.sep); rest != c.rest || ok != c.ok {
+			t.Errorf("CutProgram(%q, %q) = %q, %v", c.line, c.sep, rest, ok)
+		}
+	}
 }
 
 func TestDecodeLines(t *testing.T) {

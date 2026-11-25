@@ -26,12 +26,42 @@ import (
 // ErrNotFound reports that no rungv binary could be located.
 var ErrNotFound = errors.New("rungv binary not found")
 
-// BinaryName is the executable name of rungv on this host.
-func BinaryName() string {
+// rungv's program names. gvx calls it rungvx since v0.23
+// (gfire-sigs/gvx#250): its binary, its release archives and the start of
+// what it prints. It was rungv before.
+const (
+	program  = "rungv"
+	programX = "rungvx"
+)
+
+var programs = [...]string{program, programX}
+
+func exeName(base string) string {
 	if runtime.GOOS == "windows" {
-		return "rungv.exe"
+		return base + ".exe"
 	}
-	return "rungv"
+	return base
+}
+
+// BinaryName is the file name this app gives rungv on this host, where it
+// installs it and looks for it first. It stays rungv for a rungvx too, so
+// the paths the app already knows (Settings, ~/.gvx/bin, the terminal's
+// PATH) keep naming the binary in use.
+func BinaryName() string { return exeName(program) }
+
+// binaryNames are the file names rungv goes by: the app's own, then
+// rungvx, the name gvx's releases and builds give it.
+func binaryNames() []string { return []string{exeName(program), exeName(programX)} }
+
+// CutProgram reports whether line is one of rungv's own messages, its
+// program name (rungv or rungvx) followed by sep, and returns the rest.
+func CutProgram(line, sep string) (string, bool) {
+	for _, p := range programs {
+		if rest, ok := strings.CutPrefix(line, p+sep); ok {
+			return rest, true
+		}
+	}
+	return "", false
 }
 
 // Candidates lists the places Locate looks, in order. preferred, when set,
@@ -43,26 +73,33 @@ func Candidates(preferred string) []string {
 			out = append(out, p)
 		}
 	}
+	inDir := func(dir string) {
+		for _, name := range binaryNames() {
+			add(filepath.Join(dir, name))
+		}
+	}
 	add(ExpandHome(preferred))
 	add(os.Getenv("GVX_RUNGV"))
-	if p, err := exec.LookPath(BinaryName()); err == nil {
-		add(p)
+	for _, name := range binaryNames() {
+		if p, err := exec.LookPath(name); err == nil {
+			add(p)
+		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".gvx", "bin", BinaryName()))
+		inDir(filepath.Join(home, ".gvx", "bin"))
 	}
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
-		add(filepath.Join(dir, BinaryName()))
-		add(filepath.Join(dir, "..", "Resources", BinaryName())) // macOS .app bundle
-		add(filepath.Join(dir, "bin", BinaryName()))
+		inDir(dir)
+		inDir(filepath.Join(dir, "..", "Resources")) // macOS .app bundle
+		inDir(filepath.Join(dir, "bin"))
 	}
 	if wd, err := os.Getwd(); err == nil {
-		add(filepath.Join(wd, "bin", BinaryName())) // development checkout
+		inDir(filepath.Join(wd, "bin")) // development checkout
 	}
 	if runtime.GOOS != "windows" {
-		add("/opt/homebrew/bin/rungv")
-		add("/usr/local/bin/rungv")
+		inDir("/opt/homebrew/bin")
+		inDir("/usr/local/bin")
 	}
 	return out
 }
@@ -318,7 +355,8 @@ type Version struct {
 	Raw     string
 }
 
-// ParseVersion reads the three lines rungv version prints.
+// ParseVersion reads the lines rungv version prints (rungvx adds a fourth,
+// its build options).
 func ParseVersion(out string) Version {
 	v := Version{Raw: strings.TrimSpace(out)}
 	for line := range strings.SplitSeq(v.Raw, "\n") {
@@ -327,7 +365,7 @@ func ParseVersion(out string) Version {
 			continue
 		}
 		switch f[0] {
-		case "rungv":
+		case program, programX:
 			v.Version = f[1]
 		case "commit":
 			v.Commit = f[1]

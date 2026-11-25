@@ -691,8 +691,8 @@ func (s *Supervisor) pump(id string, p *proc, r io.Reader, stream Stream, wg *sy
 				if p.state.Status != Starting { // the sync at ready covers those
 					s.syncPortsLocked(id, p)
 				}
-			} else if v, ok := strings.CutPrefix(line, "rungv: platform="); ok {
-				p.state.Platform = strings.TrimSpace(v)
+			} else if rest, ok := rungv.CutProgram(line, ": "); ok && strings.HasPrefix(rest, "platform=") {
+				p.state.Platform = strings.TrimSpace(strings.TrimPrefix(rest, "platform="))
 			}
 		}
 		if p.state.Status == Starting && p.spec.ReadyPattern != "" && strings.Contains(line, p.spec.ReadyPattern) {

@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/ironpark/gvx-desktop/internal/ghrelease"
@@ -42,18 +43,25 @@ func get(ctx context.Context, url string) (*http.Response, error) { return ghrel
 // Latest asks GitHub for the newest release of gvx.
 func Latest(ctx context.Context) (Release, error) { return ghrelease.Latest(ctx, latestURL) }
 
-// AssetName is the archive of tag that holds rungv for goos and goarch.
-func AssetName(tag, goos, goarch string) string {
+// AssetNames are the archives of tag that may hold rungv for goos and
+// goarch: rungvx-<tag>-<goos>-<goarch> since gvx v0.23, rungv-… before.
+func AssetNames(tag, goos, goarch string) []string {
 	ext := ".tar.gz"
 	if goos == "windows" {
 		ext = ".zip"
 	}
-	return "rungv-" + tag + "-" + goos + "-" + goarch + ext
+	rest := "-" + tag + "-" + goos + "-" + goarch + ext
+	return []string{programX + rest, program + rest}
 }
 
 // build is the archive of r for this machine.
 func build(r Release) (Asset, bool) {
-	return r.Find(AssetName(r.Tag, runtime.GOOS, runtime.GOARCH))
+	for _, name := range AssetNames(r.Tag, runtime.GOOS, runtime.GOARCH) {
+		if a, ok := r.Find(name); ok {
+			return a, true
+		}
+	}
+	return Asset{}, false
 }
 
 // Newer reports whether version a is later than b. Versions are compared
@@ -167,8 +175,10 @@ func replaceFile(fresh, target string) error {
 }
 
 // isBinary reports whether an archive's entry is rungv itself, which lies
-// one directory down.
-func isBinary(name string) bool { return path.Base(filepath.ToSlash(name)) == BinaryName() }
+// one directory down: rungvx, or rungv in a release before gvx v0.23.
+func isBinary(name string) bool {
+	return slices.Contains(binaryNames(), path.Base(filepath.ToSlash(name)))
+}
 
 func untarBinary(archive io.Reader, out io.Writer) error {
 	gz, err := gzip.NewReader(archive)

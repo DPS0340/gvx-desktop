@@ -71,8 +71,8 @@ func controlCode(err error) string {
 	if !ok {
 		return ""
 	}
-	line := lastNonEmptyLine(re.Stderr)
-	if !strings.HasPrefix(line, "rungv ") {
+	line, ok := rungv.CutProgram(lastNonEmptyLine(re.Stderr), " ")
+	if !ok {
 		return ""
 	}
 	_, rest, ok := strings.Cut(line, ": ")

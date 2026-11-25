@@ -257,7 +257,8 @@ func (e *execProcess) waitLoop() {
 	} else {
 		pid := int(e.pid.Load())
 		lastLine := lastExecStderrLine(stderrText)
-		isRungvErr := strings.HasPrefix(lastLine, "rungv exec: ")
+		rest, own := rungv.CutProgram(lastLine, " ")
+		isRungvErr := own && strings.HasPrefix(rest, "exec: ")
 		if pid == 0 || isRungvErr {
 			e.waitCode = -1
 			e.waitErr = &rungv.Error{

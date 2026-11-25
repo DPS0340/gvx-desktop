@@ -149,9 +149,10 @@ func (l *lineSplitter) flush(emit func(string)) {
 	}
 }
 
-// rungvFilter drops stderr lines written by rungv itself ("rungv: " and
-// "gvx: ") while forwarding guest stderr without line buffering. At most 6
-// bytes at the start of a line are held back until the prefix is decided.
+// rungvFilter drops stderr lines written by rungv itself ("rungv: ",
+// "rungvx: " and "gvx: ") while forwarding guest stderr without line
+// buffering. At most 7 bytes at the start of a line are held back until the
+// prefix is decided.
 type rungvFilter struct {
 	state uint8
 	buf   []byte
@@ -163,7 +164,7 @@ const (
 	filterDrop
 )
 
-var rungvPrefixes = []string{"rungv: ", "gvx: "}
+var rungvPrefixes = []string{"rungv: ", "rungvx: ", "gvx: "}
 
 func (f *rungvFilter) write(p []byte) []byte {
 	var out []byte

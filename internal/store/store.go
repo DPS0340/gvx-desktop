@@ -122,6 +122,8 @@ type Settings struct {
 	MCPServer bool `json:"mcpServer,omitempty"`
 	// MCPPort configures the MCP server's loopback port; 0 selects DefaultMCPPort.
 	MCPPort int `json:"mcpPort,omitempty"`
+	// DeveloperMode enables unsandboxed local binary extensions (Settings ▸ Extensions).
+	DeveloperMode bool `json:"developerMode,omitempty"`
 }
 
 // LocalRegistryMode returns the normalized local registry mode

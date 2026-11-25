@@ -408,3 +408,52 @@ func TestSettingsMicroVMDefaultsHelpersAndRoundTrip(t *testing.T) {
 		t.Fatal("DefaultSettings should not Equal custom micro-VM Settings")
 	}
 }
+
+func TestSettingsDeveloperModeDefaultOmitEmptyAndRoundTrip(t *testing.T) {
+	def := DefaultSettings()
+	if def.DeveloperMode {
+		t.Fatal("DefaultSettings().DeveloperMode = true, want false")
+	}
+
+	rawDef, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("json.Marshal(DefaultSettings()): %v", err)
+	}
+	if strings.Contains(string(rawDef), `"developerMode"`) {
+		t.Errorf("DefaultSettings JSON %s unexpectedly contains developerMode", rawDef)
+	}
+
+	custom := DefaultSettings()
+	custom.DeveloperMode = true
+	if def.Equal(custom) {
+		t.Fatal("DefaultSettings should not Equal Settings with DeveloperMode=true")
+	}
+	custom2 := DefaultSettings()
+	custom2.DeveloperMode = true
+	if !custom.Equal(custom2) {
+		t.Fatal("Settings with matching DeveloperMode=true should be Equal")
+	}
+
+	rawCustom, err := json.Marshal(custom)
+	if err != nil {
+		t.Fatalf("json.Marshal(custom): %v", err)
+	}
+	if !strings.Contains(string(rawCustom), `"developerMode":true`) {
+		t.Errorf("custom JSON %s missing developerMode:true", rawCustom)
+	}
+
+	st := Store{Dir: t.TempDir()}
+	if err := st.SaveSettings(custom); err != nil {
+		t.Fatalf("SaveSettings(custom): %v", err)
+	}
+	reloaded, err := st.Settings()
+	if err != nil {
+		t.Fatalf("Settings() after save: %v", err)
+	}
+	if !reloaded.DeveloperMode {
+		t.Fatal("reloaded.DeveloperMode = false, want true")
+	}
+	if !custom.Equal(reloaded) {
+		t.Fatalf("store round-trip mismatch:\ngot:  %+v\nwant: %+v", reloaded, custom)
+	}
+}

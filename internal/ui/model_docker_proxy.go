@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"time"
 
@@ -163,10 +162,25 @@ func (m *Model) syncKeepImages(specs []sandbox.Spec) {
 }
 
 func (m *Model) sandboxKeepImages() []string {
-	if p := m.keepImages.Load(); p != nil {
-		return slices.Clone(*p)
+	var out []string
+	seen := map[string]bool{}
+	add := func(img string) {
+		if img != "" && !seen[img] {
+			seen[img] = true
+			out = append(out, img)
+		}
 	}
-	return nil
+	if p := m.keepImages.Load(); p != nil {
+		for _, img := range *p {
+			add(img)
+		}
+	}
+	if mgr := m.extMgrPtr.Load(); mgr != nil {
+		for _, img := range mgr.KeepImages() {
+			add(img)
+		}
+	}
+	return out
 }
 
 // OpenDocker opens the Docker page; in compatibility mode it also ensures the

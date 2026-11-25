@@ -3,7 +3,10 @@ module github.com/ironpark/gvx-desktop
 go 1.27.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/creack/pty v1.1.24
+	github.com/ebitengine/purego v0.11.2
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/ironpark/ggfx v0.1.0
 	github.com/ironpark/ggui v0.8.2
 	github.com/ironpark/ggui/icons/lucide v0.0.0-20261123195024-7077e9fcdd75
@@ -12,14 +15,15 @@ require (
 	github.com/ironpark/gostty v0.0.0-20261108124048-de82fbcca291
 	github.com/ironpark/gvx-desktop-vm v0.2.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0
 	golang.zx2c4.com/wireguard v0.0.0-20261024220952-b3bc704ef0ee
 )
 
 require (
+	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/ebitengine/hideconsole v1.0.0 // indirect
-	github.com/ebitengine/purego v0.11.2 // indirect
 	github.com/gogpu/naga v0.21.10 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect

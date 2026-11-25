@@ -695,6 +695,7 @@ func TestRedactArgsAndSupervisorLogRedaction(t *testing.T) {
 	in := []string{
 		"run", "-e", "GVX_NET=wg-private-key-secret", "-e", "GVX_NET=", "-e", "NORMAL=ok",
 		"--env=GVX_NET=secret2", "-e", "K3S_TOKEN=K10join::server:abc", "-e=K3S_TOKEN=x",
+		"-e", "GVX_HOST_TOKEN=host-secret-token", "--env=GVX_EXT_TOKEN=ext-secret-token",
 		"--token", "tok1", "--token=tok2", "-token", "tok3", "-token=tok4", "alpine",
 	}
 	orig := append([]string(nil), in...)
@@ -705,6 +706,7 @@ func TestRedactArgsAndSupervisorLogRedaction(t *testing.T) {
 	want := []string{
 		"run", "-e", "GVX_NET=<redacted>", "-e", "GVX_NET=", "-e", "NORMAL=ok",
 		"--env=GVX_NET=<redacted>", "-e", "K3S_TOKEN=<redacted>", "-e=K3S_TOKEN=<redacted>",
+		"-e", "GVX_HOST_TOKEN=<redacted>", "--env=GVX_EXT_TOKEN=<redacted>",
 		"--token", "<redacted>", "--token=<redacted>", "-token", "<redacted>", "-token=<redacted>", "alpine",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -731,7 +733,7 @@ func TestRedactArgsAndSupervisorLogRedaction(t *testing.T) {
 		ID:      "redact1",
 		Name:    "gvxd-redact",
 		Image:   "alpine:3.20",
-		Env:     []string{"GVX_NET=super-secret-wg-key", "PLAIN=visible"},
+		Env:     []string{"GVX_NET=super-secret-wg-key", "GVX_HOST_TOKEN=super-secret-host-tok", "GVX_EXT_TOKEN=super-secret-ext-tok", "PLAIN=visible"},
 		Command: "sleep 30",
 	}
 	if err := s.Start(spec); err != nil {
@@ -746,24 +748,35 @@ func TestRedactArgsAndSupervisorLogRedaction(t *testing.T) {
 		return false
 	})
 
-	// Logs must contain redacted GVX_NET and must NOT contain the secret.
-	var sawRedacted bool
+	// Logs must contain redacted GVX_NET/GVX_HOST_TOKEN/GVX_EXT_TOKEN and must NOT contain any secret.
+	var sawRedactedNet, sawRedactedHost, sawRedactedExt bool
 	for _, l := range s.Logs(spec.ID).Snapshot() {
-		if strings.Contains(l.Text, "super-secret-wg-key") {
-			t.Fatalf("secret leaked into log buffer: %q", l.Text)
+		for _, secret := range []string{"super-secret-wg-key", "super-secret-host-tok", "super-secret-ext-tok"} {
+			if strings.Contains(l.Text, secret) {
+				t.Fatalf("secret %q leaked into log buffer: %q", secret, l.Text)
+			}
 		}
 		if strings.Contains(l.Text, "GVX_NET=<redacted>") {
-			sawRedacted = true
+			sawRedactedNet = true
+		}
+		if strings.Contains(l.Text, "GVX_HOST_TOKEN=<redacted>") {
+			sawRedactedHost = true
+		}
+		if strings.Contains(l.Text, "GVX_EXT_TOKEN=<redacted>") {
+			sawRedactedExt = true
 		}
 	}
-	if !sawRedacted {
-		t.Fatalf("expected GVX_NET=<redacted> in logs: %+v", s.Logs(spec.ID).Snapshot())
+	if !sawRedactedNet || !sawRedactedHost || !sawRedactedExt {
+		t.Fatalf("expected GVX_NET/GVX_HOST_TOKEN/GVX_EXT_TOKEN=<redacted> in logs: %+v", s.Logs(spec.ID).Snapshot())
 	}
 
-	// Real rungv process still received the unredacted GVX_NET value.
+	// Real rungv process still received the unredacted values.
 	rawArgs, err := os.ReadFile(argsFile)
-	if err != nil || !strings.Contains(string(rawArgs), "GVX_NET=super-secret-wg-key") {
-		t.Fatalf("rungv did not receive real GVX_NET: %q err=%v", rawArgs, err)
+	if err != nil ||
+		!strings.Contains(string(rawArgs), "GVX_NET=super-secret-wg-key") ||
+		!strings.Contains(string(rawArgs), "GVX_HOST_TOKEN=super-secret-host-tok") ||
+		!strings.Contains(string(rawArgs), "GVX_EXT_TOKEN=super-secret-ext-tok") {
+		t.Fatalf("rungv did not receive real secret env values: %q err=%v", rawArgs, err)
 	}
 
 	// Stop emits EventChanged with populated State (non-zero PID / Stopping),

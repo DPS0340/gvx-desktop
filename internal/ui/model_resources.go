@@ -1034,6 +1034,8 @@ func (m *Model) UpdateSettings(fn func(*store.Settings)) {
 	fn(&s)
 	m.dockerExposeLAN.Store(s.DockerExposeLAN)
 	m.dockerSSHAgent.Store(s.DockerSSHAgent)
+	m.developerMode.Store(s.DeveloperMode)
+	m.sandboxEngineMode.Store(s.SandboxEngine)
 	if ggui.Peek(m.DockerExposeLAN) != s.DockerExposeLAN {
 		m.DockerExposeLAN.Set(s.DockerExposeLAN)
 	}

@@ -317,9 +317,22 @@ func (m *Model) syncLocalProxyWith(set store.Settings, rows []Row, containers []
 	cfgHTTP := set.LocalProxyHTTPPortOrDefault()
 	cfgHTTPS := set.LocalProxyHTTPSPortOrDefault()
 	routes := deriveLocalProxyRoutes(rows, containers, forwards)
-
-	wasWant := m.localProxyWant
-	m.localProxyWant = wantRunning
+	if extRoutes := m.extensionLocalProxyRoutes(); len(extRoutes) > 0 {
+		taken := make(map[string]bool, len(routes))
+		for _, rt := range routes {
+			taken[rt.Host] = true
+		}
+		for _, rt := range extRoutes {
+			if rt.Host == "" || rt.Target == "" || taken[rt.Host] {
+				continue
+			}
+			taken[rt.Host] = true
+			routes = append(routes, rt)
+		}
+		slices.SortFunc(routes, func(a, b localproxy.Route) int {
+			return strings.Compare(a.Host, b.Host)
+		})
+	}
 
 	caPath := ""
 	if m.dataDir != "" {
@@ -327,10 +340,13 @@ func (m *Model) syncLocalProxyWith(set store.Settings, rows []Row, containers []
 	}
 
 	m.localProxyMu.Lock()
+	wasWant := m.localProxyWant
+	m.localProxyWant = wantRunning
 	srv := m.localProxy
 	m.localProxyRoutes = slices.Clone(routes)
 	boundHTTP := m.localProxyBoundHTTP
 	boundHTTPS := m.localProxyBoundHTTPS
+	inFlight := m.localProxyInFlight
 	m.localProxyMu.Unlock()
 
 	if srv != nil && srv.CAPath() != "" {
@@ -361,7 +377,7 @@ func (m *Model) syncLocalProxyWith(set store.Settings, rows []Row, containers []
 
 	running := srv != nil && srv.Running()
 	if wantRunning {
-		if running && !portsChanged && m.localProxyInFlight != "stop" {
+		if running && !portsChanged && inFlight != "stop" {
 			srv.SetRoutes(routes)
 			httpAddr, httpsAddr := srv.HTTPAddr(), srv.HTTPSAddr()
 			httpPort, httpsPort := srv.HTTPPort(), srv.HTTPSPort()
@@ -381,7 +397,7 @@ func (m *Model) syncLocalProxyWith(set store.Settings, rows []Row, containers []
 			})
 			return
 		}
-		if m.localProxyInFlight == "start" && !forceRetry && !portsChanged {
+		if inFlight == "start" && !forceRetry && !portsChanged {
 			if srv != nil {
 				srv.SetRoutes(routes)
 			}
@@ -394,7 +410,7 @@ func (m *Model) syncLocalProxyWith(set store.Settings, rows []Row, containers []
 		return
 	}
 
-	if !running && m.localProxyInFlight != "start" {
+	if !running && inFlight != "start" {
 		m.LocalProxy.Update(func(st LocalProxyState) LocalProxyState {
 			st.Enabled = false
 			st.Running = false
@@ -407,7 +423,7 @@ func (m *Model) syncLocalProxyWith(set store.Settings, rows []Row, containers []
 		})
 		return
 	}
-	if m.localProxyInFlight == "stop" {
+	if inFlight == "stop" {
 		return
 	}
 	m.reconcileLocalProxy(false, cfgHTTP, cfgHTTPS, "stop")
@@ -418,11 +434,10 @@ func (m *Model) reconcileLocalProxy(want bool, cfgHTTP, cfgHTTPS int, op string)
 	m.localProxyDesired = want
 	m.localProxyWantHTTP = cfgHTTP
 	m.localProxyWantHTTPS = cfgHTTPS
-	m.localProxyMu.Unlock()
-
 	m.localProxySyncGen++
 	gen := m.localProxySyncGen
 	m.localProxyInFlight = op
+	m.localProxyMu.Unlock()
 
 	var (
 		runningAfter   bool
@@ -508,10 +523,15 @@ func (m *Model) reconcileLocalProxy(want bool, cfgHTTP, cfgHTTPS int, op string)
 		routesAfter = srv.Routes()
 		return err
 	}, func(err error) {
-		if m.localProxySyncGen != gen {
+		m.localProxyMu.Lock()
+		stale := m.localProxySyncGen != gen
+		if !stale {
+			m.localProxyInFlight = ""
+		}
+		m.localProxyMu.Unlock()
+		if stale {
 			return
 		}
-		m.localProxyInFlight = ""
 		if m.quitting {
 			return
 		}

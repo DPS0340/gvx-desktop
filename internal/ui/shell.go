@@ -75,6 +75,9 @@ func build(m *Model) ggui.Widget {
 		case PageLabs:
 			return labsPage(m)
 		}
+		if extID, viewID, ok := ParseExtensionPage(p); ok {
+			return extensionPage(m, extID, viewID)
+		}
 		return dashboardPage(m)
 	})
 	// The sidebar runs from the top of the window, with the traffic lights
@@ -134,12 +137,64 @@ func dragRegion(child ggui.Widget) ggui.Widget {
 	})
 }
 
-// sidebar is built again when the Containers and Pods items come or go,
+type sidebarExtKey struct {
+	id        string
+	viewID    string
+	label     string
+	icon      string
+	badgeText string
+	badgeTone string
+	badgeTip  string
+}
+
+type sidebarKey struct {
+	containers bool
+	pods       bool
+	extItems   []sidebarExtKey
+}
+
+// sidebar is built again when the Containers, Pods, or Extensions items come or go,
 // which a sidebar's entries are only as it is made; the sidebar carries its
 // highlight, hover and collapse across.
 func sidebar(m *Model) ggui.Widget {
-	open := ggui.Combine(m.ContainersOpen, m.PodsOpen, func(c, p bool) [2]bool { return [2]bool{c, p} })
-	return ggui.View(open, func(o [2]bool) ggui.Widget { return sidebarFor(m, o[0], o[1]) })
+	state := ggui.Derived(func() sidebarKey {
+		var extItems []sidebarExtKey
+		for _, info := range m.Extensions.Get() {
+			if !info.State.CanRun() || len(info.Views) == 0 {
+				continue
+			}
+			for _, v := range info.Views {
+				lbl := v.Title
+				if lbl == "" {
+					lbl = info.Name
+				}
+				if lbl == "" {
+					lbl = info.ID
+				}
+				ic := v.Icon
+				if ic == "" {
+					ic = info.Icon
+				}
+				extItems = append(extItems, sidebarExtKey{
+					id:        info.ID,
+					viewID:    v.ID,
+					label:     lbl,
+					icon:      ic,
+					badgeText: info.Badge.Text,
+					badgeTone: info.Badge.Tone,
+					badgeTip:  info.Badge.Tooltip,
+				})
+			}
+		}
+		return sidebarKey{
+			containers: m.ContainersOpen.Get(),
+			pods:       m.PodsOpen.Get(),
+			extItems:   extItems,
+		}
+	}).WithEqual(func(a, b sidebarKey) bool {
+		return a.containers == b.containers && a.pods == b.pods && slices.Equal(a.extItems, b.extItems)
+	})
+	return ggui.View(state, func(k sidebarKey) ggui.Widget { return sidebarFor(m, k.containers, k.pods, k.extItems) })
 }
 
 // LabsSupported reports whether the current platform has any Labs features.
@@ -151,7 +206,7 @@ func LabsSupported() bool {
 
 // sidebarFor is the sidebar with Docker's Networks/Containers and
 // Kubernetes's Pods/Workloads/Services nested under their engine while it runs.
-func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
+func sidebarFor(m *Model, containers, pods bool, extItems []sidebarExtKey) ggui.Widget {
 	nav := ggui.Bind(m.Page.Get, m.Go)
 	item := func(key, label string, g *icons.Glyph) ui.SidebarEntry {
 		return ui.SidebarItem(key, label).Leading(glyph(g, 16)).Tooltip(label)
@@ -192,6 +247,29 @@ func sidebarFor(m *Model, containers, pods bool) ggui.Widget {
 		ui.SidebarSeparator(),
 		docker,
 		kube,
+	}
+	if len(extItems) > 0 {
+		entries = append(entries, ui.SidebarSection(tr("Extensions")).Collapsible().BindOpen(m.ExtNavOpen))
+		for _, it := range extItems {
+			tipText := it.label
+			if it.badgeTip != "" {
+				tipText = it.label + " — " + it.badgeTip
+			}
+			entry := ui.SidebarItem(ExtensionPage(it.id, it.viewID), it.label).
+				Leading(extIcon(it.icon).Size(16)).
+				Tooltip(tipText)
+			if it.badgeText != "" {
+				entry = entry.Badge(it.badgeText)
+				if it.badgeTone != "" || it.badgeTip != "" {
+					var badgeDot ggui.Widget = dot(toneColor(cmpTone(it.badgeTone, "muted")), 6)
+					if it.badgeTip != "" {
+						badgeDot = tip(badgeDot, it.badgeTip)
+					}
+					entry = entry.Action(badgeDot)
+				}
+			}
+			entries = append(entries, entry)
+		}
 	}
 	brandTop := 4.0
 	if TitlebarHidden {
@@ -692,15 +770,25 @@ type paletteSandbox struct {
 	paused          bool
 }
 
+type paletteExtCmd struct {
+	extID, cmdID, title, extName, icon string
+}
+
 type paletteState struct {
 	containers, pods bool
 	sandboxEngine    bool
 	active           int
 	sandboxes        []paletteSandbox
+	extCommands      []paletteExtCmd
 }
 
 func (a paletteState) equal(b paletteState) bool {
-	return a.containers == b.containers && a.pods == b.pods && a.sandboxEngine == b.sandboxEngine && a.active == b.active && slices.Equal(a.sandboxes, b.sandboxes)
+	return a.containers == b.containers &&
+		a.pods == b.pods &&
+		a.sandboxEngine == b.sandboxEngine &&
+		a.active == b.active &&
+		slices.Equal(a.sandboxes, b.sandboxes) &&
+		slices.Equal(a.extCommands, b.extCommands)
 }
 
 func palette(m *Model) ggui.Widget {
@@ -784,6 +872,13 @@ func palette(m *Model) ggui.Widget {
 				Group(tr("Open sandbox")).
 				Keywords(sb.image, statusText(state), kw))
 		}
+		for _, c := range st.extCommands {
+			cmd := c
+			out = append(out, ui.CommandItem(cmd.title, close(func() { m.RunExtensionCommand(cmd.extID, cmd.cmdID) })).
+				Icon(extIcon(cmd.icon).Size(14).Color(colorGray)).
+				Group(cmd.extName).
+				Keywords(cmd.extID, cmd.cmdID, cmd.extName))
+		}
 		return out
 	}
 	cmd := ui.Command(m.PaletteQuery).Height(340).StableHeight().Hints()
@@ -795,12 +890,36 @@ func palette(m *Model) ggui.Widget {
 		for i, r := range rows {
 			sbs[i] = paletteSandbox{id: r.Spec.ID, name: r.Spec.Name, image: r.Spec.Image, status: r.State.Status, paused: r.State.Paused}
 		}
+		var extCmds []paletteExtCmd
+		for _, info := range m.Extensions.Get() {
+			if !info.State.CanRun() {
+				continue
+			}
+			extName := info.Name
+			if extName == "" {
+				extName = info.ID
+			}
+			for _, c := range info.Commands {
+				title := c.Title
+				if title == "" {
+					title = c.ID
+				}
+				extCmds = append(extCmds, paletteExtCmd{
+					extID:   info.ID,
+					cmdID:   c.ID,
+					title:   title,
+					extName: extName,
+					icon:    info.Icon,
+				})
+			}
+		}
 		return paletteState{
 			containers:    m.ContainersOpen.Get(),
 			pods:          m.PodsOpen.Get(),
 			sandboxEngine: m.Settings.Get().SandboxEngine,
 			active:        m.TotalRunning.Get(),
 			sandboxes:     sbs,
+			extCommands:   extCmds,
 		}
 	}).WithEqual(paletteState.equal)
 	ggui.Watch(state, func(st paletteState) { cmd.Entries(entries(st)...) })

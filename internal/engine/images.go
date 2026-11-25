@@ -667,7 +667,7 @@ func (e *Engine) imageCreate(w http.ResponseWriter, r *http.Request) {
 func pullProgressFrame(line string) map[string]string {
 	if id, rest, ok := strings.Cut(line, ": "); ok && id != "" && !strings.ContainsAny(id, " \t") {
 		switch strings.ToLower(id) {
-		case "status", "digest", "rungv", "gvx", "error", "warning":
+		case "status", "digest", "rungv", "rungvx", "gvx", "error", "warning":
 			return map[string]string{"status": line}
 		}
 		return map[string]string{"status": rest, "id": id}
@@ -935,7 +935,7 @@ func pushProgressFrames(line string) []any {
 			}
 		}
 		switch strings.ToLower(id) {
-		case "status", "digest", "rungv", "gvx", "error", "warning":
+		case "status", "digest", "rungv", "rungvx", "gvx", "error", "warning":
 			return []any{map[string]string{"status": line}}
 		}
 		return []any{map[string]string{"status": rest, "id": id}}

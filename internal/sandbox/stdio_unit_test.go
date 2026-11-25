@@ -72,6 +72,21 @@ func TestRungvFilter(t *testing.T) {
 			want:   "real error\n",
 		},
 		{
+			name:   "drops rungvx prefixes",
+			chunks: []string{"rungvx: platform=hvf\nrungvx: auto-publish enabled for guest listeners on 127.0.0.1\nreal error\n"},
+			want:   "real error\n",
+		},
+		{
+			name:   "keeps rungvx run fatal errors",
+			chunks: []string{"rungvx run: gvx: executable /nope not found\n"},
+			want:   "rungvx run: gvx: executable /nope not found\n",
+		},
+		{
+			name:   "chunk split mid rungvx prefix",
+			chunks: []string{"rungv", "x: publishing 127.0.0.1:80 -> 80/tcp\n", "rungvxy\n"},
+			want:   "rungvxy\n",
+		},
+		{
 			name:   "keeps rungv run fatal errors",
 			chunks: []string{"rungv run: gvx: executable /nope not found\n"},
 			want:   "rungv run: gvx: executable /nope not found\n",
@@ -116,9 +131,16 @@ func TestSupervisorStdioInteractiveAndFilter(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses a POSIX shell script as stand-in rungv")
 	}
+	// rungv writes its own lines as rungvx since gvx v0.23.
+	for _, prog := range []string{"rungv", "rungvx"} {
+		t.Run(prog, func(t *testing.T) { testSupervisorStdioInteractiveAndFilter(t, prog) })
+	}
+}
+
+func testSupervisorStdioInteractiveAndFilter(t *testing.T, prog string) {
 	exe := filepath.Join(t.TempDir(), "rungv")
 	script := "#!/bin/sh\n" +
-		"echo 'rungv: platform=hvf' >&2\n" +
+		"echo '" + prog + ": platform=hvf' >&2\n" +
 		"echo 'gvx: warning: test' >&2\n" +
 		"echo 'guest-err' >&2\n" +
 		"cat\n"

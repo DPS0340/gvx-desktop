@@ -57,6 +57,21 @@ func TestPortLines(t *testing.T) {
 	}
 }
 
+// rungvx, as gvx calls rungv since v0.23, writes the ports it publishes
+// at start under its own name.
+func TestPortLinesFromRungvx(t *testing.T) {
+	var st State
+	if _, ok := st.portLine("rungvx: publishing 127.0.0.1:9000 -> 9000/tcp"); !ok {
+		t.Fatal("not a port line")
+	}
+	if !slices.Equal(st.Ports, []PublishedPort{{Host: "127.0.0.1:9000", Guest: 9000, Proto: "tcp", Source: "static"}}) {
+		t.Errorf("ports %+v", st.Ports)
+	}
+	if _, ok := st.portLine("rungvx: platform=hvf"); ok {
+		t.Error("a line about something else")
+	}
+}
+
 func TestPortsFromRules(t *testing.T) {
 	got := portsFromRules([]rungv.PortRule{
 		{Proto: "tcp", HostIP: "127.0.0.1", HostPort: 18080, GuestPort: 80, Source: "dynamic"},

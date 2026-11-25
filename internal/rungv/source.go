@@ -442,13 +442,14 @@ func BuildFromSource(ctx context.Context, src Source, dir, target string, phase 
 	defer os.Remove(fresh)
 	// Go and git are on the PATH of the build whatever this process's is.
 	path := "PATH=" + filepath.Dir(goBin) + string(os.PathListSeparator) + filepath.Dir(git) + string(os.PathListSeparator) + os.Getenv("PATH")
+	pkg := sourcePackage(dir)
 	script := filepath.Join(dir, "scripts", "repro-build.sh")
 	if _, serr := os.Stat(script); serr == nil && runtime.GOOS != "windows" {
 		// gvx's own way to build, which pins what makes a build repeatable.
-		err = run(dir, []string{path, "GO=" + goBin}, "/bin/sh", script, fresh, "./cmd/rungv")
+		err = run(dir, []string{path, "GO=" + goBin}, "/bin/sh", script, fresh, pkg)
 	} else {
 		err = run(dir, []string{path, "CGO_ENABLED=0", "GOWORK=off", "GOFLAGS="}, goBin, "build",
-			"-mod=readonly", "-trimpath", "-buildvcs=true", "-ldflags=-s -w -buildid=", "-o", fresh, "./cmd/rungv")
+			"-mod=readonly", "-trimpath", "-buildvcs=true", "-ldflags=-s -w -buildid=", "-o", fresh, pkg)
 	}
 	if err != nil {
 		return "", err
@@ -465,6 +466,15 @@ func BuildFromSource(ctx context.Context, src Source, dir, target string, phase 
 		ForgetFeatures(abs)
 	}
 	return commit, nil
+}
+
+// sourcePackage is the package of rungv's command in the gvx checkout at
+// dir: ./cmd/rungvx since gvx v0.23, ./cmd/rungv before.
+func sourcePackage(dir string) string {
+	if st, err := os.Stat(filepath.Join(dir, "cmd", programX)); err == nil && st.IsDir() {
+		return "./cmd/" + programX
+	}
+	return "./cmd/" + program
 }
 
 // Phase is a step of BuildFromSource.

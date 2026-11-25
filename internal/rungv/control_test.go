@@ -99,6 +99,8 @@ func TestControlCodeAndIsUnreachable(t *testing.T) {
 		{"limit exceeded", &Error{Stderr: "rungv exec: LIMIT_EXCEEDED: too many exec sessions"}, CodeLimitExceeded},
 		{"connect refused is not a code", &Error{Stderr: "rungv ping: connect control socket unix:///tmp/x.sock: dial unix /tmp/x.sock: connect: connection refused"}, ""},
 		{"usage error", &Error{Code: 2, Stderr: "rungv update: specify at least one setting to update"}, ""},
+		{"rungvx", &Error{Stderr: "rungvx exec: NOT_FOUND: executable \"nope\" not found"}, CodeNotFound},
+		{"rungvx usage error", &Error{Code: 2, Stderr: "rungvx update: specify at least one setting to update"}, ""},
 	}
 	for _, tc := range codeCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,6 +123,8 @@ func TestControlCodeAndIsUnreachable(t *testing.T) {
 		{"protocol error NOT_FOUND is reachable", &Error{Stderr: "rungv cp: NOT_FOUND: guest path \"/a\" does not exist: no such file or directory"}, false},
 		{"protocol error ALREADY_PAUSED is reachable", &Error{Stderr: "rungv exec: ALREADY_PAUSED: cannot exec"}, false},
 		{"other rungv error", &Error{Stderr: "rungv update: specify at least one setting"}, false},
+		{"rungvx connection refused", &Error{Stderr: "rungvx ping: connect control socket unix:///tmp/x.sock: dial unix /tmp/x.sock: connect: connection refused"}, true},
+		{"rungvx protocol error is reachable", &Error{Stderr: "rungvx exec: ALREADY_PAUSED: cannot exec"}, false},
 	}
 	for _, tc := range unreachCases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1105,7 +1105,8 @@ func (c *Client) Events(ctx context.Context, t Target, fn func(Event)) error {
 
 // ---- errors -------------------------------------------------------------
 
-// Control protocol error codes rungv prints as "rungv <cmd>: CODE: message".
+// Control protocol error codes rungv prints as "rungv <cmd>: CODE: message"
+// (rungvx <cmd>: … since gvx v0.23).
 const (
 	CodeInvalidArgument   = "INVALID_ARGUMENT"
 	CodeUnauthorized      = "UNAUTHORIZED"        // exit 126
@@ -1157,8 +1158,8 @@ func ControlCode(err error) string {
 	if !errors.As(err, &re) {
 		return ""
 	}
-	line := lastNonEmptyLine(re.Stderr)
-	if !strings.HasPrefix(line, "rungv ") {
+	line, ok := CutProgram(lastNonEmptyLine(re.Stderr), " ")
+	if !ok {
 		return ""
 	}
 	_, rest, ok := strings.Cut(line, ": ")

@@ -19,6 +19,21 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
+// rungv's control error codes come under either of its names: rungvx is
+// what gvx calls it since v0.23.
+func TestControlCodeOfRungvx(t *testing.T) {
+	for _, prog := range []string{"rungv", "rungvx"} {
+		err := &rungv.Error{Stderr: prog + " cp: NOT_FOUND: guest path \"/nope\" does not exist\n"}
+		if got := controlCode(err); got != rungv.CodeNotFound {
+			t.Errorf("%s: controlCode = %q", prog, got)
+		}
+		var ae *apiError
+		if !errors.As(mapArchiveError(Container{ID: "c1", Name: "web"}, "/nope", err), &ae) || ae.status != http.StatusNotFound {
+			t.Errorf("%s: mapArchiveError = %v", prog, ae)
+		}
+	}
+}
+
 func TestFeaturesCanControlAndInfoWarning(t *testing.T) {
 	// v0.19 default engine.
 	te19 := newTestEngine(t)

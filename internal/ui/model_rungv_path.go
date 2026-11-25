@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,9 +87,31 @@ func (m *Model) refreshRungvPathState() {
 	})
 }
 
-// AddRungvToPATH ensures the active rungv binary is exposed inside ~/.gvx/bin
-// and appends ~/.gvx/bin to the user's terminal PATH (shell profile on Unix,
-// HKCU\Environment\Path on Windows).
+// linkRungvx gives the rungv in ~/.gvx/bin its other name when it is a
+// rungvx, gvx's name for it since v0.23 and the one gvx's own docs use:
+// ~/.gvx/bin/rungvx then runs ~/.gvx/bin/rungv (a link on Unix, a tracked
+// copy on Windows). Nothing is linked when ~/.gvx/bin has no rungv or an
+// older one, and a rungvx the app did not put there is left alone.
+func linkRungvx(ctx context.Context) error {
+	bin, err := dockercli.ManagedBinaryPath("rungv")
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(bin); err != nil {
+		return nil
+	}
+	if v, err := (&rungv.Client{Path: bin}).Version(ctx); err != nil || v.Program != "rungvx" {
+		return nil
+	}
+	if _, err := dockercli.SyncBinaryToBinDir(bin, "rungvx"); err != nil && !errors.Is(err, dockercli.ErrNotManaged) {
+		return err
+	}
+	return nil
+}
+
+// AddRungvToPATH ensures the active rungv binary is exposed inside ~/.gvx/bin,
+// as rungvx too when it is one, and appends ~/.gvx/bin to the user's terminal
+// PATH (shell profile on Unix, HKCU\Environment\Path on Windows).
 func (m *Model) AddRungvToPATH() {
 	if m.Offline || ggui.Peek(m.RungvPath).Busy {
 		return
@@ -106,6 +129,9 @@ func (m *Model) AddRungvToPATH() {
 			if _, err := dockercli.SyncBinaryToBinDir(enginePath, "rungv"); err != nil {
 				return err
 			}
+		}
+		if err := linkRungvx(ctx); err != nil {
+			return err
 		}
 		if _, err := dockercli.AddToPath(); err != nil {
 			return err

@@ -326,7 +326,11 @@ func TestSupervisorV021FeatureGatingEventsAndApplyLive(t *testing.T) {
 		t.Skip("shell script fake rungv")
 	}
 	dir := t.TempDir()
-	cmdLog := filepath.Join(dir, "cmds.log")
+	// The fake keeps the arguments of its runs only: StopAll waits for a run
+	// to end, but not for the port ls and events the supervisor starts in
+	// the background, and one of those writing here while the cleanup
+	// removes dir failed the test ("directory not empty").
+	runLog := filepath.Join(dir, "runs.log")
 	eventsPipe := filepath.Join(dir, "events.ndjson")
 	portsFile := filepath.Join(dir, "ports.ndjson")
 	if err := os.WriteFile(portsFile, []byte(`{"proto":"tcp","host_ip":"127.0.0.1","host_port":18080,"guest_ip":"10.0.2.15","guest_port":80,"source":"dynamic"}`+"\n"), 0o644); err != nil {
@@ -388,7 +392,7 @@ if [ "$1" = "run" ] && [ "$2" = "-help" ]; then
   echo "  -unix-forward value"
   exit 2
 fi
-printf '%s\n' "$*" >> "` + cmdLog + `"
+[ "$1" = run ] && printf '%s\n' "$*" >> "` + runLog + `"
 cmd="$1"
 shift
 case "$cmd" in
@@ -514,7 +518,7 @@ exit 0
 	}
 
 	// Verify run received --dynamic-ports and --allow-bind-attach.
-	cmds, err := os.ReadFile(cmdLog)
+	cmds, err := os.ReadFile(runLog)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,14 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-26
+
 ### Added
 
-- **Volume directory** in the rungvx section of Settings places named volumes in a folder of your choice. The app passes it to `rungvx` as `GVX_VOLUME_DIR`, which gvx reads once [gfire-sigs/gvx#259](https://github.com/gfire-sigs/gvx/issues/259) is fixed. An empty setting keeps `rungvx`'s default. The setting applies only while **Layer cache directory** is empty, because `rungvx` keeps volumes in `<cacheDir>/volumes` when it gets `-cache-dir` ([#15](https://github.com/ironpark/gvx-desktop/issues/15)).
-- The rungvx section of Settings warns when named volumes lie in `~/Library/Caches`, which macOS empties when the disk runs low, and when the volume directory does not apply, because the `rungvx` in use ignores it or a layer cache directory is set. Each warning names the setting to change.
+- **Labs: Extensions system & Go SDK** (`internal/ext`, `internal/uiblock`, `internal/keychain`, `pkg/extsdk`):
+  - Opt-in **Extensions** toggle in **Labs** that unlocks a dedicated **Extensions** sidebar page (between **Labs** and **Settings**) to install extensions from Git repositories or local directories, review and approve permissions, manage allowed host folders, inspect logs, and configure extension settings.
+  - Sandboxed extension runtime inside isolated `rungvx` containers with scoped Docker API proxying, Host API (`/v1/sandboxes`, `/v1/snapshots`, `/v1/secrets`, `/v1/storage`, gesture-gated UI intents), OS keychain vault (`internal/keychain`), declarative native UI blocks (`internal/uiblock`), MCP tool bridging, and developer binary mode.
+  - Public Go SDK (`github.com/ironpark/gvx-desktop/pkg/extsdk`) with the reference GitHub Actions extension ([`gvx-ext-github-actions`](https://github.com/ironpark/gvx-ext-github-actions)).
+- **Volume directory** in the `rungvx` section of Settings places named volumes in a folder of your choice. The app passes it to `rungvx` as `GVX_VOLUME_DIR`, which gvx reads once [gfire-sigs/gvx#259](https://github.com/gfire-sigs/gvx/issues/259) is fixed. An empty setting keeps `rungvx`'s default. The setting applies only while **Layer cache directory** is empty, because `rungvx` keeps volumes in `<cacheDir>/volumes` when it gets `-cache-dir` ([#15](https://github.com/ironpark/gvx-desktop/issues/15), [#16](https://github.com/ironpark/gvx-desktop/pull/16), [#17](https://github.com/ironpark/gvx-desktop/pull/17)).
+- The `rungvx` section of Settings warns when named volumes lie in `~/Library/Caches`, which macOS empties when the disk runs low, and when the volume directory does not apply because the `rungvx` in use ignores it or a layer cache directory is set. Each warning names the setting to change ([#16](https://github.com/ironpark/gvx-desktop/pull/16), [#17](https://github.com/ironpark/gvx-desktop/pull/17)).
+
+### Changed
+
+- **Switched user-facing `rungv` references to `rungvx`**: updated UI copy, menus, CLI previews, error messages, all 7 translation catalogs, and documentation to `rungvx` while keeping backwards compatibility with legacy `rungv` binaries, existing `settings.json` keys, and `$GVX_RUNGV` (with `$GVX_RUNGVX` checked first).
+- **Windows color tray icon**: displays the full-color GVX mark in the Windows taskbar notification area (`Template: false`), while keeping the monochrome template silhouette in the macOS menu bar.
 
 ### Fixed
 
-- The help text of **Layer cache directory** said that named volumes live in a `volumes` folder beside it. `rungvx` keeps them inside it, in `<cacheDir>/volumes`, and the text now also says that the volume directory then does not apply.
+- Normalized trailing slashes in Sandbox Engine archive/stat path resolution (`internal/engine/archive.go`).
+- The help text of **Layer cache directory** said that named volumes live in a `volumes` folder beside it. `rungvx` keeps them inside it, in `<cacheDir>/volumes`, and the text now also says that the volume directory then does not apply ([#16](https://github.com/ironpark/gvx-desktop/pull/16), [#17](https://github.com/ironpark/gvx-desktop/pull/17)).
 
 ## [0.10.2] - 2026-11-25
 
@@ -176,7 +188,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial release of GVX Desktop for Apple silicon macOS with Homebrew cask distribution.
 - Sandbox management, image registry search (Docker Hub & Quay), `ext4lite`/`hostfs` volumes, checkpoint snapshots, `rungv` installer/updater, and English & Korean UI.
 
-[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/ironpark/gvx-desktop/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/ironpark/gvx-desktop/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/ironpark/gvx-desktop/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/ironpark/gvx-desktop/compare/v0.9.0...v0.10.0

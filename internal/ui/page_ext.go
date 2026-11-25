@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image/color"
 	"slices"
 	"strings"
 
@@ -145,41 +146,48 @@ func extensionPage(m *Model, extID, viewID string) ggui.Widget {
 		var titleParts []ggui.Widget
 		titleParts = append(titleParts,
 			extIcon(iconName).Size(18).Color(colorGray),
-			ui.Heading(titleText).Size(16),
+			ui.Heading(titleText).Size(15).NoWrap(),
 		)
 		if subTitle != "" && subTitle != titleText {
-			titleParts = append(titleParts, ui.Caption("·").Size(14), widget.Text(subTitle).Size(14).Color(colorGray).NoWrap())
+			titleParts = append(titleParts, ui.Caption("·").Size(14), widget.Text(subTitle).Size(13.5).Color(colorGray).NoWrap())
 		}
 		titleParts = append(titleParts, extStatusChip(info.State))
 		if info.Unsandboxed {
 			titleParts = append(titleParts, ui.Badge(tr("Dev · Unsandboxed")).Outline())
 		}
 
-		var headerActions []ggui.Widget
-		if liftedTB != nil {
-			headerActions = append(headerActions, renderUIBlockTree(extID, viewID, tree, liftedTB, sess.form, dispatchEvent))
-		}
+		var hostActions []ggui.Widget
 		if info.WebUI != nil && slices.Contains(info.Granted, ext.PermLocalProxy) && (info.State == ext.StateRunning || info.State == ext.StateDegraded) {
 			infoCopy := info
-			headerActions = append(headerActions,
+			hostActions = append(hostActions,
 				ui.Button(tr("Open in Browser"), func() { m.OpenExtensionWebUI(infoCopy) }).
 					Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.ExternalLink, 14)),
 			)
 		}
-		headerActions = append(headerActions,
-			ui.Button(tr("Reload"), func() { m.ReloadExtensionView(extID, viewID) }).
-				Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.RefreshCw, 14)),
-			ui.Button(tr("Logs"), func() { logsOpen.Set(true) }).
-				Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.ScrollText, 14)),
-			ui.Button(tr("Settings"), func() { m.Go(PageExtensions) }).
-				Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.Settings, 14)),
+		hostActions = append(hostActions,
+			tip(iconButton(lucide.RefreshCw, tr("Reload"), func() { m.ReloadExtensionView(extID, viewID) }), tr("Reload")),
+			tip(iconButton(lucide.ScrollText, tr("Logs"), func() { logsOpen.Set(true) }), tr("Logs")),
+			tip(iconButton(lucide.Settings, tr("Settings"), func() { m.Go(PageExtensions) }), tr("Settings")),
 		)
 
-		header := widget.Box(widget.Row(
+		headerParts := []ggui.Widget{
 			widget.Row(titleParts...).Gap(8).Align(widget.AlignCenter),
-			widget.Spacer(),
-			widget.Row(headerActions...).Gap(8).Align(widget.AlignCenter),
-		).Gap(12).Align(widget.AlignCenter)).Pad(12, 18)
+		}
+		if liftedTB != nil {
+			tbWidget := renderUIBlockTree(extID, viewID, tree, liftedTB, sess.form, dispatchEvent)
+			tbScroll := looseHeight{
+				widget.Scroll(tbWidget).Horizontal().Shrink().Bar(color.Transparent),
+			}
+			headerParts = append(headerParts,
+				widget.Expanded(looseHeight{widget.Align(tbScroll).At(1, 0.5)}),
+				widget.Box().Width(1).Height(18).Fill(colorBorder),
+			)
+		} else {
+			headerParts = append(headerParts, widget.Spacer())
+		}
+		headerParts = append(headerParts, widget.Row(hostActions...).Gap(4).Align(widget.AlignCenter))
+
+		header := widget.Box(widget.Row(headerParts...).Gap(10).Align(widget.AlignCenter)).Pad(10, 16)
 
 		var content ggui.Widget
 		switch {
@@ -225,12 +233,10 @@ func extensionPage(m *Model, extID, viewID string) ggui.Widget {
 			rendered := renderUIBlockTree(extID, viewID, tree, bodyTree, sess.form, dispatchEvent)
 			sess.form.pruneDialogs()
 			if tree.Fill {
-				if !(liftedTB != nil && effectiveChrome == ext.ViewChromeToolbar) {
-					rendered = widget.Padding(rendered, 10, 12)
-				}
+				rendered = widget.Padding(rendered, 12, 16)
 				sections = append(sections, widget.Expanded(rendered))
 			} else {
-				sections = append(sections, widget.Expanded(widget.Scroll(widget.Padding(rendered, 10, 12))))
+				sections = append(sections, widget.Expanded(widget.Scroll(widget.Padding(rendered, 12, 16))))
 			}
 			content = widget.Column(sections...).Stretch()
 		}
@@ -312,6 +318,46 @@ func extStatusChip(s ext.ExtensionState) ggui.Widget {
 	).Gap(6).Align(widget.AlignCenter)
 }
 
+func extPermissionRisk(perm string) string {
+	switch ext.PermissionRisk(perm) {
+	case "high":
+		return tr("High")
+	case "medium":
+		return tr("Medium")
+	case "low":
+		return tr("Low")
+	default:
+		return tr("Unknown")
+	}
+}
+
+func extPermissionDescription(perm string) string {
+	switch perm {
+	case ext.PermStorage:
+		return tr("Read and write per-extension key-value storage")
+	case ext.PermSecrets:
+		return tr("Store and read encrypted secrets in the OS keychain vault")
+	case ext.PermDocker:
+		return tr("Access the scoped Docker Engine API for extension containers")
+	case ext.PermSandboxes:
+		return tr("Create, control, and execute commands in extension-owned sandboxes")
+	case ext.PermSnapshots:
+		return tr("Create and restore checkpoint snapshots of extension-owned sandboxes")
+	case ext.PermUIPickFolder:
+		return tr("Prompt you to choose a host folder on user interaction")
+	case ext.PermUITerminal:
+		return tr("Open an interactive terminal to an extension container or sandbox")
+	case ext.PermUIOpenURL:
+		return tr("Open external http(s) URLs in your default browser")
+	case ext.PermLocalProxy:
+		return tr("Expose a web UI at https://<ext-id>.localhost via the local proxy")
+	case ext.PermNetwork:
+		return tr("Access the external network from the extension runtime")
+	default:
+		return ext.PermissionDescription(perm)
+	}
+}
+
 func extWaitingCard(m *Model, info ext.ExtensionInfo) ggui.Widget {
 	perms := info.Asked
 	if len(perms) == 0 {
@@ -332,8 +378,8 @@ func extWaitingCard(m *Model, info ext.ExtensionInfo) ggui.Widget {
 	for _, perm := range perms {
 		rows = append(rows, widget.Row(
 			extIcon("check").Size(13).Color(colorGray),
-			widget.Expanded(widget.Text(ext.PermissionDescription(perm)).Size(13)),
-			ui.Badge(ext.PermissionRisk(perm)).Outline(),
+			widget.Expanded(widget.Text(extPermissionDescription(perm)).Size(13)),
+			ui.Badge(extPermissionRisk(perm)).Outline(),
 			extChip(perm),
 		).Gap(8).Align(widget.AlignCenter))
 	}

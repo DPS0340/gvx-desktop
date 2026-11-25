@@ -267,8 +267,8 @@ func extensionSettingsCard(m *Model, info ext.ExtensionInfo, st *extSettingsCard
 				status = tr("Denied")
 			}
 			permRows = append(permRows, widget.Row(
-				widget.Expanded(widget.Text(ext.PermissionDescription(p)).Size(12.5)),
-				ui.Badge(ext.PermissionRisk(p)).Outline(),
+				widget.Expanded(widget.Text(extPermissionDescription(p)).Size(12.5)),
+				ui.Badge(extPermissionRisk(p)).Outline(),
 				ui.Badge(status).Outline(),
 				extChip(p),
 			).Gap(6).Align(widget.AlignCenter))

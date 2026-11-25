@@ -2260,3 +2260,138 @@ func TestExtUI_InitExtensionsDoesNotCancelManagerContext(t *testing.T) {
 		t.Fatalf("InstallGitExtension failed with canceled manager context: %v", gotErr)
 	}
 }
+
+func TestExtUI_ToolbarHeaderNoOverlapAndBodyPadding(t *testing.T) {
+	// Regression test: a wide lifted toolbar (chrome="toolbar" with tabs, pills,
+	// and action buttons) must never squash or overlap the host Reload / Logs /
+	// Settings buttons, even in narrow windows, and Fill views must keep outer
+	// content padding so cards do not touch the window borders.
+	const src = `package main
+
+import (
+	"context"
+	"github.com/ironpark/gvx-desktop/pkg/extsdk"
+)
+
+func main() {
+	app := extsdk.New()
+	app.View("main", extsdk.View{
+		Title:  "GitHub Actions",
+		Chrome: "toolbar",
+		Render: func(ctx *extsdk.ViewContext, u *extsdk.UI) extsdk.Node {
+			return u.Column(
+				u.Toolbar(
+					u.Tabs("Local Workflows", []string{"Local Workflows", "Self-Hosted Runners", "History"},
+						extsdk.Key("tabs"), extsdk.Size("small"), extsdk.OnChange("noop")),
+					u.Pill("Docker Ready", extsdk.Tone("success"), extsdk.Variant("soft")),
+					u.Pill("arm64", extsdk.Tone("muted"), extsdk.Variant("outline"), extsdk.Icon("cpu")),
+					u.Button("Secrets (0)", extsdk.Key("sec"), extsdk.Icon("key"), extsdk.Size("small"), extsdk.Variant("outline"), extsdk.OnTap("noop")),
+					u.Button("Refresh", extsdk.Key("ref"), extsdk.Icon("refresh-cw"), extsdk.Size("small"), extsdk.Variant("ghost"), extsdk.OnTap("noop")),
+				),
+				u.Split("auto",
+					u.Card(extsdk.Key("left_card"), extsdk.Grow(1), u.Text("LeftPaneMarker")),
+					u.Card(extsdk.Key("right_card"), extsdk.Grow(1), u.Text("RightPaneMarker")),
+					extsdk.Key("split"), extsdk.Ratio(0.4), extsdk.Grow(1),
+				),
+			).Fill(true).Gap(8)
+		},
+		On: extsdk.Handlers{"noop": func(ctx *extsdk.EventContext) error { return nil }},
+	})
+	_ = app.Run(context.Background())
+}
+`
+	extraTOML := `
+[[contributes.view]]
+id = "main"
+title = "GitHub Actions"
+icon = "workflow"
+chrome = "toolbar"
+`
+	mgr, dataDir, _, _ := extUINewManager(t, true)
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("mgr.Start: %v", err)
+	}
+	extUIInstallBinary(t, mgr, "wide-tb", "GitHub Actions", src, extraTOML)
+
+	for _, sz := range []ggui.Size{ggui.Sz(1280, 800), ggui.Sz(840, 700)} {
+		t.Run(fmt.Sprintf("%.0fx%.0f", sz.W, sz.H), func(t *testing.T) {
+			m, p := extUINewProbe(t, dataDir, mgr, sz, nil)
+			defer p.Close()
+			p.Frame()
+
+			m.Go(ExtensionPage("wide-tb", "main"))
+			extUISettle(t, p, func() bool {
+				sem := p.Semantics()
+				return extUISemHasText(sem, "LeftPaneMarker") && extUISemHasText(sem, "RightPaneMarker")
+			}, "wide toolbar extension page rendered")
+
+			sem := p.Semantics()
+			reloadBtn, ok1 := extUIFindSemNode(sem, ggui.RoleButton, "Reload")
+			logsBtn, ok2 := extUIFindSemNode(sem, ggui.RoleButton, "Logs")
+			settingsBtn, ok3 := extUIFindSemNode(sem, ggui.RoleButton, "Settings")
+			if !ok1 || !ok2 || !ok3 {
+				t.Fatalf("missing host header buttons: reload=%v logs=%v settings=%v\n%s", ok1, ok2, ok3, sem)
+			}
+			for _, pair := range []struct {
+				name string
+				n    ggui.SemNode
+			}{
+				{"Reload", reloadBtn},
+				{"Logs", logsBtn},
+				{"Settings", settingsBtn},
+			} {
+				if pair.n.Full.Size.W < 20 || pair.n.Full.Size.H < 20 {
+					t.Fatalf("host button %s squashed to %+v", pair.name, pair.n.Full)
+				}
+			}
+			if reloadBtn.Full.Origin.X+reloadBtn.Full.Size.W > logsBtn.Full.Origin.X+0.5 {
+				t.Fatalf("Reload (%+v) overlaps Logs (%+v)", reloadBtn.Full, logsBtn.Full)
+			}
+			if logsBtn.Full.Origin.X+logsBtn.Full.Size.W > settingsBtn.Full.Origin.X+0.5 {
+				t.Fatalf("Logs (%+v) overlaps Settings (%+v)", logsBtn.Full, settingsBtn.Full)
+			}
+			if settingsBtn.Full.Origin.X+settingsBtn.Full.Size.W > sz.W+0.5 {
+				t.Fatalf("Settings (%+v) overflows window width %.1f", settingsBtn.Full, sz.W)
+			}
+
+			// Verify lifted toolbar tabs stay on the same header band and do not overlap Reload.
+			localTab, okTab := extUIFindSemNode(sem, ggui.RoleTab, "Local Workflows")
+			if !okTab {
+				t.Fatalf("missing lifted Local Workflows tab\n%s", sem)
+			}
+			dy := localTab.Full.Origin.Y - reloadBtn.Full.Origin.Y
+			if dy < -40 || dy > 40 {
+				t.Fatalf("lifted tab Y=%.1f not in header band with Reload Y=%.1f", localTab.Full.Origin.Y, reloadBtn.Full.Origin.Y)
+			}
+			if localTab.Full.Origin.X+localTab.Full.Size.W > reloadBtn.Full.Origin.X+0.5 {
+				t.Fatalf("lifted tab (%+v) overlaps host Reload button (%+v)", localTab.Full, reloadBtn.Full)
+			}
+
+			// Verify header stays compact at the top of the page (never greedily expands vertically).
+			if reloadBtn.Full.Origin.Y > 120 {
+				t.Fatalf("header expanded vertically; Reload at Y=%.1f", reloadBtn.Full.Origin.Y)
+			}
+
+			// Verify body split pane is visible below the header with non-zero height and clean padding.
+			leftMarker, okLeft := extUIFindSemNode(sem, "", "LeftPaneMarker")
+			rightMarker, okRight := extUIFindSemNode(sem, "", "RightPaneMarker")
+			if !okLeft || !okRight {
+				t.Fatalf("missing pane markers: left=%v right=%v\n%s", okLeft, okRight, sem)
+			}
+			if leftMarker.Full.Size.H <= 0 || rightMarker.Full.Size.H <= 0 {
+				t.Fatalf("body pane crushed to zero height: left=%+v right=%+v", leftMarker.Full, rightMarker.Full)
+			}
+			if leftMarker.Full.Origin.Y <= reloadBtn.Full.Origin.Y+reloadBtn.Full.Size.H {
+				t.Fatalf("body content (%+v) overlaps header (%+v)", leftMarker.Full, reloadBtn.Full)
+			}
+			if leftMarker.Full.Origin.Y > 220 {
+				t.Fatalf("body content pushed too far down: %+v", leftMarker.Full)
+			}
+			horizSeparated := rightMarker.Full.Origin.X > leftMarker.Full.Origin.X+leftMarker.Full.Size.W
+			vertSeparated := rightMarker.Full.Origin.Y > leftMarker.Full.Origin.Y+leftMarker.Full.Size.H
+			if !horizSeparated && !vertSeparated {
+				t.Fatalf("right pane (%+v) overlaps left pane (%+v)", rightMarker.Full, leftMarker.Full)
+			}
+		})
+	}
+}

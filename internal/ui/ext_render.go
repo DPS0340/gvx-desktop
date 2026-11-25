@@ -378,11 +378,16 @@ func (v *extTreeView) nodeWith(n *uiblock.Node, inLine, bare bool) (out ggui.Wid
 			if n.Change {
 				v.send(id, uiblock.EventChange, x)
 			}
-		})).Options(n.Options).Name(tr("Choose")).Disabled(n.Disabled)).MaxWidth(200)
+		})).Options(n.Options).Name(tr("Choose")).Disabled(n.Disabled)).MaxWidth(260)
 	case uiblock.KindTabs:
 		id := n.ID
 		field := v.form.field(id, n.Value)
 		opts := slices.Clone(n.Options)
+		small := n.Size == "small"
+		pad := 3.0
+		if small {
+			pad = 2.0
+		}
 		out = ggui.View(field, func(active string) ggui.Widget {
 			btns := make([]ggui.Widget, 0, len(opts))
 			for _, opt := range opts {
@@ -397,6 +402,9 @@ func (v *extTreeView) nodeWith(n *uiblock.Node, inLine, bare bool) (out ggui.Wid
 					}
 				}).Disabled(n.Disabled).Name(o)
 				b.Role = ggui.RoleTab
+				if small {
+					b = b.Size(ui.ButtonSmall)
+				}
 				if o == active {
 					b = b.Secondary()
 				} else {
@@ -405,7 +413,7 @@ func (v *extTreeView) nodeWith(n *uiblock.Node, inLine, bare bool) (out ggui.Wid
 				btns = append(btns, b)
 			}
 			return widget.Box(looseHeight{widget.Scroll(widget.Row(btns...).Gap(4).Align(widget.AlignCenter)).Horizontal().Shrink().Bar(color.Transparent)}).
-				Fill(uitheme.Card).Border(1, colorBorder).Radius(8).Pad(3)
+				Fill(uitheme.Card).Border(1, colorBorder).Radius(8).Pad(pad)
 		})
 	case uiblock.KindMarkdown:
 		md := ui.Markdown(uiblock.Printable(n.Text)).Selectable(true)
@@ -1362,21 +1370,24 @@ func (v *extTreeView) container(n *uiblock.Node, bare bool) ggui.Widget {
 		)
 		first := v.node(children[0], false)
 		second := v.node(children[1], false)
+		hFirst := widget.Padding(first, 0, 6, 0, 0)
+		hSecond := widget.Padding(second, 0, 0, 0, 6)
+		vFirst := widget.Padding(first, 0, 0, 6, 0)
+		vSecond := widget.Padding(second, 6, 0, 0, 0)
 		dividerName := cmpTone(n.Text, tr("Pane divider"))
 		var out ggui.Widget
 		if n.Direction == "auto" {
-			horiz := ui.Resizable(ratio, first, second).WithHandle().MinSizes(60, 60).
+			horiz := ui.Resizable(ratio, hFirst, hSecond).WithHandle().MinSizes(60, 60).
 				Disabled(n.Disabled).Name(dividerName)
-			vert := ui.Resizable(ratio, first, second).Vertical().WithHandle().MinSizes(60, 60).
+			vert := ui.Resizable(ratio, vFirst, vSecond).Vertical().WithHandle().MinSizes(60, 60).
 				Disabled(n.Disabled).Name(dividerName)
 			out = &autoSplit{horiz: horiz, vert: vert}
-		} else {
-			sp := ui.Resizable(ratio, first, second).WithHandle().MinSizes(60, 60).
+		} else if n.Direction == "vertical" {
+			out = ui.Resizable(ratio, vFirst, vSecond).Vertical().WithHandle().MinSizes(60, 60).
 				Disabled(n.Disabled).Name(dividerName)
-			if n.Direction == "vertical" {
-				sp = sp.Vertical()
-			}
-			out = sp
+		} else {
+			out = ui.Resizable(ratio, hFirst, hSecond).WithHandle().MinSizes(60, 60).
+				Disabled(n.Disabled).Name(dividerName)
 		}
 		if h := n.MaxHeight; h > 0 {
 			out = widget.Box(out).MaxHeight(h)
@@ -1421,13 +1432,15 @@ func (v *extTreeView) container(n *uiblock.Node, bare bool) ggui.Widget {
 		} else {
 			w = v.node(c, row)
 		}
-		switch g := c.Grow; {
-		case g == 1:
-			w = widget.Expanded(w)
-		case g > 0:
-			w = widget.Flex(w, g)
-		case row && !hasGrow && (c.Kind == uiblock.KindPill || c.Kind == uiblock.KindChip):
-			w = widget.Flexible(w)
+		if !toolbar {
+			switch g := c.Grow; {
+			case g == 1:
+				w = widget.Expanded(w)
+			case g > 0:
+				w = widget.Flex(w, g)
+			case row && !hasGrow && (c.Kind == uiblock.KindPill || c.Kind == uiblock.KindChip):
+				w = widget.Flexible(w)
+			}
 		}
 		kids = append(kids, w)
 	}
@@ -1441,7 +1454,7 @@ func (v *extTreeView) container(n *uiblock.Node, bare bool) ggui.Widget {
 	case uiblock.KindRow:
 		if gap == 0 {
 			if toolbar {
-				gap = 4
+				gap = 6
 			} else {
 				gap = 8
 			}
@@ -1466,7 +1479,7 @@ func (v *extTreeView) container(n *uiblock.Node, bare bool) ggui.Widget {
 		return wrapDialogs(v.maybeDragDrop(widget.Stack(kids...), n, bare))
 	case uiblock.KindCard:
 		if gap == 0 {
-			gap = 6
+			gap = 8
 		}
 		inner := v.tappableBoxWhen(widget.Column(kids...).Gap(gap).Stretch(), n, !bare)
 		if !bare && (n.Drag != "" || n.Drop) {
@@ -1479,25 +1492,25 @@ func (v *extTreeView) container(n *uiblock.Node, bare bool) ggui.Widget {
 		var out ggui.Widget
 		switch n.Variant {
 		case "ghost":
-			out = widget.Box(inner).Radius(8).Pad(8, 10)
+			out = widget.Box(inner).Radius(8).Pad(12, 14)
 		case "outline":
-			out = widget.Box(inner).Border(1, border).Radius(8).Pad(8, 10)
+			out = widget.Box(inner).Border(1, border).Radius(8).Pad(12, 14)
 		case "secondary":
-			out = widget.Box(inner).Fill(uitheme.Muted).Border(1, border).Radius(8).Pad(8, 10)
+			out = widget.Box(inner).Fill(uitheme.Muted).Border(1, border).Radius(8).Pad(12, 14)
 		case "danger":
-			out = widget.Box(inner).Fill(uitheme.Destructive.Alpha(0.12)).Border(1, colorRed).Radius(8).Pad(8, 10)
+			out = widget.Box(inner).Fill(uitheme.Destructive.Alpha(0.12)).Border(1, colorRed).Radius(8).Pad(12, 14)
 		case "warning":
-			out = &extWashed{child: widget.Box(inner).Border(1, colorAmber).Radius(8).Pad(8, 10), color: colorAmber, radius: 8}
+			out = &extWashed{child: widget.Box(inner).Border(1, colorAmber).Radius(8).Pad(12, 14), color: colorAmber, radius: 8}
 		case "primary":
-			out = widget.Box(inner).Fill(uitheme.Muted).Border(1, colorBlue).Radius(8).Pad(8, 10)
+			out = widget.Box(inner).Fill(uitheme.Muted).Border(1, colorBlue).Radius(8).Pad(12, 14)
 		case "soft":
 			if n.Tone != "" {
-				out = &extWashed{child: widget.Box(inner).Pad(8, 10), color: toneColor(n.Tone), radius: 10}
+				out = &extWashed{child: widget.Box(inner).Pad(12, 14), color: toneColor(n.Tone), radius: 10}
 			} else {
-				out = widget.Box(inner).Fill(uitheme.Muted).Radius(10).Pad(8, 10)
+				out = widget.Box(inner).Fill(uitheme.Muted).Radius(10).Pad(12, 14)
 			}
 		default:
-			out = widget.Box(inner).Fill(uitheme.Card).Border(1, border).Radius(8).Pad(8, 10)
+			out = widget.Box(inner).Fill(uitheme.Card).Border(1, border).Radius(8).Pad(12, 14)
 		}
 		return wrapDialogs(out)
 	case uiblock.KindScroll:

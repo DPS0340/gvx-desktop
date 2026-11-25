@@ -141,7 +141,14 @@ func ExpandHome(p string) string {
 type Client struct {
 	Path     string
 	CacheDir string // optional -cache-dir for every command that takes it
+	// VolumeDir is the optional directory of named volumes, given to every
+	// command as VolumeDirEnv. It takes precedence over CacheDir/volumes.
+	VolumeDir string
 }
+
+// VolumeDirEnv is the variable through which rungv takes the directory of
+// named volumes. A rungv that predates it ignores it.
+const VolumeDirEnv = "GVX_VOLUME_DIR"
 
 // Error is a failed rungv command with what it wrote to stderr.
 type Error struct {
@@ -190,11 +197,27 @@ func (c *Client) Args(args ...string) []string {
 	return append(out, args[n:]...)
 }
 
-// Command builds an exec.Cmd for rungv with args.
+// Command builds an exec.Cmd for rungv with args. It sets VolumeDirEnv when
+// VolumeDir is set, and leaves the environment of the app otherwise.
 func (c *Client) Command(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, c.Path, c.Args(args...)...)
+	if c.VolumeDir != "" {
+		cmd.Env = append(os.Environ(), VolumeDirEnv+"="+c.VolumeDir)
+	}
 	hideWindow(cmd)
 	return cmd
+}
+
+// CacheVolumeDir reports whether dir lies in a cache folder that the host may
+// purge. macOS deletes the content of ~/Library/Caches when the disk runs low,
+// and named volumes there can vanish with their data.
+func CacheVolumeDir(goos, home, dir string) bool {
+	if goos != "darwin" || home == "" || dir == "" {
+		return false
+	}
+	caches := filepath.Join(home, "Library", "Caches")
+	rel, err := filepath.Rel(caches, filepath.Clean(dir))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ToolCommand builds an exec.Cmd for another program, such as the docker

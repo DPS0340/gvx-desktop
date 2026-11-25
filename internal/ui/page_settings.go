@@ -2,6 +2,8 @@ package ui
 
 import (
 	"image/color"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -70,12 +72,16 @@ func settingsPage(m *Model) ggui.Widget {
 	set := ggui.Peek(m.Settings)
 	path := ggui.State(set.RungvPath)
 	cache := ggui.State(set.CacheDir)
+	volume := ggui.State(set.VolumeDir)
 	ggui.Watch(m.Settings, func(s storeSettings) {
 		if ggui.Peek(path) != s.RungvPath {
 			path.Set(s.RungvPath)
 		}
 		if ggui.Peek(cache) != s.CacheDir {
 			cache.Set(s.CacheDir)
+		}
+		if ggui.Peek(volume) != s.VolumeDir {
+			volume.Set(s.VolumeDir)
 		}
 	})
 	flag := func(get func(storeSettings) bool, put func(*storeSettings, bool)) ggui.Binding[bool] {
@@ -140,7 +146,7 @@ func settingsPage(m *Model) ggui.Widget {
 		dockerSettings(m),
 		kubeSettings(m),
 		localRegistrySettings(m),
-		rungvSettings(m, path, cache),
+		rungvSettings(m, path, cache, volume),
 		appUpdateSettings(m),
 		settingsGroup(lucide.Download, tr("rungv updates"),
 			widget.Column(
@@ -161,9 +167,9 @@ func settingsPage(m *Model) ggui.Widget {
 	return page(groups...)
 }
 
-// rungvSettings configures the rungv binary path, layer cache, terminal PATH
-// registration, and detected runtime details.
-func rungvSettings(m *Model, path, cache *ggui.StateValue[string]) ggui.Widget {
+// rungvSettings configures the rungv binary path, layer cache, volume
+// directory, terminal PATH registration, and detected runtime details.
+func rungvSettings(m *Model, path, cache, volume *ggui.StateValue[string]) ggui.Widget {
 	pathField := settingField(tr("rungv path"), tr("Leave empty to search $GVX_RUNGV, PATH, ~/.gvx/bin and the app's own folder."), widget.Row(
 		widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, ~/.gvx/bin, next to the app)")).Name(tr("rungv path")).
 			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = strings.TrimSpace(v) }) })),
@@ -171,11 +177,18 @@ func rungvSettings(m *Model, path, cache *ggui.StateValue[string]) ggui.Widget {
 			browseFile(m, path, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = v }) })
 		}).Outline(),
 	).Gap(8))
-	cacheField := settingField(tr("Layer cache directory"), tr("Passed as -cache-dir. Named volumes live in a volumes folder beside it."), widget.Row(
+	cacheField := settingField(tr("Layer cache directory"), tr("Passed as -cache-dir. Named volumes then live in its volumes folder, unless a volume directory is set."), widget.Row(
 		widget.Expanded(ui.TextField(cache).Placeholder(tr("rungv's default")).Name(tr("Layer cache directory")).
 			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = strings.TrimSpace(v) }) })),
 		ui.Button(tr("Browse…"), func() {
 			browseFolder(m, cache, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = v }) })
+		}).Outline(),
+	).Gap(8))
+	volumeField := settingField(tr("Volume directory"), tr("Passed to rungv as GVX_VOLUME_DIR. Keep it out of cache folders: macOS empties ~/Library/Caches when the disk runs low."), widget.Row(
+		widget.Expanded(ui.TextField(volume).Placeholder(tr("rungv's default")).Name(tr("Volume directory")).
+			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.VolumeDir = strings.TrimSpace(v) }) })),
+		ui.Button(tr("Browse…"), func() {
+			browseFolder(m, volume, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.VolumeDir = v }) })
 		}).Outline(),
 	).Gap(8))
 	facts := engineFacts(m)
@@ -183,7 +196,7 @@ func rungvSettings(m *Model, path, cache *ggui.StateValue[string]) ggui.Widget {
 		return s.EnginePath != "" || s.BinInPATH
 	})
 	return ggui.View(showPath, func(visible bool) ggui.Widget {
-		rows := []ggui.Widget{pathField, cacheField}
+		rows := []ggui.Widget{pathField, cacheField, volumeField}
 		if visible {
 			rows = append(rows, rungvPathSettings(m))
 		}
@@ -266,7 +279,7 @@ func engineFacts(m *Model) ggui.Widget {
 			actions = append(actions, tip(ui.Button(tr("Sign rungv"), m.SignRungv).Outline().Size(ui.ButtonSmall),
 				tr("Ad-hoc signs rungv with the com.apple.security.hypervisor entitlement for the hvf engine.")))
 		}
-		return widget.Column(
+		rows := []ggui.Widget{
 			kvText(tr("Binary"), e.Path),
 			kvText(tr("Version"), strings.TrimSpace(e.Version.Version+" "+e.Version.Commit)),
 			kvText(tr("Built with"), e.Version.Go),
@@ -274,9 +287,32 @@ func engineFacts(m *Model) ggui.Widget {
 			kvText(tr("Host lockdown"), e.Info.HostLockdown),
 			kvText(tr("Layer cache"), e.Info.LayerCacheDir),
 			kvText(tr("Volumes"), e.Info.VolumeDir),
-			widget.Padding(widget.Row(actions...).Gap(8), 6, 0, 0, 0),
-		).Gap(8).Stretch()
+		}
+		if note := volumeDirNote(e, ggui.Peek(m.Settings).VolumeDir); note != nil {
+			rows = append(rows, note)
+		}
+		rows = append(rows, widget.Padding(widget.Row(actions...).Gap(8), 6, 0, 0, 0))
+		return widget.Column(rows...).Gap(8).Stretch()
 	})
+}
+
+// volumeDirNote warns when rungv keeps named volumes where they can be lost:
+// it ignored the volume directory setting, or it uses a cache folder that the
+// host may purge. It returns nil when neither applies.
+func volumeDirNote(e Engine, setting string) ggui.Widget {
+	if e.Info.VolumeDir == "" {
+		return nil
+	}
+	if want := rungv.ExpandHome(setting); want != "" && filepath.Clean(want) != filepath.Clean(e.Info.VolumeDir) {
+		return ui.Alert(tr("Volume directory not applied"),
+			tr("This rungv does not read GVX_VOLUME_DIR and keeps volumes in %s. Update rungv to use the setting.", e.Info.VolumeDir)).Icon(icons.Alert)
+	}
+	home, _ := os.UserHomeDir()
+	if rungv.CacheVolumeDir(e.Info.OS, home, e.Info.VolumeDir) {
+		return ui.Alert(tr("Volumes are in a cache folder"),
+			tr("macOS empties ~/Library/Caches when the disk runs low, and named volumes there lose their data. Set a volume directory outside it, or update rungv.")).Icon(icons.Alert)
+	}
+	return nil
 }
 
 // aboutCard names the app and its version, and where to read more.

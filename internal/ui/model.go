@@ -1019,7 +1019,7 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 			r.e.Err = tr("rungv was not found. Install it, or set its path in Settings.")
 			return nil
 		}
-		c := &rungv.Client{Path: path, CacheDir: rungv.ExpandHome(set.CacheDir)}
+		c := &rungv.Client{Path: path, CacheDir: rungv.ExpandHome(set.CacheDir), VolumeDir: rungv.ExpandHome(set.VolumeDir)}
 		r.c = c
 		if v, err := c.Version(ctx); err == nil {
 			r.e.Version = v

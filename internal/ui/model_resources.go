@@ -1044,7 +1044,7 @@ func (m *Model) UpdateSettings(fn func(*store.Settings)) {
 	if err := m.store.SaveSettings(s); err != nil {
 		m.toastError(tr("Could not save settings"), err)
 	}
-	if s.RungvPath != before.RungvPath || s.CacheDir != before.CacheDir {
+	if s.RungvPath != before.RungvPath || s.CacheDir != before.CacheDir || s.VolumeDir != before.VolumeDir {
 		m.DetectEngine(nil)
 	}
 	if s.DockerPath != before.DockerPath {

@@ -40,7 +40,7 @@ type Asset = ghrelease.Asset
 type Release = ghrelease.Release
 
 // ErrNoBuild reports a release with no rungv for this machine.
-var ErrNoBuild = errors.New("the release has no rungv for this system")
+var ErrNoBuild = errors.New("the release has no rungvx for this system")
 
 func get(ctx context.Context, url string) (*http.Response, error) { return ghrelease.Get(ctx, url) }
 
@@ -219,7 +219,7 @@ func untarBinary(archive io.Reader, out io.Writer) error {
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return errors.New("the archive holds no rungv")
+			return errors.New("the archive holds no rungvx")
 		}
 		if err != nil {
 			return err
@@ -252,5 +252,5 @@ func unzipBinary(archive *os.File, out io.Writer) error {
 		_, err = io.Copy(out, io.LimitReader(rc, maxArchive))
 		return err
 	}
-	return errors.New("the archive holds no rungv")
+	return errors.New("the archive holds no rungvx")
 }

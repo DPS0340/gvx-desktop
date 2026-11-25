@@ -538,7 +538,7 @@ func demoState(m *ui.Model, now time.Time) {
 	m.Now.Set(now)
 	m.Update.Set(ui.Update{Tag: "v0.17.10002026110900", Page: rungv.ReleasesURL})
 	m.Engine.Set(ui.Engine{
-		Path:    "/Users/me/.gvx/bin/rungv",
+		Path:    "/Users/me/.gvx/bin/rungvx",
 		Version: rungv.Version{Version: "v0.16.10022026110900", Commit: "a9bfd06", Go: "go1.27.4 darwin/arm64"},
 		Info: rungv.Info{OS: "darwin", Architecture: "arm64", NumCPU: 10, DefaultBackend: "hvf",
 			AvailableBackends: []string{"hvf"}, HostLockdown: "seatbelt",
@@ -558,7 +558,7 @@ func demoState(m *ui.Model, now time.Time) {
 		demoIDs[4]: {Status: sandbox.Running, PID: 41420, StartedAt: now.Add(-50 * time.Minute), Platform: "hvf", Control: true, Paused: true,
 			Ports: []sandbox.PublishedPort{{Host: "127.0.0.1:5001", Guest: 5000, Proto: "tcp"}}},
 		demoIDs[3]: {Status: sandbox.Failed, ExitCode: 1, ExitedAt: now.Add(-5 * time.Minute),
-			Error:  "rungv run: listen tcp 127.0.0.1:5432: bind: address already in use",
+			Error:  "rungvx run: listen tcp 127.0.0.1:5432: bind: address already in use",
 			Advice: rungv.Diagnose("address already in use", 1)},
 	})
 	m.Select(demoIDs[0])
@@ -577,9 +577,9 @@ func demoState(m *ui.Model, now time.Time) {
 		lines = append(lines, sandbox.LogLine{Seq: int64(len(lines) + 1), Time: now.Add(-42*time.Minute + time.Duration(len(lines))*time.Second), Stream: s, Text: text})
 	}
 	add(sandbox.System, "── Starting web · 2026-11-16 14:48:00")
-	add(sandbox.System, "$ rungv run --name web -p 8080:80 -workspace /Users/me/sites/blog nginx:alpine")
-	add(sandbox.Stderr, "rungv: platform=hvf")
-	add(sandbox.Stderr, "rungv: publishing 127.0.0.1:8080 -> 80/tcp")
+	add(sandbox.System, "$ rungvx run --name web -p 8080:80 -workspace /Users/me/sites/blog nginx:alpine")
+	add(sandbox.Stderr, "rungvx: platform=hvf")
+	add(sandbox.Stderr, "rungvx: publishing 127.0.0.1:8080 -> 80/tcp")
 	for _, l := range logs {
 		add(sandbox.Stdout, l)
 	}

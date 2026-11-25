@@ -144,3 +144,12 @@ func TestImageRef(t *testing.T) {
 		t.Error(r)
 	}
 }
+
+func TestCandidatesEnvOrder(t *testing.T) {
+	t.Setenv("GVX_RUNGVX", "/custom/rungvx")
+	t.Setenv("GVX_RUNGV", "/custom/rungv")
+	got := Candidates("/preferred/rungvx")
+	if len(got) < 3 || got[0] != "/preferred/rungvx" || got[1] != "/custom/rungvx" || got[2] != "/custom/rungv" {
+		t.Fatalf("Candidates prefix = %q, want [/preferred/rungvx /custom/rungvx /custom/rungv ...]", got[:min(3, len(got))])
+	}
+}

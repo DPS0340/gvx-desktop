@@ -62,10 +62,16 @@ func probeRungvPathState(enginePath string) RungvPathState {
 		Managed:    ps.Managed,
 	}
 	if enginePath != "" {
-		st.InBinDir = dockercli.BinaryLinkedInBinDir(enginePath, "rungv")
-		if p, err := lookPathRungv(rungv.BinaryName()); err == nil && p != "" {
-			st.PATHBinary = p
-			st.OnPATH = sameBinaryFile(p, enginePath)
+		st.InBinDir = dockercli.BinaryLinkedInBinDir(enginePath, "rungv") ||
+			dockercli.BinaryLinkedInBinDir(enginePath, "rungvx")
+		for _, name := range []string{"rungvx", rungv.BinaryName()} {
+			if p, err := lookPathRungv(name); err == nil && p != "" {
+				st.PATHBinary = p
+				st.OnPATH = sameBinaryFile(p, enginePath)
+				if st.OnPATH {
+					break
+				}
+			}
 		}
 	}
 	return st
@@ -150,9 +156,9 @@ func (m *Model) AddRungvToPATH() {
 			m.BundledDocker.Set(dockerSt)
 		}
 		if prev.BinInPATH {
-			m.toastOK(tr("Linked rungv in ~/.gvx/bin"), tr("Available in terminals via %s.", tildePath(st.BinDir)))
+			m.toastOK(tr("Linked rungvx in ~/.gvx/bin"), tr("Available in terminals via %s.", tildePath(st.BinDir)))
 		} else {
-			m.toastOK(tr("Added ~/.gvx/bin to PATH"), tr("Updated %s. Open a new terminal to use rungv.", tildePath(st.Profile)))
+			m.toastOK(tr("Added ~/.gvx/bin to PATH"), tr("Updated %s. Open a new terminal to use rungvx.", tildePath(st.Profile)))
 		}
 	})
 }

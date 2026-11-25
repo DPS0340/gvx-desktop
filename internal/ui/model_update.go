@@ -263,7 +263,7 @@ func (m *Model) CheckUpdate(quiet bool) {
 		if err != nil {
 			m.Update.Update(func(u Update) Update { u.Checking, u.Err = false, err.Error(); return u })
 			if !quiet {
-				m.toastError(tr("Could not check for a new rungv"), err)
+				m.toastError(tr("Could not check for a new rungvx"), err)
 			}
 			return
 		}
@@ -294,11 +294,11 @@ func (m *Model) CheckUpdate(quiet bool) {
 		}
 		switch e := ggui.Peek(m.Engine); {
 		case e.Path == "":
-			m.toastOK(tr("rungv %s can be installed", u.Name()), "")
+			m.toastOK(tr("rungvx %s can be installed", u.Name()), "")
 		case u.Available(e):
 			m.toastOK(updateTitle(u, e), tr("This computer has %s.", engineVersion(e)))
 		default:
-			m.toastOK(tr("rungv is up to date"), engineVersion(e))
+			m.toastOK(tr("rungvx is up to date"), engineVersion(e))
 		}
 	})
 }
@@ -383,7 +383,7 @@ func (m *Model) installRungv(source bool, tag string) {
 		if runtime.GOOS == "darwin" {
 			// A rungv without the entitlement cannot reach the hypervisor.
 			if err := signRungvBinary(ctx, target); err != nil {
-				return errors.New(tr("rungv was installed, but signing it failed: ") + err.Error())
+				return errors.New(tr("rungvx was installed, but signing it failed: ") + err.Error())
 			}
 		}
 		// A link that cannot be made leaves the install as it is: Add to
@@ -407,13 +407,13 @@ func (m *Model) installRungv(source bool, tag string) {
 		}
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				m.Toasts.Push(ui.Toast(tr("Build canceled"), tr("The rungv installation was canceled.")).Info())
+				m.Toasts.Push(ui.Toast(tr("Build canceled"), tr("The rungvx installation was canceled.")).Info())
 				return
 			}
 			if errors.Is(err, rungv.ErrNoToolchain) {
 				err = errors.New(tr("Building from source needs git and Go on this computer: ") + err.Error())
 			}
-			m.toastError(tr("Could not install rungv"), err)
+			m.toastError(tr("Could not install rungvx"), err)
 			if target != "" {
 				m.DetectEngine(nil)
 			}
@@ -429,7 +429,7 @@ func (m *Model) installRungv(source bool, tag string) {
 			name = commitName(src.BranchName(), built)
 			m.BuildLog.Set("")
 		}
-		m.toastOK(tr("rungv %s installed", name), target)
+		m.toastOK(tr("rungvx %s installed", name), target)
 		m.DetectEngine(nil)
 	}
 	go func() {

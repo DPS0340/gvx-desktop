@@ -112,7 +112,7 @@ func settingsPage(m *Model) ggui.Widget {
 	noTray := ggui.Map(m.Settings, func(s storeSettings) bool { return s.NoTray })
 
 	groups := []ggui.Widget{
-		headed(pageHeader(tr("Settings"), ui.Caption(tr("Where rungv lives and how the app treats running sandboxes."))), engineAlertFor(m, true)),
+		headed(pageHeader(tr("Settings"), ui.Caption(tr("Where rungvx lives and how the app treats running sandboxes."))), engineAlertFor(m, true)),
 		settingsGroup(lucide.Palette, tr("General"),
 			settingRow(tr("Appearance"), tr("Light, dark, or as the system is."),
 				ui.ToggleGroup[string](theme).Options([]string{"system", "light", "dark"}).Format(themeName).Icon(themeIcon).Outline().Spacing(0).Name(tr("Appearance"))),
@@ -148,19 +148,19 @@ func settingsPage(m *Model) ggui.Widget {
 		localRegistrySettings(m),
 		rungvSettings(m, path, cache, volume),
 		appUpdateSettings(m),
-		settingsGroup(lucide.Download, tr("rungv updates"),
+		settingsGroup(lucide.Download, tr("rungvx updates"),
 			widget.Column(
 				settingRow(tr("Channel"),
-					tr("Releases are gvx's published builds. From source clones a git repository and builds rungv on this computer, which needs git and Go."),
+					tr("Releases are gvx's published builds. From source clones a git repository and builds rungvx on this computer, which needs git and Go."),
 					ui.ToggleGroup[string](channel).Options([]string{ChannelRelease, ChannelSource}).Format(channelName).Outline().Spacing(0).
 						BindDisabled(ggui.Map(m.Update, func(u Update) bool { return u.Installing })).Name(tr("Channel"))),
 				sourceFields(m),
 				releaseVersionField(m),
 			).Gap(12).Stretch(),
 			releaseRow(m),
-			settingRow(tr("Look for a newer rungv when the app starts"),
+			settingRow(tr("Look for a newer rungvx when the app starts"),
 				tr("Asks GitHub for the newest release of gvx. Nothing is installed until you say so."),
-				ui.Switch(checkUpdates, "").Name(tr("Look for a newer rungv when the app starts"))),
+				ui.Switch(checkUpdates, "").Name(tr("Look for a newer rungvx when the app starts"))),
 		),
 		aboutCard(m),
 	)
@@ -170,22 +170,22 @@ func settingsPage(m *Model) ggui.Widget {
 // rungvSettings configures the rungv binary path, layer cache, volume
 // directory, terminal PATH registration, and detected runtime details.
 func rungvSettings(m *Model, path, cache, volume *ggui.StateValue[string]) ggui.Widget {
-	pathField := settingField(tr("rungv path"), tr("Leave empty to search $GVX_RUNGV, PATH, ~/.gvx/bin and the app's own folder."), widget.Row(
-		widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, ~/.gvx/bin, next to the app)")).Name(tr("rungv path")).
+	pathField := settingField(tr("rungvx path"), tr("Leave empty to search $GVX_RUNGVX, $GVX_RUNGV, PATH, ~/.gvx/bin and the app's own folder."), widget.Row(
+		widget.Expanded(ui.TextField(path).Placeholder(tr("Find automatically (PATH, ~/.gvx/bin, next to the app)")).Name(tr("rungvx path")).
 			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = strings.TrimSpace(v) }) })),
 		ui.Button(tr("Browse…"), func() {
 			browseFile(m, path, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = v }) })
 		}).Outline(),
 	).Gap(8))
 	cacheField := settingField(tr("Layer cache directory"), tr("Passed as -cache-dir. Named volumes then live in its volumes folder, unless a volume directory is set."), widget.Row(
-		widget.Expanded(ui.TextField(cache).Placeholder(tr("rungv's default")).Name(tr("Layer cache directory")).
+		widget.Expanded(ui.TextField(cache).Placeholder(tr("rungvx's default")).Name(tr("Layer cache directory")).
 			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = strings.TrimSpace(v) }) })),
 		ui.Button(tr("Browse…"), func() {
 			browseFolder(m, cache, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = v }) })
 		}).Outline(),
 	).Gap(8))
-	volumeField := settingField(tr("Volume directory"), tr("Passed to rungv as GVX_VOLUME_DIR. Keep it out of cache folders: macOS empties ~/Library/Caches when the disk runs low."), widget.Row(
-		widget.Expanded(ui.TextField(volume).Placeholder(tr("rungv's default")).Name(tr("Volume directory")).
+	volumeField := settingField(tr("Volume directory"), tr("Passed to rungvx as GVX_VOLUME_DIR. Keep it out of cache folders: macOS empties ~/Library/Caches when the disk runs low."), widget.Row(
+		widget.Expanded(ui.TextField(volume).Placeholder(tr("rungvx's default")).Name(tr("Volume directory")).
 			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.VolumeDir = strings.TrimSpace(v) }) })),
 		ui.Button(tr("Browse…"), func() {
 			browseFolder(m, volume, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.VolumeDir = v }) })
@@ -201,7 +201,7 @@ func rungvSettings(m *Model, path, cache, volume *ggui.StateValue[string]) ggui.
 			rows = append(rows, rungvPathSettings(m))
 		}
 		rows = append(rows, facts)
-		return settingsGroup(lucide.Cpu, "rungv", rows...)
+		return settingsGroup(lucide.Cpu, "rungvx", rows...)
 	})
 }
 
@@ -225,7 +225,7 @@ func rungvPathSettings(m *Model) ggui.Widget {
 			}
 		case s.BinInPATH && s.InBinDir:
 			if s.PATHBinary != "" && !s.OnPATH {
-				help = tr("Available via %s (%s). Another rungv is earlier on PATH (%s).", bin, prof, tildePath(s.PATHBinary))
+				help = tr("Available via %s (%s). Another rungvx is earlier on PATH (%s).", bin, prof, tildePath(s.PATHBinary))
 			} else if prof != "" {
 				help = tr("Available in terminals via %s (%s).", bin, prof)
 			} else {
@@ -240,16 +240,16 @@ func rungvPathSettings(m *Model) ggui.Widget {
 				controls = append(controls, ui.Button(tr("Remove from PATH"), m.RemoveRungvFromPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
 			}
 		case s.BinInPATH && !s.InBinDir:
-			help = tr("%s is already on your terminal PATH. Link this rungv binary there to run it from terminals.", bin)
+			help = tr("%s is already on your terminal PATH. Link this rungvx binary there to run it from terminals.", bin)
 			controls = append(controls, ui.Button(tr("Link to ~/.gvx/bin"), m.AddRungvToPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
 			if s.Managed {
 				controls = append(controls, ui.Button(tr("Remove from PATH"), m.RemoveRungvFromPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
 			}
 		case s.InBinDir:
-			help = tr("Add %s to %s to run rungv from any new terminal.", bin, prof)
+			help = tr("Add %s to %s to run rungvx from any new terminal.", bin, prof)
 			controls = append(controls, ui.Button(tr("Add to PATH"), m.AddRungvToPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
 		default:
-			help = tr("Link rungv into %s and add it to %s to run it from any new terminal.", bin, prof)
+			help = tr("Link rungvx into %s and add it to %s to run it from any new terminal.", bin, prof)
 			controls = append(controls, ui.Button(tr("Add to PATH"), m.AddRungvToPATH).Outline().Size(ui.ButtonSmall).Disabled(s.Busy))
 		}
 
@@ -276,8 +276,8 @@ func engineFacts(m *Model) ggui.Widget {
 		}
 		actions := []ggui.Widget{again}
 		if e.Info.OS == "darwin" {
-			actions = append(actions, tip(ui.Button(tr("Sign rungv"), m.SignRungv).Outline().Size(ui.ButtonSmall),
-				tr("Ad-hoc signs rungv with the com.apple.security.hypervisor entitlement for the hvf engine.")))
+			actions = append(actions, tip(ui.Button(tr("Sign rungvx"), m.SignRungv).Outline().Size(ui.ButtonSmall),
+				tr("Ad-hoc signs rungvx with the com.apple.security.hypervisor entitlement for the hvf engine.")))
 		}
 		rows := []ggui.Widget{
 			kvText(tr("Binary"), e.Path),
@@ -305,12 +305,12 @@ func volumeDirNote(e Engine, setting string) ggui.Widget {
 	}
 	if want := rungv.ExpandHome(setting); want != "" && filepath.Clean(want) != filepath.Clean(e.Info.VolumeDir) {
 		return ui.Alert(tr("Volume directory not applied"),
-			tr("This rungv does not read GVX_VOLUME_DIR and keeps volumes in %s. Update rungv to use the setting.", e.Info.VolumeDir)).Icon(icons.Alert)
+			tr("This rungvx does not read GVX_VOLUME_DIR and keeps volumes in %s. Update rungvx to use the setting.", e.Info.VolumeDir)).Icon(icons.Alert)
 	}
 	home, _ := os.UserHomeDir()
 	if rungv.CacheVolumeDir(e.Info.OS, home, e.Info.VolumeDir) {
 		return ui.Alert(tr("Volumes are in a cache folder"),
-			tr("macOS empties ~/Library/Caches when the disk runs low, and named volumes there lose their data. Set a volume directory outside it, or update rungv.")).Icon(icons.Alert)
+			tr("macOS empties ~/Library/Caches when the disk runs low, and named volumes there lose their data. Set a volume directory outside it, or update rungvx.")).Icon(icons.Alert)
 	}
 	return nil
 }
@@ -449,19 +449,19 @@ func releaseRow(m *Model) ggui.Widget {
 		branch := u.BranchName()
 		var text string
 		var action ggui.Widget = widget.Box()
-		install := tr("Install rungv")
+		install := tr("Install rungvx")
 		if u.Source {
 			install = tr("Build and install")
 		}
 		switch {
 		case u.Installing && u.Source:
-			text = tr("Building rungv from %s", branch)
+			text = tr("Building rungvx from %s", branch)
 			action = widget.Row(
 				installButton(m, u, install).Size(ui.ButtonSmall),
 				ui.Button(tr("Cancel"), m.CancelInstallRungv).Outline().Size(ui.ButtonSmall),
 			).Gap(6).Align(widget.AlignCenter)
 		case u.Installing:
-			text = tr("Installing rungv %s", u.InstallName())
+			text = tr("Installing rungvx %s", u.InstallName())
 			action = widget.Row(
 				installReleaseButton(m, u, sel, install).Size(ui.ButtonSmall),
 				ui.Button(tr("Cancel"), m.CancelInstallRungv).Outline().Size(ui.ButtonSmall),
@@ -476,20 +476,20 @@ func releaseRow(m *Model) ggui.Widget {
 			ver := shortVersion(sel)
 			switch {
 			case e.Path == "":
-				text = tr("rungv %s can be installed into ~/.gvx/bin.", ver)
+				text = tr("rungvx %s can be installed into ~/.gvx/bin.", ver)
 				action = installReleaseButton(m, u, sel, install).Size(ui.ButtonSmall)
 			case e.Version.Version == sel:
-				text = tr("rungv %s is currently installed.", ver)
+				text = tr("rungvx %s is currently installed.", ver)
 				action = ui.Button(tr("Reinstall"), func() { m.InstallRungvRelease(sel) }).Outline().Size(ui.ButtonSmall)
 			case rungv.Newer(sel, e.Version.Version):
-				text = tr("rungv %s is selected; this computer has %s.", ver, engineVersion(e))
+				text = tr("rungvx %s is selected; this computer has %s.", ver, engineVersion(e))
 				action = installReleaseButton(m, u, sel, tr("Install %s", ver)).Size(ui.ButtonSmall)
 			default:
-				text = tr("rungv %s is selected (older than %s).", ver, engineVersion(e))
+				text = tr("rungvx %s is selected (older than %s).", ver, engineVersion(e))
 				action = installReleaseButton(m, u, sel, tr("Install %s", ver)).Size(ui.ButtonSmall)
 			}
 		case e.Path == "":
-			text = tr("rungv %s can be installed into ~/.gvx/bin.", u.Name())
+			text = tr("rungvx %s can be installed into ~/.gvx/bin.", u.Name())
 			action = installButton(m, u, install).Size(ui.ButtonSmall)
 		case u.Available(e):
 			switch {
@@ -498,16 +498,16 @@ func releaseRow(m *Model) ggui.Widget {
 			case u.Source:
 				text = tr("%s is at %s; this computer has %s.", branch, u.Name(), engineVersion(e))
 			case u.Newer(e):
-				text = tr("rungv %s is available; this computer has %s.", u.Name(), engineVersion(e))
+				text = tr("rungvx %s is available; this computer has %s.", u.Name(), engineVersion(e))
 			default:
-				text = tr("The newest release is rungv %s; this computer has %s.", u.Name(), engineVersion(e))
+				text = tr("The newest release is rungvx %s; this computer has %s.", u.Name(), engineVersion(e))
 			}
 			action = installButton(m, u, updateVerb(u, e)).Size(ui.ButtonSmall)
 		case u.Source:
-			text = tr("rungv is up to date with %s (%s).", branch, u.Name())
+			text = tr("rungvx is up to date with %s (%s).", branch, u.Name())
 			action = ui.Button(tr("Build again"), m.InstallRungv).Outline().Size(ui.ButtonSmall)
 		default:
-			text = tr("rungv is up to date: %s is the newest release.", u.Name())
+			text = tr("rungvx is up to date: %s is the newest release.", u.Name())
 		}
 		return widget.Row(
 			action,
@@ -644,12 +644,12 @@ func dockerSettings(m *Model) ggui.Widget {
 	sharedRow := sharedFoldersField(m)
 	lanRow := settingRow(
 		tr("Publish container ports on local network (0.0.0.0)"),
-		tr("Published container ports default to 127.0.0.1 only. Turning this on binds ports on 0.0.0.0, exposing them to other devices on your local network (requires rungv v0.21+ for Docker Engine)."),
+		tr("Published container ports default to 127.0.0.1 only. Turning this on binds ports on 0.0.0.0, exposing them to other devices on your local network (requires rungvx v0.21+ for Docker Engine)."),
 		ui.Switch(exposeLAN, "").Name(tr("Publish container ports on local network (0.0.0.0)")),
 	)
 	sshRow := settingRow(
 		tr("Forward host SSH agent"),
-		tr("Relays this machine's SSH_AUTH_SOCK to /run/host-services/ssh-auth.sock for containers that mount it. Requires rungv v0.21+."),
+		tr("Relays this machine's SSH_AUTH_SOCK to /run/host-services/ssh-auth.sock for containers that mount it. Requires rungvx v0.21+."),
 		ui.Switch(sshAgent, "").Name(tr("Forward host SSH agent")),
 	)
 	cfgRow := dockerConfigField(m)
@@ -1289,9 +1289,9 @@ func sharedFoldersField(m *Model) ggui.Widget {
 		})
 		caption := ui.CaptionOf(ggui.Map(m.RungvFeatures, func(f rungv.Features) string {
 			if f.BindAttach || f.KeepBlobs {
-				return tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. Changes apply live to a running engine without restarting.")
+				return tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungvx keeps the owners of files in a .gvx_meta file at the top of each. Changes apply live to a running engine without restarting.")
 			}
-			return tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungv keeps the owners of files in a .gvx_meta file at the top of each. The engine sees a change when it is restarted.")
+			return tr("The Docker Engine sees these folders at the same paths, so docker run -v and the bind mounts of a compose file work with what is in them. rungvx keeps the owners of files in a .gvx_meta file at the top of each. The engine sees a change when it is restarted.")
 		}))
 		help := []ggui.Widget{list, caption}
 		if runtime.GOOS == "windows" {

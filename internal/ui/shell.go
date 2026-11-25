@@ -323,9 +323,9 @@ func MarkPNG() []byte { return markPNG }
 // AppVersion is the version of the app, which main sets.
 var AppVersion = "dev"
 
-// EngineLine says in a few words which rungv the app runs sandboxes with,
+// EngineLine says in a few words which rungvx the app runs sandboxes with,
 // or that it has none.
-func EngineLine(e Engine) string { return "rungv · " + engineShort(e) }
+func EngineLine(e Engine) string { return "rungvx · " + engineShort(e) }
 
 // ShortVersion is a version of gvx without its build stamp.
 func ShortVersion(v string) string { return shortVersion(v) }
@@ -367,7 +367,7 @@ func engineShort(e Engine) string {
 	}
 	v := engineVersion(e)
 	if v == "" {
-		v = "rungv"
+		v = "rungvx"
 	}
 	return v + " · " + e.Info.DefaultBackend
 }
@@ -452,7 +452,7 @@ func engineTooltip(e Engine) string {
 		return e.Err
 	}
 	if !e.Checked {
-		return tr("Looking for rungv…")
+		return tr("Looking for rungvx…")
 	}
 	return fmt.Sprintf(tr("%s · backends: %s · lockdown: %s"), e.Path, strings.Join(e.Info.AvailableBackends, ", "), e.Info.HostLockdown)
 }
@@ -462,7 +462,7 @@ func statusBar(m *Model) ggui.Widget {
 		if e.Err != "" || !e.Checked {
 			return engineShort(e)
 		}
-		return fmt.Sprintf(tr("rungv %s · %s · %s lockdown"), engineVersion(e), e.Info.DefaultBackend, e.Info.HostLockdown)
+		return fmt.Sprintf(tr("rungvx %s · %s · %s lockdown"), engineVersion(e), e.Info.DefaultBackend, e.Info.HostLockdown)
 	})).Size(11).NoWrap()
 	running := ui.CaptionOf(ggui.Derived(func() string {
 		s := fmt.Sprintf(tr("%d of %d sandboxes running"), m.Running.Get(), len(m.Specs.Get()))

@@ -145,15 +145,15 @@ func TestSandboxShellTargetGating(t *testing.T) {
 			name:     "no control and v0.19 features",
 			state:    sandbox.State{Status: sandbox.Running, Control: false},
 			features: rungv.Features{Control: false},
-			wantWhy:  "Needs rungv v0.20 or later",
-			wantText: "Update rungv in Settings to open a shell in a running sandbox, pause it, and change its resources while it runs.",
+			wantWhy:  "Needs rungvx v0.20 or later",
+			wantText: "Update rungvx in Settings to open a shell in a running sandbox, pause it, and change its resources while it runs.",
 		},
 		{
 			name:     "no control and v0.20 features (started before upgrade)",
 			state:    sandbox.State{Status: sandbox.Running, Control: false},
 			features: rungv.Features{Control: true},
 			wantWhy:  "Restart the sandbox to open a shell",
-			wantText: "It started before rungv was updated. Restart it to open a shell, pause it, or change its resources while it runs.",
+			wantText: "It started before rungvx was updated. Restart it to open a shell, pause it, or change its resources while it runs.",
 		},
 		{
 			name:     "running with control live",
@@ -231,8 +231,8 @@ func TestContainerShellTargetGating(t *testing.T) {
 			state:    "running",
 			se:       true,
 			features: rungv.Features{Control: false},
-			wantWhy:  "Needs rungv v0.20 or later",
-			wantText: "Container exec in the sandbox engine needs rungv v0.20 or later. Update rungv in Settings, then restart the container.",
+			wantWhy:  "Needs rungvx v0.20 or later",
+			wantText: "Container exec in the sandbox engine needs rungvx v0.20 or later. Update rungvx in Settings, then restart the container.",
 		},
 		{
 			name:     "engine mode v0.20 paused",
@@ -257,7 +257,7 @@ func TestContainerShellTargetGating(t *testing.T) {
 			features:   rungv.Features{Control: true},
 			canControl: false,
 			wantWhy:    "Restart the container to open a shell",
-			wantText:   "It started before rungv was updated to v0.20.",
+			wantText:   "It started before rungvx was updated to v0.20.",
 		},
 		{
 			name:       "engine mode v0.20 running with control",
@@ -660,10 +660,10 @@ func TestV020UIScreensAndGating(t *testing.T) {
 		t.Errorf("stopped sandbox terminal missing message:\n%s", p.Semantics())
 	}
 
-	// Running without Control, v0.19 features -> Needs rungv v0.20 or later.
+	// Running without Control, v0.19 features -> Needs rungvx v0.20 or later.
 	m.States.Set(map[string]sandbox.State{web.ID: {Status: sandbox.Running}})
 	p.Frame()
-	if !shows("Needs rungv v0.20 or later") {
+	if !shows("Needs rungvx v0.20 or later") {
 		t.Errorf("v0.19 sandbox terminal missing message:\n%s", p.Semantics())
 	}
 
@@ -719,7 +719,7 @@ func TestV020UIScreensAndGating(t *testing.T) {
 	}
 	m.RungvFeatures.Set(rungv.Features{})
 	p.Frame()
-	if !shows("Update rungv to v0.20 or later for exec, cp, diff, export, commit, pause, top and update.") {
+	if !shows("Update rungvx to v0.20 or later for exec, cp, diff, export, commit, pause, top and update.") {
 		t.Errorf("Docker v0.19 upgrade note missing:\n%s", p.Semantics())
 	}
 
@@ -730,7 +730,7 @@ func TestV020UIScreensAndGating(t *testing.T) {
 	m.Go(PageContainers)
 	m.ContainerDetail.Set(containerTerminalTab)
 	p.Frame()
-	if !shows("Needs rungv v0.20 or later") {
+	if !shows("Needs rungvx v0.20 or later") {
 		t.Errorf("Containers engine mode v0.19 missing message:\n%s", p.Semantics())
 	}
 

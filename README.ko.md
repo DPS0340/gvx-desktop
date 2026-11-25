@@ -43,7 +43,7 @@ xattr -dr com.apple.quarantine "/Applications/GVX Desktop.app"
 
 Homebrew cask는 ad hoc 서명 빌드의 격리 속성을 자동으로 처리합니다.
 
-macOS 앱 번들에는 공식 Docker CLI(`docker`, `buildx`, `compose`)가 `Contents/Helpers` 안에 포함되어 있습니다. **설정 → Docker** 및 **설정 → rungv**에서 `~/.gvx/bin`을 통해 번들 Docker CLI와 `rungv`를 터미널 `PATH`에 등록할 수 있습니다.
+macOS 앱 번들에는 공식 Docker CLI(`docker`, `buildx`, `compose`)가 `Contents/Helpers` 안에 포함되어 있습니다. **설정 → Docker** 및 **설정 → rungvx**에서 `~/.gvx/bin`을 통해 번들 Docker CLI와 `rungvx`를 터미널 `PATH`에 등록할 수 있습니다.
 
 ### Windows
 
@@ -100,7 +100,7 @@ gh attestation verify "gvx-desktop-$V-macos-arm64.dmg" \
 
 ## 첫 샌드박스 실행
 
-1. GVX Desktop을 엽니다. 대시보드에 엔진 설치 안내가 표시되면 **rungv 설치**를 선택합니다. 이미 설치된 바이너리는 **설정 → rungv → rungv 경로**에서 지정할 수 있습니다.
+1. GVX Desktop을 엽니다. 대시보드에 엔진 설치 안내가 표시되면 **rungvx 설치**를 선택합니다. 이미 설치된 바이너리는 **설정 → rungvx → rungvx 경로**에서 지정할 수 있습니다.
 2. 대시보드에서 **새 샌드박스**를 선택합니다. **이미지**에 `nginx:alpine`, **이름**에 `web`을 입력합니다.
 3. 호스트에서 nginx에 접속하려면 **게시 포트**에 `127.0.0.1:8080:80`을 입력합니다.
 4. **저장하고 시작**을 선택합니다. 샌드박스 상세 화면에서 실시간 **로그**를 확인할 수 있습니다. 포트를 게시했다면 브라우저에서 `http://127.0.0.1:8080`을 엽니다.
@@ -110,43 +110,43 @@ gh attestation verify "gvx-desktop-$V-macos-arm64.dmg" \
 | 영역 | 할 수 있는 일 |
 | --- | --- |
 | **대시보드** | 엔진 상태, 리소스 개수, 실행 중인 샌드박스 사용량을 확인하고 **Docker** 및 **Kubernetes** 레시피를 시작합니다. |
-| **샌드박스** | 생성·편집 시 `rungv run` 명령을 실시간으로 미리 봅니다. CPU·메모리·BLKIO 모니터링, 실시간 로그 필터링, 실행 중 동적 포트 및 호스트 바인드 마운트 변경, NAT QoS 및 방화벽 정책, 일시 정지/재개, 복제, 앱과 함께 자동 시작을 지원합니다. |
-| **이미지 및 내장 로컬 레지스트리** | 기본 Sandbox Engine 모드에서는 GVX 샌드박스와 Docker가 `rungv`의 EROFS 레이어 캐시를 함께 쓰는 통합 **캐시된 이미지** 탭을 제공합니다(호환성 모드에서는 **GVX 샌드박스** / **Docker** 탭으로 분리). Docker Hub·Quay 검색, 이미지 파일·레이어 탐색기, 그리고 Docker/Kubernetes와 함께 자동 시작되는 **내장 로컬 OCI 레지스트리**(`127.0.0.1:5001`, 별도 `registry:2` 컨테이너 불필요)를 제공합니다. |
+| **샌드박스** | 생성·편집 시 `rungvx run` 명령을 실시간으로 미리 봅니다. CPU·메모리·BLKIO 모니터링, 실시간 로그 필터링, 실행 중 동적 포트 및 호스트 바인드 마운트 변경, NAT QoS 및 방화벽 정책, 일시 정지/재개, 복제, 앱과 함께 자동 시작을 지원합니다. |
+| **이미지 및 내장 로컬 레지스트리** | 기본 Sandbox Engine 모드에서는 GVX 샌드박스와 Docker가 `rungvx`의 EROFS 레이어 캐시를 함께 쓰는 통합 **캐시된 이미지** 탭을 제공합니다(호환성 모드에서는 **GVX 샌드박스** / **Docker** 탭으로 분리). Docker Hub·Quay 검색, 이미지 파일·레이어 탐색기, 그리고 Docker/Kubernetes와 함께 자동 시작되는 **내장 로컬 OCI 레지스트리**(`127.0.0.1:5001`, 별도 `registry:2` 컨테이너 불필요)를 제공합니다. |
 | **볼륨 및 스냅샷** | `ext4lite` 또는 `hostfs` 볼륨을 생성·확인·정리합니다. 샌드박스 체크포인트를 켜면 실행 상태를 유지하거나 중지하면서 밀리초 단위의 gVisor 스냅샷을 저장하고 언제든 복원·삭제할 수 있습니다. |
 | **Docker** | 기본 **Sandbox Engine** 모드에서 각 컨테이너를 독립된 비특권 gvx 샌드박스로 직접 실행합니다. 번들 `docker`·`buildx`·`compose` CLI, Compose `service_healthy` 및 `Healthcheck`, 오버레이 네트워킹, 호스트 바인드 마운트, BuildKit 빌더, 선택적 LAN 포트 게시(`0.0.0.0`), 호스트 SSH 에이전트 포워딩을 지원합니다. 원본 `docker:dind`는 **설정 → Docker**의 **호환성** 모드에서 계속 사용할 수 있습니다. |
 | **Kubernetes (k3s)** | 단일 및 멀티 노드(에이전트 샌드박스) k3s 클러스터를 시작하고 `gvx-k3s` kubeconfig 컨텍스트를 구성합니다. **클러스터에 로드**로 이미지를 직접 가져오고, 내장 로컬 레지스트리와 연동하며, 파드·워크로드·서비스 관리, `kubectl` 없는 포트 포워딩, ServiceLB를 지원합니다. |
 | **실험실 (Labs)** | **로컬 HTTPS 라우팅 (`*.localhost`)**: `/etc/hosts` 수정 없이 실행 중인 컨테이너, Compose 서비스, 샌드박스, Kubernetes 포트 포워드를 루프백 HTTP/HTTPS 리버스 프록시(`:18080` / `:18443`)와 로컬 개발 CA·동적 TLS 인증서로 연결합니다. **AI 에이전트 MCP 서버**: 14개 도구(샌드박스, exec, 로그, 체크포인트 스냅샷·복원, 컨테이너, 이미지, 로컬 라우트)를 제공하는 내장 Streamable HTTP MCP 서버(`http://127.0.0.1:18787/mcp`)와 Claude Code·JSON 설정 원클릭 복사를 지원합니다. **크로스 아키텍처 및 컨테이너별 마이크로 VM** (Apple Silicon macOS): Rosetta 기반 `linux/amd64` 이미지 빌드 및 컨테이너 실행, 전체 Linux 커널이 필요한 워크로드를 위한 `linux/arm64` 마이크로 VM 선택 실행(`--runtime=microvm` / Compose `runtime: microvm`), 제로카피 EROFS 이미지 캐시 공유, `gvx ↔ microvm` 혼합 Compose 오버레이 네트워킹을 지원합니다. |
-| **데스크톱 및 업데이트** | Zig 기반 네이티브 GPU 렌더러(`ggui v0.8.2`), macOS·Windows 트레이 모드, 7개 언어(`en`, `ko`, `ja`, `zh-Hans`, `zh-Hant`, `de`, `hi`), 명령 팔레트(`⌘K`) 및 페이지 단축키(`⌘1`–`⌘9`), `rungv` 및 앱 자동 업데이트(Sparkle 2 appcast + GitHub Releases 폴백), `rungv`와 번들 Docker CLI의 `~/.gvx/bin` 터미널 PATH 원클릭 등록을 지원합니다. |
+| **데스크톱 및 업데이트** | Zig 기반 네이티브 GPU 렌더러(`ggui v0.8.2`), macOS·Windows 트레이 모드, 7개 언어(`en`, `ko`, `ja`, `zh-Hans`, `zh-Hant`, `de`, `hi`), 명령 팔레트(`⌘K`) 및 페이지 단축키(`⌘1`–`⌘9`), `rungvx` 및 앱 자동 업데이트(Sparkle 2 appcast + GitHub Releases 폴백), `rungvx`와 번들 Docker CLI의 `~/.gvx/bin` 터미널 PATH 원클릭 등록을 지원합니다. |
 
 앱은 기본적으로 시스템 언어를 따릅니다. **설정 → 일반 → 언어**에서 언제든 바꿀 수 있습니다.
 
-## rungv 엔진 관리
+## rungvx 엔진 관리
 
-GVX Desktop은 다음 순서로 검색해 처음 발견한 `rungv` 실행 파일을 사용합니다.
+GVX Desktop은 다음 순서로 검색해 처음 발견한 `rungvx`(또는 기존 `rungv`) 실행 파일을 사용합니다.
 
-1. **설정 → rungv → rungv 경로**에 지정한 경로
-2. `GVX_RUNGV` 환경 변수
+1. **설정 → rungvx → rungvx 경로**에 지정한 경로
+2. `GVX_RUNGVX` 또는 `GVX_RUNGV` 환경 변수
 3. `PATH`
 4. `~/.gvx/bin`
 5. 앱 실행 파일 기준 경로(번들 리소스 포함), 그다음 현재 작업 디렉터리의 `./bin`
 6. Windows 이외 환경의 `/opt/homebrew/bin`과 `/usr/local/bin`
 
-각 위치에서 `rungv`를 먼저 찾고, 없으면 gvx v0.23부터 쓰는 이름인 `rungvx`를 찾습니다. 설치와 업데이트는 계속 `rungv`라는 이름으로 합니다.
+각 위치에서 `rungv`와 `rungvx`(gvx v0.23부터 쓰는 이름)를 찾습니다. 기존 환경과의 호환을 위해 설치와 업데이트는 `~/.gvx/bin/rungv`에 바이너리를 두고, 바이너리가 `rungvx`이면 옆에 `rungvx` 링크도 함께 만듭니다.
 
-터미널에서도 `rungv`를 바로 실행하려면 **설정 → rungv → 터미널 PATH**에서 **PATH에 추가**를 선택해 `~/.gvx/bin`에 연결하고 셸 프로필(Windows는 사용자 `PATH`)에 등록하세요. 그 `rungv`가 `rungvx`(gvx v0.23 이후)이면 gvx 문서에서 쓰는 이름인 `rungvx` 링크도 `~/.gvx/bin`에 함께 만듭니다. 설치나 업데이트 뒤에도 앱이 이 링크를 만듭니다.
+터미널에서도 `rungvx`를 바로 실행하려면 **설정 → rungvx → 터미널 PATH**에서 **PATH에 추가**를 선택해 `~/.gvx/bin`에 연결하고 셸 프로필(Windows는 사용자 `PATH`)에 등록하세요. 설치된 바이너리가 `rungvx`(gvx v0.23 이후)이면 `~/.gvx/bin`에 `rungvx` 링크도 함께 만듭니다. 설치나 업데이트 뒤에도 앱이 이 링크를 만듭니다.
 
-macOS에서 `rungv`에는 `com.apple.security.hypervisor` 권한이 필요합니다. 앱에서 설치한 바이너리는 자동으로 서명하며, 기존 바이너리에 권한이 없으면 **rungv 서명**을 제공합니다.
+macOS에서 `rungvx`에는 `com.apple.security.hypervisor` 권한이 필요합니다. 앱에서 설치한 바이너리는 자동으로 서명하며, 기존 바이너리에 권한이 없으면 **rungvx 서명**을 제공합니다.
 
 ### 업데이트
 
-**설정 → rungv 업데이트 → 채널**에서 설치 및 업데이트 채널을 선택합니다.
+**설정 → rungvx 업데이트 → 채널**에서 설치 및 업데이트 채널을 선택합니다.
 
-| 채널 | `rungv` 설치 방식 |
+| 채널 | `rungvx` 설치 방식 |
 | --- | --- |
 | **릴리스** | 플랫폼에 맞는 최신 [gvx 릴리스](https://github.com/gfire-sigs/gvx/releases)를 내려받고 `SHA256SUMS`로 검증합니다. |
-| **소스에서 빌드** | Git 저장소와 브랜치(기본값은 gvx `main`)에서 `rungv`를 로컬 빌드합니다. Git과 Go가 필요하며, 첫 빌드에서는 gVisor를 컴파일하므로 몇 분 걸릴 수 있습니다. |
+| **소스에서 빌드** | Git 저장소와 브랜치(기본값은 gvx `main`)에서 `rungvx`를 로컬 빌드합니다. Git과 Go가 필요하며, 첫 빌드에서는 gVisor를 컴파일하므로 몇 분 걸릴 수 있습니다. |
 
-시작 시 자동 업데이트 확인은 **설정 → rungv 업데이트**와 **설정 → GVX Desktop 업데이트**에서 켜거나 끌 수 있습니다. 실행 중인 샌드박스는 시작할 때 사용한 `rungv` 바이너리로 계속 실행됩니다.
+시작 시 자동 업데이트 확인은 **설정 → rungvx 업데이트**와 **설정 → GVX Desktop 업데이트**에서 켜거나 끌 수 있습니다. 실행 중인 샌드박스는 시작할 때 사용한 `rungvx` 바이너리로 계속 실행됩니다.
 
 ## 개발 및 릴리스
 

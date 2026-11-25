@@ -71,7 +71,7 @@ func (m *Model) Pull() {
 	if target == PullTargetDocker {
 		m.PullLog.Set("$ docker pull " + ref + "\n")
 	} else {
-		m.PullLog.Set("$ rungv pull " + ref + "\n")
+		m.PullLog.Set("$ rungvx pull " + ref + "\n")
 	}
 	var mu sync.Mutex
 	var pending []string

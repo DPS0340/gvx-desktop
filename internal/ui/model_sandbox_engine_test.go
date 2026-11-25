@@ -867,7 +867,7 @@ func TestSandboxEngineUIAndGating(t *testing.T) {
 	if ggui.Peek(m.Page) != PageContainers {
 		t.Fatalf("Go(PageContainers) did not open page in sandbox-engine mode")
 	}
-	if !shows("Needs rungv v0.20 or later") {
+	if !shows("Needs rungvx v0.20 or later") {
 		t.Errorf("Terminal tab missing v0.20 requirement message:\n%s", p.Semantics())
 	}
 	m.terms.mu.Lock()

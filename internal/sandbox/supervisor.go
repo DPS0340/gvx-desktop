@@ -438,19 +438,19 @@ func (s *Supervisor) Restore(spec Spec, dir string) error {
 
 func checkSpecFeatures(spec Spec, feat rungv.Features) error {
 	if len(spec.UnixForwards) > 0 && !feat.UnixForward {
-		return errors.New("Unix socket forwarding (--unix-forward) requires rungv v0.21 or later.")
+		return errors.New("Unix socket forwarding (--unix-forward) requires rungvx v0.21 or later.")
 	}
 	if (spec.NetTXBPS > 0 || spec.NetRXBPS > 0) && !feat.NetQoS {
-		return errors.New("Network bandwidth limits (--net-tx-bps / --net-rx-bps) require rungv v0.21 or later.")
+		return errors.New("Network bandwidth limits (--net-tx-bps / --net-rx-bps) require rungvx v0.21 or later.")
 	}
 	if strings.TrimSpace(spec.NATPolicyFile) != "" && !feat.NATPolicy {
-		return errors.New("NAT firewall policy (--nat-policy-file) requires rungv v0.21 or later.")
+		return errors.New("NAT firewall policy (--nat-policy-file) requires rungvx v0.21 or later.")
 	}
 	if len(spec.DynamicPortAddrs) > 0 && !feat.DynamicPortAddrs {
-		return errors.New("Dynamic port bind addresses (--dynamic-ports-addr) require rungv v0.21 or later.")
+		return errors.New("Dynamic port bind addresses (--dynamic-ports-addr) require rungvx v0.21 or later.")
 	}
 	if strings.TrimSpace(spec.AutoPublishAddr) != "" && !feat.AutoPublishAddr {
-		return errors.New("Auto-publish bind address (--auto-publish-addr) requires rungv v0.21 or later.")
+		return errors.New("Auto-publish bind address (--auto-publish-addr) requires rungvx v0.21 or later.")
 	}
 	return nil
 }
@@ -579,7 +579,7 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 		what = "Restoring " + filepath.Base(restoreDir)
 	}
 	logs.Add(System, fmt.Sprintf("── %s %s · %s", what, spec.Name, time.Now().Format("2006-01-02 15:04:05")))
-	logs.Add(System, "$ rungv "+rungv.FormatArgs(redactArgs(args)))
+	logs.Add(System, "$ rungvx "+rungv.FormatArgs(redactArgs(args)))
 
 	if err := startCmd(context.Background(), cmd, ptyTerm); err != nil {
 		closeOnFail()

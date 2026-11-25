@@ -33,7 +33,7 @@ func loadTargets(rows []Row) ([]loadNode, string) {
 	case server.Status != sandbox.Running || server.Paused:
 		return nil, tr("Start the cluster to load images into it.")
 	case !server.Control:
-		return nil, tr("Loading images into the cluster needs rungv 0.20 or later.")
+		return nil, tr("Loading images into the cluster needs rungvx 0.20 or later.")
 	}
 	var out []loadNode
 	for _, n := range nodes {

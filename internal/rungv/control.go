@@ -110,7 +110,7 @@ func (c *Client) checkTarget(t Target) error {
 		return ErrNotFound
 	}
 	if !t.Valid() {
-		return errors.New("rungv: control target has no socket")
+		return errors.New("rungvx: control target has no socket")
 	}
 	return nil
 }
@@ -608,13 +608,13 @@ func (c *Client) AddPorts(ctx context.Context, t Target, specs []string, replace
 		return nil, err
 	}
 	if len(specs) == 0 {
-		return nil, errors.New("rungv port add: no port specs specified")
+		return nil, errors.New("rungvx port add: no port specs specified")
 	}
 	cleaned := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		s := strings.TrimSpace(spec)
 		if s == "" {
-			return nil, errors.New("rungv port add: empty port spec")
+			return nil, errors.New("rungvx port add: empty port spec")
 		}
 		if err := checkNoLeadingDash("port spec", s); err != nil {
 			return nil, err
@@ -641,13 +641,13 @@ func (c *Client) RemovePorts(ctx context.Context, t Target, specs []string, forc
 		return err
 	}
 	if len(specs) == 0 {
-		return errors.New("rungv port rm: no port specs specified")
+		return errors.New("rungvx port rm: no port specs specified")
 	}
 	cleaned := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		s := strings.TrimSpace(spec)
 		if s == "" {
-			return errors.New("rungv port rm: empty port spec")
+			return errors.New("rungvx port rm: empty port spec")
 		}
 		if err := checkNoLeadingDash("port spec", s); err != nil {
 			return err
@@ -704,10 +704,10 @@ func (c *Client) AddMount(ctx context.Context, t Target, o MountAddOptions) erro
 	src := strings.TrimSpace(o.Source)
 	size := strings.TrimSpace(o.Size)
 	if kind == "" {
-		return errors.New("rungv mount add: mount type is required")
+		return errors.New("rungvx mount add: mount type is required")
 	}
 	if dst == "" {
-		return errors.New("rungv mount add: target path is required")
+		return errors.New("rungvx mount add: target path is required")
 	}
 	if err := checkNoLeadingDash("mount type", kind); err != nil {
 		return err
@@ -752,7 +752,7 @@ func (c *Client) RemoveMount(ctx context.Context, t Target, target string, lazy 
 	}
 	dst := strings.TrimSpace(target)
 	if dst == "" {
-		return errors.New("rungv mount rm: target path is required")
+		return errors.New("rungvx mount rm: target path is required")
 	}
 	if err := checkNoLeadingDash("mount target", dst); err != nil {
 		return err
@@ -828,7 +828,7 @@ func (c *Client) ReplaceNATPolicy(ctx context.Context, t Target, policyFile stri
 	}
 	f := strings.TrimSpace(policyFile)
 	if f == "" {
-		return errors.New("rungv net-policy replace: policy file is required")
+		return errors.New("rungvx net-policy replace: policy file is required")
 	}
 	if err := checkNoLeadingDash("policy file", f); err != nil {
 		return err
@@ -1041,7 +1041,7 @@ func (c *Client) Update(ctx context.Context, t Target, u Update) (Resources, err
 		return Resources{}, err
 	}
 	if u.IsZero() {
-		return Resources{}, errors.New("rungv update: no settings specified")
+		return Resources{}, errors.New("rungvx update: no settings specified")
 	}
 	args := targetArgs("update", t)
 	if u.Memory != "" {

@@ -837,7 +837,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 // value per line, as the recipes in the gvx docs are written.
 func wrapCommand(args []string) string {
 	var b strings.Builder
-	b.WriteString("rungv")
+	b.WriteString("rungvx")
 	i := 0
 	if len(args) > 0 {
 		b.WriteString(" " + rungv.Quote(args[0]))
@@ -1081,7 +1081,7 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 		path, err := rungv.Locate(set.RungvPath)
 		r.e = Engine{Path: path, Checked: true}
 		if err != nil {
-			r.e.Err = tr("rungv was not found. Install it, or set its path in Settings.")
+			r.e.Err = tr("rungvx was not found. Install it, or set its path in Settings.")
 			return nil
 		}
 		c := &rungv.Client{Path: path, CacheDir: rungv.ExpandHome(set.CacheDir), VolumeDir: rungv.ExpandHome(set.VolumeDir)}
@@ -1089,12 +1089,12 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 		if v, err := c.Version(ctx); err == nil {
 			r.e.Version = v
 		} else {
-			r.e.Err = tr("rungv did not run: ") + err.Error()
+			r.e.Err = tr("rungvx did not run: ") + err.Error()
 			return nil
 		}
 		info, err := c.Info(ctx)
 		if err != nil {
-			r.e.Err = tr("rungv info failed: ") + err.Error()
+			r.e.Err = tr("rungvx info failed: ") + err.Error()
 			return nil
 		}
 		r.e.Info = info
@@ -1143,7 +1143,7 @@ func (m *Model) SignRungv() {
 			m.toastError(tr("Signing failed"), err)
 			return
 		}
-		m.toastOK(tr("rungv signed"), tr("Hypervisor.framework access is granted."))
+		m.toastOK(tr("rungvx signed"), tr("Hypervisor.framework access is granted."))
 		m.DetectEngine(nil)
 	})
 }
@@ -1395,9 +1395,9 @@ func engineProblem(e Engine) string {
 	case e.Err != "":
 		return e.Err
 	case len(e.Info.AvailableBackends) == 0:
-		return tr("rungv found no execution backend on this host.")
+		return tr("rungvx found no execution backend on this host.")
 	}
-	return tr("rungv is still being checked.")
+	return tr("rungvx is still being checked.")
 }
 
 // StopSandbox stops a running sandbox, as the user asked: a recipe

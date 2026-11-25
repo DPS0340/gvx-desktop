@@ -59,12 +59,12 @@ func sandboxShellTarget(r Row, features rungv.Features, offline bool, start func
 		if features.Control {
 			return shellTarget{
 				Why:     tr("Restart the sandbox to open a shell"),
-				WhyText: tr("It started before rungv was updated. Restart it to open a shell, pause it, or change its resources while it runs."),
+				WhyText: tr("It started before rungvx was updated. Restart it to open a shell, pause it, or change its resources while it runs."),
 			}
 		}
 		return shellTarget{
-			Why:     tr("Needs rungv v0.20 or later"),
-			WhyText: tr("Update rungv in Settings to open a shell in a running sandbox, pause it, and change its resources while it runs."),
+			Why:     tr("Needs rungvx v0.20 or later"),
+			WhyText: tr("Update rungvx in Settings to open a shell in a running sandbox, pause it, and change its resources while it runs."),
 		}
 	}
 	t := shellTarget{
@@ -196,8 +196,8 @@ func (m *Model) drainContainerSweeps(ctx context.Context, c *dockerapi.Client, i
 func containerShellTarget(c dockerapi.Container, sandboxEngine bool, features rungv.Features, canControl, offline bool, start func(cols, rows uint16) (term.Program, error)) shellTarget {
 	if sandboxEngine && !features.Control {
 		return shellTarget{
-			Why:     tr("Needs rungv v0.20 or later"),
-			WhyText: tr("Container exec in the sandbox engine needs rungv v0.20 or later. Update rungv in Settings, then restart the container."),
+			Why:     tr("Needs rungvx v0.20 or later"),
+			WhyText: tr("Container exec in the sandbox engine needs rungvx v0.20 or later. Update rungvx in Settings, then restart the container."),
 		}
 	}
 	if c.State == "paused" {
@@ -215,7 +215,7 @@ func containerShellTarget(c dockerapi.Container, sandboxEngine bool, features ru
 	if sandboxEngine && !canControl {
 		return shellTarget{
 			Why:     tr("Restart the container to open a shell"),
-			WhyText: tr("It started before rungv was updated to v0.20."),
+			WhyText: tr("It started before rungvx was updated to v0.20."),
 		}
 	}
 	t := shellTarget{Key: c.ID, TargetID: containerTermTarget(c.ID)}

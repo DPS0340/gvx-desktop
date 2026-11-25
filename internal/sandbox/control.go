@@ -29,7 +29,7 @@ import (
 
 // ErrNoControl reports a run without a control socket: an older rungv, or
 // a run started before the binary was upgraded. State.Control is false.
-var ErrNoControl = errors.New("the sandbox was started without a control socket; restart it with rungv v0.20 or later")
+var ErrNoControl = errors.New("the sandbox was started without a control socket; restart it with rungvx v0.20 or later")
 
 // ErrPaused reports an operation a paused sandbox refuses (exec, cp).
 var ErrPaused = errors.New("the sandbox is paused")
@@ -935,7 +935,7 @@ func (s *Supervisor) startServeMount(ctx context.Context, id string, p *proc, cl
 		if msg := strings.TrimSpace(sp.stderr); msg != "" {
 			return errors.New(msg)
 		}
-		return errors.New("rungv mount serve exited unexpectedly")
+		return errors.New("rungvx mount serve exited unexpectedly")
 	}
 
 	select {

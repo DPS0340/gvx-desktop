@@ -764,7 +764,7 @@ func volumeSpec(src, dst string, ro bool) string {
 // CommandLine is the run command as one line a person could paste into a
 // shell.
 func (s Spec) CommandLine(p Paths) string {
-	return "rungv " + rungv.FormatArgs(s.RunArgs(p))
+	return "rungvx " + rungv.FormatArgs(s.RunArgs(p))
 }
 
 // Prepare creates the host directories a run needs before rungv starts:

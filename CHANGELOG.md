@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-26
+
+### Changed
+
+- **Extension page header & layout polish**: replaced wide text host buttons (`Reload`, `Logs`, `Settings`) with compact tooltipped icon buttons separated by a vertical divider, and placed lifted extension toolbars (`chrome = "toolbar"`) inside a horizontally scrollable flex slot so host controls never squash or overlap at any window width.
+- **Extension view spacing**: restored consistent outer padding (`12px / 16px`) on full-bleed `Fill` extension views, added `6px` pane gutters on both sides of `KindSplit` dividers, increased `KindCard` padding and `KindSelect` max width, and added `size = "small"` support for `KindTabs`.
+- **Localized extension permissions**: translated all extension permission descriptions and risk badges (`High`, `Medium`, `Low`) across all 7 UI languages (`en`, `ko`, `ja`, `zh-Hans`, `zh-Hant`, `de`, `hi`).
+
 ## [0.11.1] - 2026-11-26
 
 ### Fixed
@@ -195,7 +203,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial release of GVX Desktop for Apple silicon macOS with Homebrew cask distribution.
 - Sandbox management, image registry search (Docker Hub & Quay), `ext4lite`/`hostfs` volumes, checkpoint snapshots, `rungv` installer/updater, and English & Korean UI.
 
-[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/ironpark/gvx-desktop/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/ironpark/gvx-desktop/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/ironpark/gvx-desktop/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/ironpark/gvx-desktop/compare/v0.10.1...v0.10.2

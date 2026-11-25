@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,6 +87,10 @@ func TestRungvPathRegistrationInSettings(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(home, ".zshrc")); err != nil || !strings.Contains(string(data), ".gvx/bin") {
 		t.Fatalf("zshrc after AddRungvToPATH = %q, err=%v", data, err)
 	}
+	// This stand-in is no rungvx, so it gets no rungvx link.
+	if _, err := os.Lstat(filepath.Join(home, ".gvx", "bin", "rungvx")); !os.IsNotExist(err) {
+		t.Fatalf("rungvx linked for a binary that is not one (%v)", err)
+	}
 	p.Frame()
 	if !hasText("Remove from PATH") {
 		t.Fatalf("Settings → rungv missing Remove from PATH button after adding")
@@ -99,5 +104,66 @@ func TestRungvPathRegistrationInSettings(t *testing.T) {
 	})
 	if data, err := os.ReadFile(filepath.Join(home, ".zshrc")); err != nil || strings.Contains(string(data), ".gvx/bin") {
 		t.Fatalf("zshrc still contains .gvx/bin after RemoveRungvFromPATH: %q (err=%v)", data, err)
+	}
+}
+
+// A rungvx in ~/.gvx/bin is also there as rungvx, the name gvx gives it
+// since v0.23; an older rungv is not, and a rungvx the user put there stays.
+func TestLinkRungvx(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell script stubs")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, ".gvx", "bin")
+	own, link := filepath.Join(bin, "rungv"), filepath.Join(bin, "rungvx")
+	stub := func(first string) {
+		t.Helper()
+		if err := os.MkdirAll(bin, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := "#!/bin/sh\necho '" + first + "'\necho 'commit 52e9405 (2026-11-25T05:53:27Z)'\n"
+		if err := os.WriteFile(own, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+
+	if err := linkRungvx(ctx); err != nil {
+		t.Fatalf("no rungv: %v", err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("no rungv: rungvx is there (%v)", err)
+	}
+
+	stub("rungv v0.21.10012026111600")
+	if err := linkRungvx(ctx); err != nil {
+		t.Fatalf("rungv v0.21: %v", err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("rungv v0.21: rungvx is there (%v)", err)
+	}
+
+	stub("rungvx v0.23.10022026112300")
+	for range 2 { // again, as after the next update: still the one link
+		if err := linkRungvx(ctx); err != nil {
+			t.Fatalf("rungvx: %v", err)
+		}
+		if target, err := os.Readlink(link); err != nil || target != own {
+			t.Fatalf("rungvx link = (%q, %v), want %q", target, err, own)
+		}
+	}
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(link, []byte("the user's own"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := linkRungvx(ctx); err != nil {
+		t.Fatalf("the user's rungvx: %v", err)
+	}
+	if data, _ := os.ReadFile(link); string(data) != "the user's own" {
+		t.Fatalf("the user's rungvx was replaced: %q", data)
 	}
 }

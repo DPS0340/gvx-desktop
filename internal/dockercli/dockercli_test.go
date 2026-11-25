@@ -2,6 +2,7 @@ package dockercli
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -244,8 +245,8 @@ func TestSyncBinaryToBinDir(t *testing.T) {
 	if BinaryLinkedInBinDir(ext, "rungv") {
 		t.Fatalf("BinaryLinkedInBinDir(ext) = true while unmanaged regular file occupies slot")
 	}
-	if _, err := SyncBinaryToBinDir(ext, "rungv"); err == nil {
-		t.Fatalf("SyncBinaryToBinDir(ext) succeeded over different regular file; want error")
+	if _, err := SyncBinaryToBinDir(ext, "rungv"); !errors.Is(err, ErrNotManaged) {
+		t.Fatalf("SyncBinaryToBinDir(ext) over different regular file = %v; want ErrNotManaged", err)
 	}
 
 	// Case 3: once slot is free, external binary is symlinked and recognized.

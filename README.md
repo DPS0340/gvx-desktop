@@ -131,7 +131,9 @@ GVX Desktop uses the first `rungv` executable it finds in this order:
 5. Locations relative to the app (including bundle resources), then `./bin` in the working directory
 6. `/opt/homebrew/bin` and `/usr/local/bin` on non-Windows systems
 
-To use `rungv` from your terminal as well, select **Add to PATH** under **Settings → rungv → Terminal PATH** to link it into `~/.gvx/bin` and add that directory to your shell profile (or user `PATH` on Windows).
+In each place it looks for `rungv` first, then `rungvx`, the name gvx gives it since v0.23. Installs and updates still put it there as `rungv`.
+
+To use `rungv` from your terminal as well, select **Add to PATH** under **Settings → rungv → Terminal PATH** to link it into `~/.gvx/bin` and add that directory to your shell profile (or user `PATH` on Windows). When that `rungv` is a `rungvx` (gvx v0.23 and later), `~/.gvx/bin` also gets a `rungvx` link to it, the name gvx's own docs use; the app adds it after an install or update as well.
 
 On macOS, `rungv` requires the `com.apple.security.hypervisor` entitlement. GVX Desktop signs binaries it installs and offers **Sign rungv** whenever an existing binary is missing the entitlement.
 

@@ -131,7 +131,9 @@ GVX Desktop은 다음 순서로 검색해 처음 발견한 `rungv` 실행 파일
 5. 앱 실행 파일 기준 경로(번들 리소스 포함), 그다음 현재 작업 디렉터리의 `./bin`
 6. Windows 이외 환경의 `/opt/homebrew/bin`과 `/usr/local/bin`
 
-터미널에서도 `rungv`를 바로 실행하려면 **설정 → rungv → 터미널 PATH**에서 **PATH에 추가**를 선택해 `~/.gvx/bin`에 연결하고 셸 프로필(Windows는 사용자 `PATH`)에 등록하세요.
+각 위치에서 `rungv`를 먼저 찾고, 없으면 gvx v0.23부터 쓰는 이름인 `rungvx`를 찾습니다. 설치와 업데이트는 계속 `rungv`라는 이름으로 합니다.
+
+터미널에서도 `rungv`를 바로 실행하려면 **설정 → rungv → 터미널 PATH**에서 **PATH에 추가**를 선택해 `~/.gvx/bin`에 연결하고 셸 프로필(Windows는 사용자 `PATH`)에 등록하세요. 그 `rungv`가 `rungvx`(gvx v0.23 이후)이면 gvx 문서에서 쓰는 이름인 `rungvx` 링크도 `~/.gvx/bin`에 함께 만듭니다. 설치나 업데이트 뒤에도 앱이 이 링크를 만듭니다.
 
 macOS에서 `rungv`에는 `com.apple.security.hypervisor` 권한이 필요합니다. 앱에서 설치한 바이너리는 자동으로 서명하며, 기존 바이너리에 권한이 없으면 **rungv 서명**을 제공합니다.
 

@@ -216,10 +216,14 @@ func BinaryLinkedInBinDir(src, baseName string) bool {
 	return false
 }
 
+// ErrNotManaged reports a file in ~/.gvx/bin that GVX Desktop did not put
+// there, which SyncBinaryToBinDir leaves as it is.
+var ErrNotManaged = errors.New("not managed by GVX Desktop")
+
 // SyncBinaryToBinDir exposes src at ~/.gvx/bin/<baseName>[.exe] (symlink on
 // Unix, hash-tracked copy on Windows). If src is already at that path, it is
 // a no-op. If a different unmanaged regular file already occupies the slot, it
-// returns an error instead of overwriting it.
+// returns an error wrapping ErrNotManaged instead of overwriting it.
 func SyncBinaryToBinDir(src, baseName string) (string, error) {
 	src = strings.TrimSpace(src)
 	if src == "" {
@@ -238,12 +242,12 @@ func SyncBinaryToBinDir(src, baseName string) (string, error) {
 	}
 	if targetOS != "windows" {
 		if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink == 0 {
-			return "", fmt.Errorf("%s already exists and points to a different binary", dst)
+			return "", fmt.Errorf("%s already exists and points to a different binary (%w)", dst, ErrNotManaged)
 		}
 	} else {
 		if _, err := os.Stat(dst); err == nil {
 			if _, merr := os.Stat(dst + ".gvx-sha256"); errors.Is(merr, os.ErrNotExist) {
-				return "", fmt.Errorf("%s already exists and is not managed by GVX Desktop", dst)
+				return "", fmt.Errorf("%s already exists and is %w", dst, ErrNotManaged)
 			}
 		}
 	}

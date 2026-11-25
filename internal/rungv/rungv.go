@@ -349,6 +349,7 @@ func (t *tailBuffer) String() string {
 
 // Version is the parsed output of rungv version.
 type Version struct {
+	Program string // rungv, or rungvx since gvx v0.23
 	Version string // v0.16.0, (devel), …
 	Commit  string
 	Go      string
@@ -366,7 +367,7 @@ func ParseVersion(out string) Version {
 		}
 		switch f[0] {
 		case program, programX:
-			v.Version = f[1]
+			v.Program, v.Version = f[0], f[1]
 		case "commit":
 			v.Commit = f[1]
 		case "go":

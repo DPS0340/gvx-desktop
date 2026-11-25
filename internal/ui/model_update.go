@@ -239,6 +239,7 @@ func (m *Model) CheckUpdate(quiet bool) {
 // InstallRungv installs the newest rungv of the channel — a release
 // downloaded, or built from source — in place of the one in use, or
 // in ~/.gvx/bin when there is none or it is not this app's to replace.
+// A rungvx in ~/.gvx/bin also gets that name there (linkRungvx).
 // Sandboxes that are running keep the rungv they started with.
 func (m *Model) InstallRungv() {
 	if u := ggui.Peek(m.Update); u.Checking || u.Installing {
@@ -287,6 +288,9 @@ func (m *Model) InstallRungv() {
 				return errors.New(tr("rungv was installed, but signing it failed: ") + err.Error())
 			}
 		}
+		// A link that cannot be made leaves the install as it is: Add to
+		// PATH makes it again and says why.
+		_ = linkRungvx(ctx)
 		return nil
 	}
 	done := func(err error) {

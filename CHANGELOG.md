@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-25
+
 ### Added
 
 - **Settings → rungv updates** now lets you choose a specific published `rungv`/`rungvx` release from a **Release version** dropdown (or follow **Latest**), supporting downgrades, reinstalls, and download cancellation.
@@ -165,7 +167,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial release of GVX Desktop for Apple silicon macOS with Homebrew cask distribution.
 - Sandbox management, image registry search (Docker Hub & Quay), `ext4lite`/`hostfs` volumes, checkpoint snapshots, `rungv` installer/updater, and English & Korean UI.
 
-[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/ironpark/gvx-desktop/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/ironpark/gvx-desktop/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/ironpark/gvx-desktop/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ironpark/gvx-desktop/compare/v0.8.0...v0.9.0

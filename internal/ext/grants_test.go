@@ -8,6 +8,30 @@ import (
 	"testing"
 )
 
+// newNonReservedTestDir returns a temporary directory that passes
+// validateAllowedFolder (avoiding reserved guest paths like /tmp on Linux).
+func newNonReservedTestDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if canonical, err := validateAllowedFolder(dir); err == nil {
+		return canonical
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Fatalf("cannot create non-reserved test dir (temp dir %q is reserved): %v", dir, err)
+	}
+	custom, err := os.MkdirTemp(home, "gvx-ext-test-*")
+	if err != nil {
+		t.Fatalf("os.MkdirTemp in home %q: %v", home, err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(custom) })
+	canonical, err := validateAllowedFolder(custom)
+	if err != nil {
+		t.Fatalf("validateAllowedFolder(%q): %v", custom, err)
+	}
+	return canonical
+}
+
 func TestPermissionsCatalog(t *testing.T) {
 	got, err := CheckPermissions([]string{PermDocker, PermNetwork, PermStorage})
 	if err != nil {
@@ -111,7 +135,7 @@ permissions = ["storage", "docker", "secrets"]
 		t.Fatal("expected Disabled=true")
 	}
 
-	projectDir := t.TempDir()
+	projectDir := newNonReservedTestDir(t)
 	canonical, err := gs.AddAllowedFolder(m1.ID, projectDir)
 	if err != nil {
 		t.Fatalf("AddAllowedFolder: %v", err)

@@ -212,7 +212,7 @@ func TestHostAPI_AuthInfoSettingsStorageSecrets(t *testing.T) {
 }
 
 func TestHostAPI_GestureGatingAndUILimits(t *testing.T) {
-	ui := &fakeUIHost{pickPath: t.TempDir(), pickOK: true}
+	ui := &fakeUIHost{pickPath: newNonReservedTestDir(t), pickOK: true}
 	_, host, gestures, gs, _ := setupTestHostAPI(t, []string{PermUIOpenURL, PermUIPickFolder, PermUITerminal}, ui)
 	ctx := context.Background()
 
@@ -1477,7 +1477,7 @@ func waitStop() {
 
 func TestHostAPI_RevokedFolderBlocksStartAndRestore(t *testing.T) {
 	fakeRungvBin := buildMinimalFakeRungv(t)
-	allowedDir := t.TempDir()
+	allowedDir := newNonReservedTestDir(t)
 	outsideDir := t.TempDir()
 	subDir := filepath.Join(allowedDir, "sub")
 	if err := os.MkdirAll(subDir, 0o700); err != nil {

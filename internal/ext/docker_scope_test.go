@@ -63,7 +63,7 @@ func doScopedDockerCreate(t *testing.T, handler http.Handler, path string, body 
 
 func TestDockerScope_LocalHandlerCannotBypassScopingAndInjectsLabel(t *testing.T) {
 	dataDir := t.TempDir()
-	allowedDir := t.TempDir()
+	allowedDir := newNonReservedTestDir(t)
 	gs := newTestGrantStoreWithDocker(t, dataDir, "scope-ext", []string{allowedDir})
 
 	var gotPayload map[string]any
@@ -140,7 +140,7 @@ func TestDockerScope_OversizedPayloadAndMalformedJSONRejected(t *testing.T) {
 
 func TestDockerScope_BindMountValidationSymlinksDataAndWindows(t *testing.T) {
 	dataDir := t.TempDir()
-	allowedDir := t.TempDir()
+	allowedDir := newNonReservedTestDir(t)
 	outsideDir := t.TempDir()
 	gs := newTestGrantStoreWithDocker(t, dataDir, "bind-ext", []string{allowedDir})
 
@@ -342,7 +342,7 @@ func TestDockerScope_503WhenStoppedAndDynamicRevokeAndSocketPerms(t *testing.T) 
 
 func TestDockerScope_SymlinkTargetDotDotAcrossIntermediateSymlinkRejected(t *testing.T) {
 	dataDir := t.TempDir()
-	allowedDir := t.TempDir()
+	allowedDir := newNonReservedTestDir(t)
 	outsideDir := t.TempDir()
 	gs := newTestGrantStoreWithDocker(t, dataDir, "sym-dotdot-ext", []string{allowedDir})
 
@@ -426,7 +426,7 @@ func doScopedDockerReq(t *testing.T, dp *scopedDockerProxy, method, path string,
 
 func TestDockerScope_CaseInsensitiveJSONAndDuplicateKeysRejected(t *testing.T) {
 	dataDir := t.TempDir()
-	allowedDir := t.TempDir()
+	allowedDir := newNonReservedTestDir(t)
 	gs := newTestGrantStoreWithDocker(t, dataDir, "ext-case", []string{allowedDir})
 
 	var lastCreateBody []byte
@@ -681,7 +681,7 @@ func TestDockerScope_DangerousHostConfigRejected(t *testing.T) {
 
 func TestDockerScope_UnicodeSimpleFoldBypassRejected(t *testing.T) {
 	dataDir := t.TempDir()
-	allowedDir := t.TempDir()
+	allowedDir := newNonReservedTestDir(t)
 	gs := newTestGrantStoreWithDocker(t, dataDir, "ext-fold", []string{allowedDir})
 
 	var lastBody []byte
@@ -2624,7 +2624,7 @@ func TestDockerScope_BOMDirectiveAndJSONOnBuildBypasses(t *testing.T) {
 
 func TestDockerScope_RevokedFolderBlocksContainerStartRestartUnpause(t *testing.T) {
 	dataDir := t.TempDir()
-	allowedDir := t.TempDir()
+	allowedDir := newNonReservedTestDir(t)
 	outsideDir := t.TempDir()
 	gs := newTestGrantStoreWithDocker(t, dataDir, "scope-ext", []string{allowedDir})
 

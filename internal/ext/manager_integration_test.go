@@ -75,7 +75,7 @@ func waitForExtState(t *testing.T, mgr *Manager, id string, timeout time.Duratio
 
 func TestManager_FullSDKExtensionLifecycleAndCleanup(t *testing.T) {
 	dataDir := t.TempDir()
-	pickedDir := t.TempDir()
+	pickedDir := newNonReservedTestDir(t)
 	extDir := t.TempDir()
 
 	// Start a local HTTP server to verify LocalProxyRoutes for [contributes.web_ui].
@@ -583,7 +583,7 @@ func TestExtRealRungvBuildAndSandbox(t *testing.T) {
 	engineDir := filepath.Join(t.TempDir(), "eng")
 	supDir := filepath.Join(t.TempDir(), "sup")
 	extDir := t.TempDir()
-	allowedDir := t.TempDir()
+	allowedDir := newNonReservedTestDir(t)
 	if err := os.WriteFile(filepath.Join(allowedDir, "hello.txt"), []byte("host-allowed"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -3376,7 +3376,7 @@ title = "Main"
 
 func TestManager_RemoveAllowedFolderAndRevokeStopsChildSandboxesAndDockerContainers(t *testing.T) {
 	dataDir := t.TempDir()
-	allowedDir := t.TempDir()
+	allowedDir := newNonReservedTestDir(t)
 	fakeRungvBin := buildMinimalFakeRungv(t)
 
 	sup := &sandbox.Supervisor{
@@ -3983,10 +3983,7 @@ description = "Start owned docker container"
 
 func TestManager_DockerScopeTOCTOU_RemoveAllowedFolderDuringCreateAndStart(t *testing.T) {
 	dataDir := t.TempDir()
-	allowedDir := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(allowedDir); err == nil {
-		allowedDir = resolved
-	}
+	allowedDir := newNonReservedTestDir(t)
 	extDir := t.TempDir()
 
 	type mockCtr struct {
@@ -4280,10 +4277,7 @@ dev_entrypoint = %q
 
 func TestManager_HostAPITOCTOU_RemoveAllowedFolderDuringSandboxStartAndRestore(t *testing.T) {
 	dataDir := t.TempDir()
-	allowedDir := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(allowedDir); err == nil {
-		allowedDir = resolved
-	}
+	allowedDir := newNonReservedTestDir(t)
 	extDir := t.TempDir()
 	fakeRungvBin := buildMinimalFakeRungv(t)
 

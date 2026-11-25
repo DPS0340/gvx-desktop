@@ -416,7 +416,7 @@ func (c *Client) StatPath(ctx context.Context, t Target, guestPath string) (Path
 			Mode: uint32(os.ModeDir | 0o755),
 		}, nil
 	}
-	rc, err := c.CopyFrom(ctx, t, guestPath, CopyOptions{})
+	rc, err := c.CopyFrom(ctx, t, cleaned, CopyOptions{})
 	if err != nil {
 		return PathStat{}, err
 	}

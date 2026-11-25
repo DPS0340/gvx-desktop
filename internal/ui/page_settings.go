@@ -149,6 +149,7 @@ func settingsPage(m *Model) ggui.Widget {
 					ui.ToggleGroup[string](channel).Options([]string{ChannelRelease, ChannelSource}).Format(channelName).Outline().Spacing(0).
 						BindDisabled(ggui.Map(m.Update, func(u Update) bool { return u.Installing })).Name(tr("Channel"))),
 				sourceFields(m),
+				releaseVersionField(m),
 			).Gap(12).Stretch(),
 			releaseRow(m),
 			settingRow(tr("Look for a newer rungv when the app starts"),
@@ -339,15 +340,76 @@ func sourceFields(m *Model) ggui.Widget {
 	})
 }
 
-// releaseRow says what the channel's newest gvx is, and installs it.
+// releaseVersionField lets the user pick the newest release or a specific
+// published version of rungv when the Releases channel is selected.
+func releaseVersionField(m *Model) ggui.Widget {
+	isRelease := ggui.Map(m.Settings, func(s storeSettings) bool { return s.UpdateChannel != ChannelSource })
+	return ggui.If(isRelease, func() ggui.Widget {
+		type state struct {
+			e    Engine
+			u    Update
+			rels []rungv.Release
+		}
+		combined := ggui.Derived(func() state {
+			return state{m.Engine.Get(), m.Update.Get(), m.Releases.Get()}
+		}).WithEqual(func(a, b state) bool {
+			return a.e.Equal(b.e) && a.u == b.u && slices.EqualFunc(a.rels, b.rels, releaseEqual)
+		})
+		selected := ggui.Bind(m.SelectedRelease.Get, m.SetSelectedRelease)
+		return ggui.View(combined, func(s state) ggui.Widget {
+			opts := make([]string, 0, len(s.rels)+1)
+			opts = append(opts, "")
+			pre := make(map[string]bool, len(s.rels))
+			for _, r := range s.rels {
+				opts = append(opts, r.Tag)
+				if r.Prerelease {
+					pre[r.Tag] = true
+				}
+			}
+			format := func(tag string) string {
+				if tag == "" {
+					if s.u.Tag != "" {
+						return tr("Latest (%s)", shortVersion(s.u.Tag))
+					}
+					return tr("Latest")
+				}
+				label := shortVersion(tag)
+				installed := s.e.Checked && s.e.Path != "" && s.e.Version.Version == tag
+				switch {
+				case installed && pre[tag]:
+					return tr("%s (installed, pre-release)", label)
+				case installed:
+					return tr("%s (installed)", label)
+				case pre[tag]:
+					return tr("%s (pre-release)", label)
+				default:
+					return label
+				}
+			}
+			sel := ui.Select(selected).Options(opts).Format(format).MinWidth(240).Name(tr("Release version")).
+				Disabled(s.u.Installing || s.u.Checking || len(s.rels) == 0)
+			return settingRow(tr("Release version"),
+				tr("Install the newest release or choose a specific published version."),
+				sel)
+		})
+	})
+}
+
+// releaseRow says what the channel's newest gvx is (or the chosen release
+// version), and installs it.
 func releaseRow(m *Model) ggui.Widget {
 	type state struct {
-		e Engine
-		u Update
+		e   Engine
+		u   Update
+		sel string
 	}
-	both := ggui.Combine(m.Engine, m.Update, func(e Engine, u Update) state { return state{e, u} })
+	both := ggui.Derived(func() state {
+		return state{m.Engine.Get(), m.Update.Get(), m.SelectedRelease.Get()}
+	}).WithEqual(func(a, b state) bool {
+		return a.e.Equal(b.e) && a.u == b.u && a.sel == b.sel
+	})
 	row := ggui.View(both, func(s state) ggui.Widget {
-		e, u := s.e, s.u
+		e, u, sel := s.e, s.u, s.sel
 		branch := u.BranchName()
 		var text string
 		var action ggui.Widget = widget.Box()
@@ -363,14 +425,33 @@ func releaseRow(m *Model) ggui.Widget {
 				ui.Button(tr("Cancel"), m.CancelInstallRungv).Outline().Size(ui.ButtonSmall),
 			).Gap(6).Align(widget.AlignCenter)
 		case u.Installing:
-			text = tr("Installing rungv %s", u.Name())
-			action = installButton(m, u, install).Size(ui.ButtonSmall)
+			text = tr("Installing rungv %s", u.InstallName())
+			action = widget.Row(
+				installReleaseButton(m, u, sel, install).Size(ui.ButtonSmall),
+				ui.Button(tr("Cancel"), m.CancelInstallRungv).Outline().Size(ui.ButtonSmall),
+			).Gap(6).Align(widget.AlignCenter)
 		case u.Checking:
 			text = tr("Checking for the newest…")
 		case !u.Known() && u.Err != "":
 			text = tr("The newest could not be read: %s", u.Err)
 		case !u.Known():
 			text = tr("The newest has not been looked up.")
+		case !u.Source && sel != "":
+			ver := shortVersion(sel)
+			switch {
+			case e.Path == "":
+				text = tr("rungv %s can be installed into ~/.gvx/bin.", ver)
+				action = installReleaseButton(m, u, sel, install).Size(ui.ButtonSmall)
+			case e.Version.Version == sel:
+				text = tr("rungv %s is currently installed.", ver)
+				action = ui.Button(tr("Reinstall"), func() { m.InstallRungvRelease(sel) }).Outline().Size(ui.ButtonSmall)
+			case rungv.Newer(sel, e.Version.Version):
+				text = tr("rungv %s is selected; this computer has %s.", ver, engineVersion(e))
+				action = installReleaseButton(m, u, sel, tr("Install %s", ver)).Size(ui.ButtonSmall)
+			default:
+				text = tr("rungv %s is selected (older than %s).", ver, engineVersion(e))
+				action = installReleaseButton(m, u, sel, tr("Install %s", ver)).Size(ui.ButtonSmall)
+			}
 		case e.Path == "":
 			text = tr("rungv %s can be installed into ~/.gvx/bin.", u.Name())
 			action = installButton(m, u, install).Size(ui.ButtonSmall)

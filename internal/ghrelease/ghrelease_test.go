@@ -143,3 +143,25 @@ func TestNewer(t *testing.T) {
 		t.Error("Newer orders versions wrongly")
 	}
 }
+
+func TestList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[
+			{"tag_name":"v2.0.0-rc1","html_url":"https://example.com/rc","draft":false,"prerelease":true,"assets":[{"name":"a.zip","browser_download_url":"https://example.com/rc.zip","size":10}]},
+			{"tag_name":"v1.9.0","html_url":"https://example.com/19","draft":true,"prerelease":false,"assets":[]},
+			{"tag_name":"","html_url":"https://example.com/empty","draft":false,"prerelease":false,"assets":[]},
+			{"tag_name":"v1.8.0","html_url":"https://example.com/18","draft":false,"prerelease":false,"assets":[{"name":"b.zip","browser_download_url":"https://example.com/b.zip","size":20}]}
+		]`))
+	}))
+	defer srv.Close()
+	rels, err := List(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != 2 {
+		t.Fatalf("len(rels) = %d, want 2: %+v", len(rels), rels)
+	}
+	if rels[0].Tag != "v2.0.0-rc1" || !rels[0].Prerelease || rels[1].Tag != "v1.8.0" || rels[1].Prerelease {
+		t.Fatalf("rels = %+v", rels)
+	}
+}

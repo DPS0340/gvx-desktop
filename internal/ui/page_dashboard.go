@@ -131,6 +131,12 @@ func noticeBanner(icon *icons.Glyph, accent uint32, destructive bool, title, des
 // installButton installs the newest rungv, and says how far the download
 // is while it does.
 func installButton(m *Model, u Update, label string) *ui.ButtonWidget {
+	return installReleaseButton(m, u, "", label)
+}
+
+// installReleaseButton installs the chosen release tag (or the channel's newest
+// when tag is empty), showing download or build progress while running.
+func installReleaseButton(m *Model, u Update, tag, label string) *ui.ButtonWidget {
 	if u.Installing {
 		doing := tr("Downloading… %d%%", u.Percent)
 		if u.Source {
@@ -139,7 +145,13 @@ func installButton(m *Model, u Update, label string) *ui.ButtonWidget {
 		return ui.ButtonOf(widget.Row(ui.Spinner().Size(12), widget.Text(doing)).Gap(6).Align(widget.AlignCenter), func() {}).
 			Name(label).Disabled(true)
 	}
-	return ui.Button(label, m.InstallRungv).Icon(glyph(lucide.Download, 14))
+	return ui.Button(label, func() {
+		if tag == "" {
+			m.InstallRungv()
+		} else {
+			m.InstallRungvRelease(tag)
+		}
+	}).Icon(glyph(lucide.Download, 14))
 }
 
 func metrics(m *Model) ggui.Widget {

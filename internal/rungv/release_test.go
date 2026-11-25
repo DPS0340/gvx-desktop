@@ -247,3 +247,48 @@ func TestSourcePackage(t *testing.T) {
 		t.Errorf("since v0.23: %q", got)
 	}
 }
+
+func TestReleasesFiltersToThisSystemsBuilds(t *testing.T) {
+	names23 := AssetNames("v0.23.0", runtime.GOOS, runtime.GOARCH)
+	names22 := AssetNames("v0.22.0", runtime.GOOS, runtime.GOARCH)
+	payload, err := json.Marshal([]Release{
+		{
+			Tag: "v0.23.0", Page: "https://example.com/23",
+			Assets: []Asset{{Name: names23[0], URL: "https://example.com/23.tgz"}, {Name: "SHA256SUMS", URL: "https://example.com/23.sums"}},
+		},
+		{
+			Tag: "v0.22.9", Draft: true,
+			Assets: []Asset{{Name: AssetNames("v0.22.9", runtime.GOOS, runtime.GOARCH)[0]}, {Name: "SHA256SUMS"}},
+		},
+		{
+			Tag:    "v0.22.5", // missing SHA256SUMS
+			Assets: []Asset{{Name: AssetNames("v0.22.5", runtime.GOOS, runtime.GOARCH)[0]}},
+		},
+		{
+			Tag:    "v0.22.4", // wrong OS/arch
+			Assets: []Asset{{Name: "rungvx-v0.22.4-plan9-mips.tar.gz"}, {Name: "SHA256SUMS"}},
+		},
+		{
+			Tag: "v0.22.0", Page: "https://example.com/22", Prerelease: true,
+			Assets: []Asset{{Name: names22[1], URL: "https://example.com/22.tgz"}, {Name: "SHA256SUMS", URL: "https://example.com/22.sums"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+	prev := releasesURL
+	releasesURL = srv.URL
+	t.Cleanup(func() { releasesURL = prev })
+
+	got, err := Releases(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Tag != "v0.23.0" || got[1].Tag != "v0.22.0" || !got[1].Prerelease {
+		t.Fatalf("Releases() = %+v", got)
+	}
+}

@@ -26,6 +26,10 @@ const ReleasesURL = "https://github.com/gfire-sigs/gvx/releases"
 // server of its own.
 var latestURL = "https://api.github.com/repos/gfire-sigs/gvx/releases/latest"
 
+// releasesURL lists recent releases of gvx; a test points it at a server of
+// its own.
+var releasesURL = "https://api.github.com/repos/gfire-sigs/gvx/releases?per_page=30"
+
 // maxArchive bounds what Install reads, several times a release's size.
 const maxArchive = 512 << 20
 
@@ -42,6 +46,32 @@ func get(ctx context.Context, url string) (*http.Response, error) { return ghrel
 
 // Latest asks GitHub for the newest release of gvx.
 func Latest(ctx context.Context) (Release, error) { return ghrelease.Latest(ctx, latestURL) }
+
+// Releases asks GitHub for recent published releases of gvx that include a
+// verifiable build for this system, newest first.
+func Releases(ctx context.Context) ([]Release, error) {
+	all, err := ghrelease.List(ctx, releasesURL)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Release, 0, len(all))
+	for _, r := range all {
+		if HasBuild(r) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// HasBuild reports whether r has both a rungv archive for this system and a
+// SHA256SUMS file to verify it against.
+func HasBuild(r Release) bool {
+	if _, ok := build(r); !ok {
+		return false
+	}
+	_, ok := r.Find("SHA256SUMS")
+	return ok
+}
 
 // AssetNames are the archives of tag that may hold rungv for goos and
 // goarch: rungvx-<tag>-<goos>-<goarch> since gvx v0.23, rungv-… before.

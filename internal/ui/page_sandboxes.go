@@ -16,6 +16,12 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/sandbox"
 )
 
+// hasProgramPrefix reports whether line starts with rungv or rungvx followed by sep.
+func hasProgramPrefix(line, sep string) bool {
+	_, ok := rungv.CutProgram(line, sep)
+	return ok
+}
+
 func sandboxesPage(m *Model) ggui.Widget {
 	visible := ggui.Derived(func() []Row {
 		rows := m.Rows.Get()
@@ -325,7 +331,7 @@ func logViewer(m *Model, lines ggui.Readable[[]sandbox.LogLine], empty string, a
 		case sandbox.Stderr:
 			lower := strings.ToLower(l.Text)
 			switch {
-			case strings.HasPrefix(l.Text, "rungv:"):
+			case hasProgramPrefix(l.Text, ":"):
 				t = t.Color(colorGray)
 			case strings.Contains(lower, "[error]") || strings.Contains(lower, "error:") || strings.Contains(lower, "fatal") || strings.Contains(lower, "panic"):
 				t = t.Color(colorRed)

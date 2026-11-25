@@ -29,9 +29,11 @@ type Asset struct {
 
 // Release is a published version.
 type Release struct {
-	Tag    string  `json:"tag_name"` // v0.17.1…
-	Page   string  `json:"html_url"`
-	Assets []Asset `json:"assets"`
+	Tag        string  `json:"tag_name"` // v0.17.1…
+	Page       string  `json:"html_url"`
+	Draft      bool    `json:"draft"`
+	Prerelease bool    `json:"prerelease"`
+	Assets     []Asset `json:"assets"`
 }
 
 // Find returns the file of r called name.
@@ -78,6 +80,28 @@ func Latest(ctx context.Context, url string) (Release, error) {
 		return Release{}, errors.New("the release has no tag")
 	}
 	return r, nil
+}
+
+// List reads the published releases that url, a repository's releases list in
+// GitHub's API, answers with. Drafts and entries without a tag are omitted.
+func List(ctx context.Context, url string) ([]Release, error) {
+	resp, err := Get(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var raw []Release
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&raw); err != nil {
+		return nil, err
+	}
+	out := make([]Release, 0, len(raw))
+	for _, r := range raw {
+		if r.Draft || r.Tag == "" {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // Newer reports whether version a is later than b. Versions are compared

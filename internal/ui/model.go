@@ -113,14 +113,16 @@ type Model struct {
 
 	Toasts *ui.ToasterWidget
 
-	Page          *ggui.StateValue[string]
-	Settings      *ggui.StateValue[store.Settings]
-	Engine        *ggui.StateValue[Engine]
-	RungvFeatures *ggui.StateValue[rungv.Features]
-	Update        *ggui.StateValue[Update]
-	Autostart     *ggui.StateValue[bool]   // registered to start at login
-	BuildLog      *ggui.StateValue[string] // the end of what a build from source printed
-	release       rungv.Release            // what Update tells of
+	Page            *ggui.StateValue[string]
+	Settings        *ggui.StateValue[store.Settings]
+	Engine          *ggui.StateValue[Engine]
+	RungvFeatures   *ggui.StateValue[rungv.Features]
+	Update          *ggui.StateValue[Update]
+	Releases        *ggui.StateValue[[]rungv.Release] // recent published gvx releases with a build for this host
+	SelectedRelease *ggui.StateValue[string]          // chosen release tag in Settings; "" follows the newest
+	Autostart       *ggui.StateValue[bool]            // registered to start at login
+	BuildLog        *ggui.StateValue[string]          // the end of what a build from source printed
+	release         rungv.Release                     // what Update tells of
 	// AppUpdate is what the app knows of its own newest release; see
 	// model_appupdate.go.
 	AppUpdate  *ggui.StateValue[AppUpdate]
@@ -467,15 +469,17 @@ func NewModel(st store.Store, dataDir string) *Model {
 		dataDir: dataDir,
 		Toasts:  ui.NewToaster().Limit(3),
 
-		Page:          ggui.State(PageDashboard),
-		Settings:      ggui.State(settings),
-		Engine:        ggui.State(Engine{Loading: true}),
-		RungvFeatures: ggui.State(rungv.Features{}),
-		Update:        ggui.State(Update{Source: settings.UpdateChannel == ChannelSource, Repo: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.DisplayRepo(), Branch: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.BranchName()}),
-		Autostart:     ggui.State(false), // read by Start
-		BuildLog:      ggui.State(""),
-		AppUpdate:     ggui.State(AppUpdate{Install: appupdate.Detect()}),
-		Now:           ggui.State(time.Now()),
+		Page:            ggui.State(PageDashboard),
+		Settings:        ggui.State(settings),
+		Engine:          ggui.State(Engine{Loading: true}),
+		RungvFeatures:   ggui.State(rungv.Features{}),
+		Update:          ggui.State(Update{Source: settings.UpdateChannel == ChannelSource, Repo: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.DisplayRepo(), Branch: rungv.Source{Repo: settings.SourceRepo, Branch: settings.SourceBranch}.BranchName()}),
+		Releases:        ggui.State([]rungv.Release(nil)).WithEqual(func(a, b []rungv.Release) bool { return slices.EqualFunc(a, b, releaseEqual) }),
+		SelectedRelease: ggui.State(""),
+		Autostart:       ggui.State(false), // read by Start
+		BuildLog:        ggui.State(""),
+		AppUpdate:       ggui.State(AppUpdate{Install: appupdate.Detect()}),
+		Now:             ggui.State(time.Now()),
 
 		Specs:                   ggui.State(specs).WithEqual(func(a, b []sandbox.Spec) bool { return slices.EqualFunc(a, b, sandbox.Spec.Equal) }),
 		States:                  ggui.State(map[string]sandbox.State{}).WithEqual(nil),

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,6 +14,18 @@ import (
 
 	"github.com/ironpark/gvx-desktop/internal/rungv"
 )
+
+// Test hooks for rungv release lookup and installation.
+var (
+	fetchRungvReleases  = rungv.Releases
+	fetchRungvLatest    = rungv.Latest
+	installRungvRelease = rungv.Install
+	signRungvBinary     = rungv.Sign
+)
+
+func releaseEqual(a, b rungv.Release) bool {
+	return a.Tag == b.Tag && a.Page == b.Page && a.Prerelease == b.Prerelease && len(a.Assets) == len(b.Assets)
+}
 
 // The channels rungv is updated from: the releases of gvx, or the head of
 // its main branch, built here from source.
@@ -39,11 +52,12 @@ type Update struct {
 	Subject string // the first line of its message
 	Ahead   int    // commits Branch is past the rungv in use; -1 when unknown
 
-	Checking   bool
-	Err        string // why the last check failed
-	Installing bool
-	Percent    int    // of the download, while installing a release
-	Phase      string // what a build from source is doing
+	Checking      bool
+	Err           string // why the last check failed
+	Installing    bool
+	InstallingTag string // release tag currently being installed, when chosen explicitly
+	Percent       int    // of the download, while installing a release
+	Phase         string // what a build from source is doing
 }
 
 // BranchName is the branch or tag name of a source update.
@@ -68,6 +82,15 @@ func (u Update) Name() string {
 		return commitName(u.BranchName(), u.Commit)
 	}
 	return shortVersion(u.Tag)
+}
+
+// InstallName is the version currently being installed (a chosen release tag
+// when set, otherwise the channel's newest).
+func (u Update) InstallName() string {
+	if !u.Source && u.InstallingTag != "" {
+		return shortVersion(u.InstallingTag)
+	}
+	return u.Name()
 }
 
 // commitName names a build from source by its branch and commit.
@@ -167,8 +190,32 @@ func (m *Model) SetChannel(channel string) {
 	m.UpdateSettings(func(s *storeSettings) { s.UpdateChannel = channel })
 	src := m.Source()
 	m.Update.Set(Update{Source: channel == ChannelSource, Repo: src.DisplayRepo(), Branch: src.BranchName()})
+	m.SelectedRelease.Set("")
 	m.BuildLog.Set("")
 	m.CheckUpdate(true)
+}
+
+// SetSelectedRelease picks a specific published release tag to install in
+// Settings (empty string follows the newest release).
+func (m *Model) SetSelectedRelease(tag string) {
+	if ggui.Peek(m.Update).Installing {
+		return
+	}
+	if tag != "" {
+		if _, ok := m.releaseByTag(tag); !ok {
+			return
+		}
+	}
+	m.SelectedRelease.Set(tag)
+}
+
+func (m *Model) releaseByTag(tag string) (rungv.Release, bool) {
+	for _, r := range ggui.Peek(m.Releases) {
+		if r.Tag == tag {
+			return r, true
+		}
+	}
+	return rungv.Release{}, false
 }
 
 // CheckUpdate asks for the newest gvx of the channel. A quiet check, as
@@ -186,15 +233,29 @@ func (m *Model) CheckUpdate(quiet bool) {
 		return u
 	})
 	var rel rungv.Release
+	var rels []rungv.Release
 	var head rungv.Head
 	m.async(func(ctx context.Context) error {
 		var err error
 		if source {
 			head, err = rungv.SourceHead(ctx, src, installed)
-		} else {
-			rel, err = rungv.Latest(ctx)
+			return err
 		}
-		return err
+		rels, err = fetchRungvReleases(ctx)
+		if err == nil && len(rels) > 0 {
+			rel = newestRelease(rels)
+			return nil
+		}
+		latest, lerr := fetchRungvLatest(ctx)
+		if lerr != nil {
+			if err != nil {
+				return err
+			}
+			return lerr
+		}
+		rel = latest
+		rels = []rungv.Release{latest}
+		return nil
 	}, func(err error) {
 		if source != (m.Channel() == ChannelSource) || (source && m.Source() != src) {
 			return // the channel or source changed while this was asked
@@ -220,6 +281,12 @@ func (m *Model) CheckUpdate(quiet bool) {
 			u.Page = src.CommitsURL()
 		} else {
 			m.release = rel
+			m.Releases.Set(rels)
+			if sel := ggui.Peek(m.SelectedRelease); sel != "" {
+				if !slices.ContainsFunc(rels, func(r rungv.Release) bool { return r.Tag == sel }) {
+					m.SelectedRelease.Set("")
+				}
+			}
 		}
 		m.Update.Set(u)
 		if quiet {
@@ -236,24 +303,54 @@ func (m *Model) CheckUpdate(quiet bool) {
 	})
 }
 
+// newestRelease picks the first non-prerelease entry in rels, or rels[0] if
+// every listed release is a prerelease.
+func newestRelease(rels []rungv.Release) rungv.Release {
+	for _, r := range rels {
+		if !r.Prerelease {
+			return r
+		}
+	}
+	return rels[0]
+}
+
 // InstallRungv installs the newest rungv of the channel — a release
 // downloaded, or built from source — in place of the one in use, or
 // in ~/.gvx/bin when there is none or it is not this app's to replace.
 // A rungvx in ~/.gvx/bin also gets that name there (linkRungvx).
 // Sandboxes that are running keep the rungv they started with.
 func (m *Model) InstallRungv() {
+	m.installRungv(m.Channel() == ChannelSource, "")
+}
+
+// InstallRungvRelease installs a specific published release tag (or the newest
+// release when tag is empty).
+func (m *Model) InstallRungvRelease(tag string) {
+	m.installRungv(false, tag)
+}
+
+func (m *Model) installRungv(source bool, tag string) {
 	if u := ggui.Peek(m.Update); u.Checking || u.Installing {
 		return
 	}
-	source := m.Channel() == ChannelSource
+	var rel rungv.Release
+	if !source {
+		if tag != "" {
+			var ok bool
+			if rel, ok = m.releaseByTag(tag); !ok {
+				return
+			}
+		} else {
+			rel = m.release
+		}
+	}
 	src := m.Source()
 	m.Update.Update(func(u Update) Update {
 		u.Source, u.Repo, u.Branch = source, src.DisplayRepo(), src.BranchName()
-		u.Installing, u.Percent, u.Phase, u.Err = true, 0, "", ""
+		u.Installing, u.InstallingTag, u.Percent, u.Phase, u.Err = true, rel.Tag, 0, "", ""
 		return u
 	})
 	current := ggui.Peek(m.Engine).Path
-	rel := m.release
 	var target, built string
 	work := func(ctx context.Context) error {
 		var err error
@@ -264,12 +361,13 @@ func (m *Model) InstallRungv() {
 			built, err = m.buildFromSource(ctx, src, target)
 		} else {
 			if rel.Tag == "" {
-				if rel, err = rungv.Latest(ctx); err != nil {
+				if rel, err = fetchRungvLatest(ctx); err != nil {
 					return err
 				}
+				m.post(func() { m.Update.Update(func(u Update) Update { u.InstallingTag = rel.Tag; return u }) })
 			}
 			shown := -1
-			err = rungv.Install(ctx, rel, target, func(done, total int64) {
+			err = installRungvRelease(ctx, rel, target, func(done, total int64) {
 				if total <= 0 {
 					return
 				}
@@ -284,7 +382,7 @@ func (m *Model) InstallRungv() {
 		}
 		if runtime.GOOS == "darwin" {
 			// A rungv without the entitlement cannot reach the hypervisor.
-			if err := rungv.Sign(ctx, target); err != nil {
+			if err := signRungvBinary(ctx, target); err != nil {
 				return errors.New(tr("rungv was installed, but signing it failed: ") + err.Error())
 			}
 		}
@@ -295,16 +393,16 @@ func (m *Model) InstallRungv() {
 	}
 	done := func(err error) {
 		m.Update.Update(func(u Update) Update {
-			u.Installing, u.Percent, u.Phase = false, 0, ""
+			u.Installing, u.InstallingTag, u.Percent, u.Phase = false, "", 0, ""
 			switch {
 			case source && built != "":
 				u.Commit, u.Ahead, u.Repo, u.Branch, u.Page = built, 0, src.DisplayRepo(), src.BranchName(), src.CommitsURL()
-			case !source && rel.Tag != "":
+			case !source && rel.Tag != "" && (tag == "" || u.Tag == ""):
 				u.Tag, u.Page = rel.Tag, rel.Page
 			}
 			return u
 		})
-		if !source && rel.Tag != "" {
+		if !source && rel.Tag != "" && (tag == "" || m.release.Tag == "") {
 			m.release = rel
 		}
 		if err != nil {

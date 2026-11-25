@@ -542,7 +542,7 @@ func demoState(m *ui.Model, now time.Time) {
 		Version: rungv.Version{Version: "v0.16.10022026110900", Commit: "a9bfd06", Go: "go1.27.4 darwin/arm64"},
 		Info: rungv.Info{OS: "darwin", Architecture: "arm64", NumCPU: 10, DefaultBackend: "hvf",
 			AvailableBackends: []string{"hvf"}, HostLockdown: "seatbelt",
-			LayerCacheDir: "/Users/me/Library/Caches/gvx/layers", VolumeDir: "/Users/me/Library/Caches/gvx/volumes",
+			LayerCacheDir: "/Users/me/Library/Caches/gvx/layers", VolumeDir: "/Users/me/Library/Application Support/gvx/volumes",
 			Images: 5, Volumes: 3},
 		Checked: true,
 	})
@@ -593,7 +593,7 @@ func demoState(m *ui.Model, now time.Time) {
 		{Repository: "alpine", Tag: "3.20", ID: "ab3fe4defd29", CreatedSince: "7 months ago", Size: "9.155MB"},
 	}})
 	m.Volumes.Set(ui.Listing[rungv.Volume]{Loaded: true, Items: []rungv.Volume{
-		{Name: "gvx-docker", Driver: "ext4lite", Size: "1.82GB", InUse: true, CreatedAt: "2026-11-10 10:00:00 +0900 KST", Mountpoint: "/Users/me/Library/Caches/gvx/volumes/gvx-docker.ext4"},
+		{Name: "gvx-docker", Driver: "ext4lite", Size: "1.82GB", InUse: true, CreatedAt: "2026-11-10 10:00:00 +0900 KST", Mountpoint: "/Users/me/Library/Application Support/gvx/volumes/gvx-docker.ext4"},
 		{Name: "k3s", Driver: "ext4lite", Size: "412MB", InUse: true, CreatedAt: "2026-11-10 11:00:00 +0900 KST"},
 		{Name: "pgdata", Driver: "ext4lite", Size: "64MB", CreatedAt: "2026-11-12 09:30:00 +0900 KST"},
 	}})

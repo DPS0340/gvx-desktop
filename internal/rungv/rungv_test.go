@@ -1,7 +1,10 @@
 package rungv
 
 import (
+	"context"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -47,6 +50,39 @@ func TestClientArgsCacheDir(t *testing.T) {
 	}
 	if got := c.Args("checkpoint", "-control-socket", "s"); !reflect.DeepEqual(got, []string{"checkpoint", "-control-socket", "s"}) {
 		t.Errorf("checkpoint: %q", got)
+	}
+}
+
+func TestClientCommandVolumeDir(t *testing.T) {
+	plain := (&Client{Path: "rungv"}).Command(context.Background(), "info")
+	if plain.Env != nil {
+		t.Errorf("without VolumeDir, Env = %q, want the app's environment (nil)", plain.Env)
+	}
+	cmd := (&Client{Path: "rungv", VolumeDir: "/data/volumes"}).Command(context.Background(), "volume", "ls")
+	if !slices.Contains(cmd.Env, VolumeDirEnv+"=/data/volumes") {
+		t.Errorf("Env lacks %s=/data/volumes", VolumeDirEnv)
+	}
+	if len(cmd.Env) < 2 {
+		t.Errorf("Env = %q, want the app's environment as well", cmd.Env)
+	}
+}
+
+func TestCacheVolumeDir(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "u")
+	for _, c := range []struct {
+		goos, dir string
+		want      bool
+	}{
+		{"darwin", filepath.Join(home, "Library", "Caches", "gvx", "volumes"), true},
+		{"darwin", filepath.Join(home, "Library", "Caches"), true},
+		{"darwin", filepath.Join(home, "Library", "Application Support", "gvx", "volumes"), false},
+		{"darwin", filepath.Join(home, "Library", "CachesOther", "volumes"), false},
+		{"darwin", "", false},
+		{"linux", filepath.Join(home, "Library", "Caches", "gvx", "volumes"), false},
+	} {
+		if got := CacheVolumeDir(c.goos, home, c.dir); got != c.want {
+			t.Errorf("CacheVolumeDir(%s, %q) = %v, want %v", c.goos, c.dir, got, c.want)
+		}
 	}
 }
 

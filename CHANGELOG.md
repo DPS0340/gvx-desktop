@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Volume directory** in the rungv section of Settings places named volumes in a folder of your choice. The app passes it to `rungv` as `GVX_VOLUME_DIR`, which gvx reads once [gfire-sigs/gvx#259](https://github.com/gfire-sigs/gvx/issues/259) is fixed. An empty setting keeps `rungv`'s default ([#15](https://github.com/ironpark/gvx-desktop/issues/15)).
+- The rungv section of Settings warns when named volumes lie in `~/Library/Caches`, which macOS empties when the disk runs low, and when the `rungv` in use ignores the volume directory.
+
+### Fixed
+
+- The help text of **Layer cache directory** said that named volumes live in a `volumes` folder beside it. `rungv` keeps them inside it, in `<cacheDir>/volumes`, unless a volume directory is set.
+
 ## [0.10.2] - 2026-11-25
 
 ### Added

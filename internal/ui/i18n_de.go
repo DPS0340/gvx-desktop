@@ -1048,7 +1048,7 @@ var german = &i18n.Catalog{
 		"GVX Desktop is up to date":                                                    "GVX Desktop ist auf dem neuesten Stand",
 		"GVX Desktop quits, puts %s in place, and opens again.":                        "GVX Desktop wird beendet, spielt %s ein und öffnet sich wieder.",
 		"GVX Desktop updates":                                                          "Updates von GVX Desktop",
-		"Homebrew installed this copy: run %s in a terminal, then open the app again.": "Diese Kopie wurde mit Homebrew installiert: Führen Sie %s in einem Terminal aus und öffnen Sie die App danach wieder.",
+		"Homebrew installed this copy: run the command in a terminal, then open the app again.": "Diese Kopie wurde mit Homebrew installiert: Führen Sie den Befehl in einem Terminal aus und öffnen Sie die App danach wieder.",
 		"It downloads now and goes in place when the app restarts.":                    "Es wird jetzt heruntergeladen und beim Neustart der App eingespielt.",
 		"It goes in place when the app restarts.":                                      "Es wird beim Neustart der App eingespielt.",
 		"Open the release page":                                                        "Release-Seite öffnen",

@@ -1050,7 +1050,7 @@ var korean = &i18n.Catalog{
 		"GVX Desktop is up to date":                                                    "GVX Desktop이 최신입니다",
 		"GVX Desktop quits, puts %s in place, and opens again.":                        "GVX Desktop을 종료하고 %s 버전을 설치한 뒤 다시 엽니다.",
 		"GVX Desktop updates":                                                          "GVX Desktop 업데이트",
-		"Homebrew installed this copy: run %s in a terminal, then open the app again.": "Homebrew로 설치한 앱입니다. 터미널에서 %s 명령을 실행한 뒤 앱을 다시 여세요.",
+		"Homebrew installed this copy: run the command in a terminal, then open the app again.": "Homebrew로 설치한 앱입니다. 터미널에서 이 명령을 실행한 뒤 앱을 다시 여세요.",
 		"It downloads now and goes in place when the app restarts.":                    "지금 다운로드하고, 앱을 다시 시작하면 적용됩니다.",
 		"It goes in place when the app restarts.":                                      "앱을 다시 시작하면 적용됩니다.",
 		"Open the release page":                                                        "릴리스 페이지 열기",

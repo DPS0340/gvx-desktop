@@ -1036,7 +1036,7 @@ var traditionalChinese = &i18n.Catalog{
 		"GVX Desktop is up to date":                                                    "GVX Desktop 已是最新版本",
 		"GVX Desktop quits, puts %s in place, and opens again.":                        "GVX Desktop 將會結束、安裝 %s，然後重新開啟。",
 		"GVX Desktop updates":                                                          "GVX Desktop 更新",
-		"Homebrew installed this copy: run %s in a terminal, then open the app again.": "此副本由 Homebrew 安裝：請在終端機中執行 %s，然後重新開啟 App。",
+		"Homebrew installed this copy: run the command in a terminal, then open the app again.": "此副本由 Homebrew 安裝：請在終端機中執行這個指令，然後重新開啟 App。",
 		"It downloads now and goes in place when the app restarts.":                    "現在下載，App 重新啟動時套用。",
 		"It goes in place when the app restarts.":                                      "App 重新啟動時套用。",
 		"Open the release page":                                                        "開啟發行頁面",

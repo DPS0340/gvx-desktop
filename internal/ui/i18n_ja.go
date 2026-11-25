@@ -1044,7 +1044,7 @@ var japanese = &i18n.Catalog{
 		"GVX Desktop is up to date":                                                    "GVX Desktop は最新です",
 		"GVX Desktop quits, puts %s in place, and opens again.":                        "GVX Desktop を終了し、%s を適用してから再び開きます。",
 		"GVX Desktop updates":                                                          "GVX Desktop のアップデート",
-		"Homebrew installed this copy: run %s in a terminal, then open the app again.": "このコピーは Homebrew でインストールされています。ターミナルで %s を実行してから、アプリを再び開いてください。",
+		"Homebrew installed this copy: run the command in a terminal, then open the app again.": "このコピーは Homebrew でインストールされています。ターミナルでこのコマンドを実行してから、アプリを再び開いてください。",
 		"It downloads now and goes in place when the app restarts.":                    "今すぐダウンロードし、アプリの再起動時に適用されます。",
 		"It goes in place when the app restarts.":                                      "アプリの再起動時に適用されます。",
 		"Open the release page":                                                        "リリースページを開く",

@@ -1042,7 +1042,7 @@ var hindi = &i18n.Catalog{
 		"GVX Desktop is up to date":                                                    "GVX Desktop अप-टू-डेट है",
 		"GVX Desktop quits, puts %s in place, and opens again.":                        "GVX Desktop बंद होगा, %s लागू करेगा और फिर से खुलेगा।",
 		"GVX Desktop updates":                                                          "GVX Desktop अपडेट",
-		"Homebrew installed this copy: run %s in a terminal, then open the app again.": "यह कॉपी Homebrew से इंस्टॉल हुई है: टर्मिनल में %s चलाएँ, फिर ऐप दोबारा खोलें।",
+		"Homebrew installed this copy: run the command in a terminal, then open the app again.": "यह कॉपी Homebrew से इंस्टॉल हुई है: टर्मिनल में यह कमांड चलाएँ, फिर ऐप दोबारा खोलें।",
 		"It downloads now and goes in place when the app restarts.":                    "यह अभी डाउनलोड होगा और ऐप रीस्टार्ट होने पर लागू होगा।",
 		"It goes in place when the app restarts.":                                      "ऐप रीस्टार्ट होने पर यह लागू होगा।",
 		"Open the release page":                                                        "रिलीज़ पेज खोलें",

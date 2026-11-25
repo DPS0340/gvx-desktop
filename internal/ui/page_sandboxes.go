@@ -183,7 +183,7 @@ func rowMenu(m *Model, r Row) ggui.Widget {
 		ui.MenuItem(tr("Logs"), func() { m.ShowSandbox(id, 0) }),
 		ui.MenuItem(tr("Edit…"), func() { m.EditSandbox(id) }),
 		ui.MenuItem(tr("Duplicate…"), func() { m.Duplicate(id) }),
-		ui.MenuItem(tr("Copy command line"), func() { m.Copy(r.Spec.CommandLine(sandbox.Paths{}), tr("rungv command line")) }),
+		ui.MenuItem(tr("Copy command line"), func() { m.Copy(r.Spec.CommandLine(sandbox.Paths{}), tr("rungvx command line")) }),
 	}
 	switch sandboxPauseAction(r.State) {
 	case "pause":
@@ -664,7 +664,7 @@ func snapshotList(m *Model, snaps ggui.Readable[[]sandbox.Snapshot], showSandbox
 
 // sandboxTerminal is a shell in the chosen sandbox, as rungv exec -it runs one.
 func sandboxTerminal(m *Model) ggui.Widget {
-	return terminalTab(m, m.sandboxShell(), tr("A shell in the sandbox, as rungv exec -it runs one."))
+	return terminalTab(m, m.sandboxShell(), tr("A shell in the sandbox, as rungvx exec -it runs one."))
 }
 
 // portSourceLabel words what published a port, "" for one published at

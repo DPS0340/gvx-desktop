@@ -106,7 +106,7 @@ func (m *Model) applyDockerConfig(before, after []byte) {
 	}
 	ctl, ok := m.sandboxControl(id)
 	if !ok {
-		restart(tr("dockerd reads it again on a restart: this rungv cannot signal the running engine."))
+		restart(tr("dockerd reads it again on a restart: this rungvx cannot signal the running engine."))
 		return
 	}
 	m.async(func(ctx context.Context) error {

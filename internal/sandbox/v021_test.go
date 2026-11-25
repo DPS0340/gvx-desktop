@@ -661,8 +661,10 @@ if [ "$1" = "restore" ] && [ "$2" = "-help" ]; then
   exit 0
 fi
 if [ "$1" = "restore" ]; then
-  : > "` + restoreArgsFile + `"
-  for a in "$@"; do printf '%s\n' "$a" >> "` + restoreArgsFile + `"; done
+  tmp="` + restoreArgsFile + `.tmp"
+  : > "$tmp"
+  for a in "$@"; do printf '%s\n' "$a" >> "$tmp"; done
+  mv -f "$tmp" "` + restoreArgsFile + `"
   exec sleep 30
 fi
 exit 0

@@ -122,6 +122,10 @@ type Settings struct {
 	MCPServer bool `json:"mcpServer,omitempty"`
 	// MCPPort configures the MCP server's loopback port; 0 selects DefaultMCPPort.
 	MCPPort int `json:"mcpPort,omitempty"`
+	// Extensions enables the GVX Desktop Extensions host runtime and dedicated Extensions sidebar page (Labs, opt-in).
+	Extensions bool `json:"extensions,omitempty"`
+	// DeveloperMode enables unsandboxed local binary extensions (Extensions page).
+	DeveloperMode bool `json:"developerMode,omitempty"`
 }
 
 // LocalRegistryMode returns the normalized local registry mode

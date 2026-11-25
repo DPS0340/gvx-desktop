@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"os"
 	"path"
@@ -114,6 +115,8 @@ type Spec struct {
 	// ContainerID marks a sandbox the app's Docker engine runs for a
 	// container: it is not one of the user's sandboxes.
 	ContainerID string `json:"containerId,omitempty"`
+	// Labels stores host metadata such as extension ownership (io.gvx.extension).
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // NewID returns a short random identifier.
@@ -225,8 +228,12 @@ func (s Spec) Validate() error {
 		return errors.New("The WireGuard network needs a configuration file.")
 	}
 	isNAT := s.Network == "" || s.Network == "nat"
-	if !isNAT && len(s.Ports) > 0 {
-		return errors.New("Published ports need the NAT network.")
+	if !isNAT {
+		for _, p := range s.Ports {
+			if !strings.HasPrefix(strings.TrimSpace(p), "unix:") {
+				return errors.New("Published ports need the NAT network.")
+			}
+		}
 	}
 	if !isNAT && (s.NetTXBPS > 0 || s.NetRXBPS > 0) {
 		return errors.New("Network bandwidth limits need the NAT network.")
@@ -757,7 +764,7 @@ func volumeSpec(src, dst string, ro bool) string {
 // CommandLine is the run command as one line a person could paste into a
 // shell.
 func (s Spec) CommandLine(p Paths) string {
-	return "rungv " + rungv.FormatArgs(s.RunArgs(p))
+	return "rungvx " + rungv.FormatArgs(s.RunArgs(p))
 }
 
 // Prepare creates the host directories a run needs before rungv starts:
@@ -817,6 +824,7 @@ func (s Spec) Clone() Spec {
 	c.UnixForwards = append([]string(nil), s.UnixForwards...)
 	c.DynamicPortAddrs = append([]string(nil), s.DynamicPortAddrs...)
 	c.Mounts = append([]Mount(nil), s.Mounts...)
+	c.Labels = maps.Clone(s.Labels)
 	return c
 }
 

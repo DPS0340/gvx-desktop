@@ -96,6 +96,16 @@ func TestValidate(t *testing.T) {
 	if err := base.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	unixNone := Spec{
+		Name:    "ext",
+		Image:   "alpine",
+		Network: "none",
+		Ports:   []string{"unix:/tmp/ext.sock:18900"},
+		Labels:  map[string]string{"io.gvx.extension": "ext"},
+	}
+	if err := unixNone.Validate(); err != nil {
+		t.Fatalf("expected unix: port on network=none to validate, got: %v", err)
+	}
 	bad := []func(*Spec){
 		func(s *Spec) { s.Name = "" },
 		func(s *Spec) { s.Name = "has space" },
@@ -133,16 +143,17 @@ func TestSuggestName(t *testing.T) {
 }
 
 func TestEqualAndClone(t *testing.T) {
-	a := Spec{Name: "a", Env: []string{"X=1"}, Mounts: []Mount{{Type: MountTmpfs, Target: "/t"}}}
+	a := Spec{Name: "a", Env: []string{"X=1"}, Mounts: []Mount{{Type: MountTmpfs, Target: "/t"}}, Labels: map[string]string{"io.gvx.extension": "ext"}}
 	b := a.Clone()
 	if !a.Equal(b) {
 		t.Fatal("clone differs")
 	}
 	b.Env[0] = "X=2"
-	if a.Env[0] != "X=1" || a.Equal(b) {
-		t.Fatal("clone shares its slices")
+	b.Labels["io.gvx.extension"] = "other"
+	if a.Env[0] != "X=1" || a.Labels["io.gvx.extension"] != "ext" || a.Equal(b) {
+		t.Fatal("clone shares its slices or maps")
 	}
-	if !(Spec{}).Equal(Spec{Env: []string{}}) {
+	if !(Spec{}).Equal(Spec{Env: []string{}, Labels: map[string]string{}}) {
 		t.Fatal("nil and empty differ")
 	}
 }

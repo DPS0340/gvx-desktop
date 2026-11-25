@@ -119,7 +119,7 @@ func AddNodeBlocked(rows []Row) string {
 		case r.State.Status != sandbox.Running || r.State.Paused:
 			return tr("Start the cluster to add a node.")
 		case !r.State.Control:
-			return tr("Adding nodes needs rungv 0.20 or later.")
+			return tr("Adding nodes needs rungvx 0.20 or later.")
 		case recipes.NextAgent(specs) == 0:
 			return tr("The cluster has as many nodes as its network holds.")
 		}

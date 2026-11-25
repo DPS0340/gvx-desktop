@@ -24,6 +24,7 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/dockerapi"
 	"github.com/ironpark/gvx-desktop/internal/dockerproxy"
 	"github.com/ironpark/gvx-desktop/internal/engine"
+	"github.com/ironpark/gvx-desktop/internal/ext"
 	"github.com/ironpark/gvx-desktop/internal/imagefs"
 	"github.com/ironpark/gvx-desktop/internal/kubeapi"
 	"github.com/ironpark/gvx-desktop/internal/localproxy"
@@ -52,10 +53,33 @@ const (
 	PageDocker     = "docker"
 	PageKubernetes = "kubernetes"
 	PageSettings   = "settings"
-	// PageLabs holds what is still experimental, above Settings in the
-	// sidebar.
+	// PageLabs holds what is still experimental, above Extensions and Settings in
+	// the sidebar.
 	PageLabs = "labs"
+	// PageExtensions is the dedicated extension install/management page, shown
+	// between Labs and Settings in the sidebar when Extensions are enabled.
+	PageExtensions = "extensions"
+	// PageExtensionPrefix is the route prefix for extension views ("ext:<ext-id>/<view-id>").
+	PageExtensionPrefix = "ext:"
 )
+
+// ExtensionPage returns the navigation page key for an extension's view.
+func ExtensionPage(extID, viewID string) string {
+	return PageExtensionPrefix + extID + "/" + viewID
+}
+
+// ParseExtensionPage extracts extension ID and view ID from an extension page key.
+func ParseExtensionPage(page string) (extID, viewID string, ok bool) {
+	rest, has := strings.CutPrefix(page, PageExtensionPrefix)
+	if !has {
+		return "", "", false
+	}
+	extID, viewID, ok = strings.Cut(rest, "/")
+	if !ok || extID == "" || viewID == "" {
+		return "", "", false
+	}
+	return extID, viewID, true
+}
 
 // Engine is what the app knows of the rungv binary.
 type Engine struct {
@@ -439,6 +463,28 @@ type Model struct {
 	mcpSyncGen   int
 	mcpSnapMu    sync.RWMutex
 	mcpSnap      mcpSnapshot
+
+	Extensions       *ggui.StateValue[[]ext.ExtensionInfo]
+	ExtensionSecrets *ggui.StateValue[ext.SecretStoreStatus]
+	ExtNavOpen       *ggui.StateValue[bool]
+	ExtBuildLogsTick *ggui.StateValue[int]
+
+	extMgrPtr          atomic.Pointer[ext.Manager]
+	extOwnedMgr        bool
+	extLifeMu          sync.Mutex
+	extMu              sync.Mutex
+	extWatchCancel     context.CancelFunc
+	extWatchDone       chan struct{}
+	extStreamMu        sync.Mutex
+	extStreamKey       string
+	extStreamCancel    context.CancelFunc
+	extViews           map[string]*extViewSession
+	developerMode      atomic.Bool
+	sandboxEngineMode  atomic.Bool
+	hostInfoSnap       atomic.Pointer[ext.HostInfo]
+	extThemeSent       string
+	extLocaleSent      string
+	extDockerStateSent string
 }
 
 // NewModel loads the saved state. Call it under a ggui owner (ggui.Root).
@@ -625,17 +671,26 @@ func NewModel(st store.Store, dataDir string) *Model {
 		ExploreSplit:     ggui.State(0.47),
 		SelectedImage:    ggui.State(""),
 		SelectedVolume:   ggui.State(""),
+		Extensions:       ggui.State([]ext.ExtensionInfo(nil)).WithEqual(extensionsEqual),
+		ExtensionSecrets: ggui.State(ext.SecretStoreStatus{}),
+		ExtNavOpen:       ggui.State(true),
+		ExtBuildLogsTick: ggui.State(0),
+		extViews:         map[string]*extViewSession{},
 		runCLI:           runCLI,
 		runVMHelper:      defaultVMHelperRunner,
 		forwarder:        forwardThroughCluster,
 	}
 	m.dockerExposeLAN.Store(settings.DockerExposeLAN)
 	m.dockerSSHAgent.Store(settings.DockerSSHAgent)
+	m.developerMode.Store(settings.DeveloperMode)
+	m.sandboxEngineMode.Store(settings.SandboxEngine)
+	m.updateHostInfoSnapshot(settings, Engine{}, false)
 	m.watchAmd64Check()
 	ggui.OnCleanup(m.Toasts.Close)
 	ggui.OnCleanup(m.CloseLocalRegistry)
 	ggui.OnCleanup(m.CloseLocalProxy)
 	ggui.OnCleanup(m.CloseMCPServer)
+	ggui.OnCleanup(m.stopExtensionWatchers)
 	m.nodes = &nodenet.Network{Dir: filepath.Join(dataDir, "nodes"), Client: m.Client}
 	m.sup = &sandbox.Supervisor{
 		Client:    m.Client,
@@ -782,7 +837,7 @@ func NewModel(st store.Store, dataDir string) *Model {
 // value per line, as the recipes in the gvx docs are written.
 func wrapCommand(args []string) string {
 	var b strings.Builder
-	b.WriteString("rungv")
+	b.WriteString("rungvx")
 	i := 0
 	if len(args) > 0 {
 		b.WriteString(" " + rungv.Quote(args[0]))
@@ -913,6 +968,9 @@ func (m *Model) Go(page string) {
 		clusterPage(page) && ggui.Peek(m.PodsAccess) != PodsOpen {
 		return
 	}
+	if prev := ggui.Peek(m.Page); prev != page && strings.HasPrefix(prev, PageExtensionPrefix) {
+		m.cancelExtensionStream()
+	}
 	m.Page.Set(page)
 	switch page {
 	case PageImages:
@@ -934,6 +992,9 @@ func (m *Model) Go(page string) {
 			m.refreshAmd64State()
 			m.refreshMicroVMState()
 		}
+		m.refreshExtensions()
+	case PageExtensions:
+		m.refreshExtensions()
 	case PageDocker:
 		m.LoadDocker()
 		m.LoadDockerImages()
@@ -980,6 +1041,10 @@ func (m *Model) Start() {
 	m.followLocalRegistry()
 	m.followLocalProxy()
 	m.followMCPServer()
+	if ggui.Peek(m.Settings).Extensions {
+		m.initExtensions()
+	}
+	m.followExtensions()
 	m.followDocker()
 	m.followPods()
 	m.followForwards()
@@ -1016,7 +1081,7 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 		path, err := rungv.Locate(set.RungvPath)
 		r.e = Engine{Path: path, Checked: true}
 		if err != nil {
-			r.e.Err = tr("rungv was not found. Install it, or set its path in Settings.")
+			r.e.Err = tr("rungvx was not found. Install it, or set its path in Settings.")
 			return nil
 		}
 		c := &rungv.Client{Path: path, CacheDir: rungv.ExpandHome(set.CacheDir), VolumeDir: rungv.ExpandHome(set.VolumeDir)}
@@ -1024,12 +1089,12 @@ func (m *Model) DetectEngine(then func(ok bool)) {
 		if v, err := c.Version(ctx); err == nil {
 			r.e.Version = v
 		} else {
-			r.e.Err = tr("rungv did not run: ") + err.Error()
+			r.e.Err = tr("rungvx did not run: ") + err.Error()
 			return nil
 		}
 		info, err := c.Info(ctx)
 		if err != nil {
-			r.e.Err = tr("rungv info failed: ") + err.Error()
+			r.e.Err = tr("rungvx info failed: ") + err.Error()
 			return nil
 		}
 		r.e.Info = info
@@ -1078,7 +1143,7 @@ func (m *Model) SignRungv() {
 			m.toastError(tr("Signing failed"), err)
 			return
 		}
-		m.toastOK(tr("rungv signed"), tr("Hypervisor.framework access is granted."))
+		m.toastOK(tr("rungvx signed"), tr("Hypervisor.framework access is granted."))
 		m.DetectEngine(nil)
 	})
 }
@@ -1330,9 +1395,9 @@ func engineProblem(e Engine) string {
 	case e.Err != "":
 		return e.Err
 	case len(e.Info.AvailableBackends) == 0:
-		return tr("rungv found no execution backend on this host.")
+		return tr("rungvx found no execution backend on this host.")
 	}
-	return tr("rungv is still being checked.")
+	return tr("rungvx is still being checked.")
 }
 
 // StopSandbox stops a running sandbox, as the user asked: a recipe

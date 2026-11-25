@@ -439,6 +439,10 @@ esac
 	if err != nil || psd.Name != "etc" || !os.FileMode(psd.Mode).IsDir() {
 		t.Fatalf("StatPath dir: %+v %v", psd, err)
 	}
+	psdSlash, err := c.StatPath(ctx, target, "/etc/")
+	if err != nil || psdSlash.Name != "etc" || !os.FileMode(psdSlash.Mode).IsDir() {
+		t.Fatalf("StatPath trailing slash dir: %+v %v", psdSlash, err)
+	}
 	beforeRoot, _ := os.ReadFile(argsLog)
 	psr, err := c.StatPath(ctx, target, "/")
 	if err != nil || psr.Name != "/" || !os.FileMode(psr.Mode).IsDir() {

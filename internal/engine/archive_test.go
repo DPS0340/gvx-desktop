@@ -111,6 +111,17 @@ func TestArchiveHeadGetPutAndErrors(t *testing.T) {
 		t.Fatalf("copyTo call = %+v", last)
 	}
 
+	// PUT with trailing slash (as nektos/act sends for /var/run/act/) cleans the target path.
+	if st, b := te.do(t, http.MethodPut, "/containers/"+cid+"/archive?path=/tmp/", []byte("ACT-TAR")); st != http.StatusOK {
+		t.Fatalf("put trailing slash = %d %s", st, b)
+	}
+	ctl.mu.Lock()
+	last = ctl.copyToCalls[len(ctl.copyToCalls)-1]
+	ctl.mu.Unlock()
+	if last.Dir != "/tmp" || string(last.Data) != "ACT-TAR" {
+		t.Fatalf("copyTo trailing slash = %+v", last)
+	}
+
 	// PUT gzip-compressed tar -> transparently decompressed before CopyTo.
 	var gzBuf bytes.Buffer
 	gw := gzip.NewWriter(&gzBuf)

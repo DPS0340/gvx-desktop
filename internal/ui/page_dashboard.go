@@ -54,13 +54,13 @@ func engineAlertFor(m *Model, onSettings bool) ggui.Widget {
 		case !e.Checked:
 			return widget.Box()
 		case e.Path == "":
-			acts := []ggui.Widget{installButton(m, u, tr("Install rungv"))}
+			acts := []ggui.Widget{installButton(m, u, tr("Install rungvx"))}
 			if !onSettings {
 				acts = append(acts, ui.Button(tr("Open Settings"), func() { m.Go(PageSettings) }).Outline())
 			}
 			return shown(noticeBanner(lucide.TriangleExclamationPoint, 0xef4444, true,
-				tr("rungv was not found"),
-				tr("GVX Desktop drives the rungv command line. Install the newest release into ~/.gvx/bin here, or put your own on your PATH or choose its location in Settings."),
+				tr("rungvx was not found"),
+				tr("GVX Desktop drives the rungvx command line. Install the newest release into ~/.gvx/bin here, or put your own on your PATH or choose its location in Settings."),
 				acts...,
 			))
 		case e.Err != "":
@@ -70,9 +70,9 @@ func engineAlertFor(m *Model, onSettings bool) ggui.Widget {
 			))
 		case rungv.NeedsSigning(e.Info):
 			return shown(noticeBanner(lucide.TriangleExclamationPoint, 0xef4444, true,
-				tr("rungv needs the hypervisor entitlement"),
-				tr("On macOS, rungv runs guests through Hypervisor.framework and must be signed with com.apple.security.hypervisor. Sign it here, or run: ")+rungv.SignCommand(e.Path),
-				ui.Button(tr("Sign rungv"), m.SignRungv),
+				tr("rungvx needs the hypervisor entitlement"),
+				tr("On macOS, rungvx runs guests through Hypervisor.framework and must be signed with com.apple.security.hypervisor. Sign it here, or run: ")+rungv.SignCommand(e.Path),
+				ui.Button(tr("Sign rungvx"), m.SignRungv),
 			))
 		case len(e.Info.AvailableBackends) == 0:
 			return shown(noticeBanner(lucide.TriangleExclamationPoint, 0xef4444, true,
@@ -87,7 +87,7 @@ func engineAlertFor(m *Model, onSettings bool) ggui.Widget {
 			}
 			return shown(noticeBanner(lucide.Download, 0x3b82f6, false,
 				updateTitle(u, e),
-				tr("This computer has %s. Sandboxes that are running keep the rungv they started with.", engineVersion(e)),
+				tr("This computer has %s. Sandboxes that are running keep the rungvx they started with.", engineVersion(e)),
 				acts...,
 			))
 		}
@@ -227,7 +227,7 @@ func recentSandboxes(m *Model) ggui.Widget {
 			Action(ui.Button(tr("New sandbox"), func() { m.NewSandbox("") }).Outline())
 	})
 	return ui.Card(
-		ui.CardHeader(tr("Sandboxes"), tr("Every sandbox is one rungv process supervised by this app.")).
+		ui.CardHeader(tr("Sandboxes"), tr("Every sandbox is one rungvx process supervised by this app.")).
 			Action(ui.Button(tr("View all"), func() { m.Go(PageSandboxes) }).Ghost().Size(ui.ButtonSmall)),
 		ui.CardContent(list),
 	)
@@ -274,10 +274,10 @@ func sandboxQuickActions(m *Model, r Row) ggui.Widget {
 func engineCard(m *Model) ggui.Widget {
 	body := ggui.View(m.Engine, func(e Engine) ggui.Widget {
 		if !e.Checked {
-			return widget.Row(ui.Spinner(), ui.Caption(tr("Looking for rungv…"))).Gap(8)
+			return widget.Row(ui.Spinner(), ui.Caption(tr("Looking for rungvx…"))).Gap(8)
 		}
 		if e.Path == "" {
-			return ui.Caption(tr("rungv not found."))
+			return ui.Caption(tr("rungvx not found."))
 		}
 		// The default backend first, then the others the host offers.
 		backends := e.Info.DefaultBackend
@@ -298,7 +298,7 @@ func engineCard(m *Model) ggui.Widget {
 		).Gap(8).Stretch()
 	})
 	return ui.Card(
-		ui.CardHeader(tr("Engine"), tr("The rungv binary and what this host offers it.")).
+		ui.CardHeader(tr("Engine"), tr("The rungvx binary and what this host offers it.")).
 			Action(iconButton(lucide.RefreshCw, tr("Refresh"), m.RefreshAll)),
 		ui.CardContent(body),
 	)
@@ -488,9 +488,9 @@ func updateTitle(u Update, e Engine) string {
 		}
 		return tr("%s is at %s", u.BranchName(), u.Name())
 	case u.Newer(e):
-		return tr("rungv %s is available", u.Name())
+		return tr("rungvx %s is available", u.Name())
 	}
-	return tr("The newest release is rungv %s", u.Name())
+	return tr("The newest release is rungvx %s", u.Name())
 }
 
 // updateVerb is what the button that installs it says.

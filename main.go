@@ -162,6 +162,7 @@ func run(st store.Store, dir string, hidden bool) error {
 	// connections they carry.
 	m.CloseTerminals()
 	m.CloseForwards()
+	m.CloseExtensions(8 * time.Second)
 	m.CloseDockerProxy()
 	m.CloseExplorer()
 	// Whatever ended the app, no sandbox outlives it: gvx has no daemon to
@@ -264,6 +265,8 @@ func installMenus(app *ggui.App, m *ui.Model) {
 	if ui.LabsSupported() {
 		viewItems = append(viewItems, ggui.MenuAction(ui.T("Labs"), "", func() { m.Go(ui.PageLabs) }))
 	}
+	viewItems = append(viewItems, ggui.MenuAction(ui.T("Extensions"), "", func() { m.Go(ui.PageExtensions) }).
+		BindEnabled(ggui.Map(m.Settings, func(s store.Settings) bool { return s.Extensions })))
 	app.SetMenu(
 		ggui.Menu(ui.T("File"),
 			ggui.MenuAction(ui.T("New Sandbox…"), "cmd+n", func() { m.NewSandbox("") }),
@@ -320,7 +323,7 @@ func installTray(app *ggui.App, m *ui.Model) {
 			ggui.MenuAction(ui.EngineLine(engine), "", nil).BindEnabled(ggui.Const(false)),
 		}
 		if update.Available(engine) && !update.Installing {
-			items = append(items, ggui.MenuAction(ui.T("Update rungv to %s", update.Name()), "", m.InstallRungv))
+			items = append(items, ggui.MenuAction(ui.T("Update rungvx to %s", update.Name()), "", m.InstallRungv))
 		}
 		if tu := ggui.Peek(appUpdate); tu.name != "" {
 			switch {
@@ -397,7 +400,8 @@ func installTray(app *ggui.App, m *ui.Model) {
 	ggui.Watch(wanted, func(on bool) {
 		switch {
 		case on && tray == nil:
-			tray = app.AddTray(ggui.TrayConfig{Icon: trayIcon(), Template: true, Tooltip: "GVX Desktop"})
+			icon, template := trayIconConfig()
+			tray = app.AddTray(ggui.TrayConfig{Icon: icon, Template: template, Tooltip: "GVX Desktop"})
 			rebuild()
 		case !on && tray != nil:
 			tray.Remove()
@@ -429,9 +433,33 @@ func installTray(app *ggui.App, m *ui.Model) {
 	ggui.Watch(m.Lang, func(string) { rebuild() })
 }
 
-// trayIcon is the app's mark as the tray wants it, one color: the helmet's
-// shell, which is the light part of the mark, with the visor open in it.
-func trayIcon() image.Image {
+// trayIconConfig picks the tray icon image and template flag for the host OS.
+// macOS uses a monochrome template silhouette for its menu bar; Windows uses
+// the full-color mark in its taskbar notification area.
+func trayIconConfig() (image.Image, bool) {
+	return trayIconConfigForOS(runtime.GOOS)
+}
+
+func trayIconConfigForOS(goos string) (image.Image, bool) {
+	if goos == "windows" {
+		return trayColorIcon(), false
+	}
+	return trayTemplateIcon(), true
+}
+
+// trayColorIcon decodes the app's full-color mark for non-template trays
+// (Windows taskbar). Returning nil falls back to the executable's color icon.
+func trayColorIcon() image.Image {
+	src, err := png.Decode(bytes.NewReader(ui.MarkPNG()))
+	if err != nil {
+		return nil
+	}
+	return src
+}
+
+// trayTemplateIcon is the app's mark as the macOS menu bar wants it, one color:
+// the helmet's shell, which is the light part of the mark, with the visor open in it.
+func trayTemplateIcon() image.Image {
 	const size, glyph = 36, 32 // 18pt at 2x, with a point of air around
 	src, err := png.Decode(bytes.NewReader(ui.MarkPNG()))
 	if err != nil {

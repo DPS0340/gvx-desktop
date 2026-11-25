@@ -71,7 +71,7 @@ func (m *Model) Pull() {
 	if target == PullTargetDocker {
 		m.PullLog.Set("$ docker pull " + ref + "\n")
 	} else {
-		m.PullLog.Set("$ rungv pull " + ref + "\n")
+		m.PullLog.Set("$ rungvx pull " + ref + "\n")
 	}
 	var mu sync.Mutex
 	var pending []string
@@ -1034,6 +1034,8 @@ func (m *Model) UpdateSettings(fn func(*store.Settings)) {
 	fn(&s)
 	m.dockerExposeLAN.Store(s.DockerExposeLAN)
 	m.dockerSSHAgent.Store(s.DockerSSHAgent)
+	m.developerMode.Store(s.DeveloperMode)
+	m.sandboxEngineMode.Store(s.SandboxEngine)
 	if ggui.Peek(m.DockerExposeLAN) != s.DockerExposeLAN {
 		m.DockerExposeLAN.Set(s.DockerExposeLAN)
 	}

@@ -159,18 +159,18 @@ func editorSheet(m *Model) ggui.Widget {
 			Help(tr("One per line: [IP:][HOST:]GUEST[/udp]. Bound before the guest starts and fixed for the run: publish every port the guest will use, including ports of nested containers.")),
 		ui.Field(tr("Unix socket forwards"), ui.TextField(str(func(x *Draft) *string { return &x.UnixForwards })).Multiline().Lines(2).
 			Placeholder("/var/run/app.sock=~/.gvx/app.sock").Name(tr("Unix socket forwards"))).
-			Help(tr("One per line: GUEST_PATH=HOST_SOCKET[,uid=N,gid=N,mode=0600]. Relays a guest Unix socket to a host socket under lockdown (rungv v0.21+).")),
+			Help(tr("One per line: GUEST_PATH=HOST_SOCKET[,uid=N,gid=N,mode=0600]. Relays a guest Unix socket to a host socket under lockdown (rungvx v0.21+).")),
 		ggui.If(isNAT, func() ggui.Widget {
 			return widget.Column(
 				ui.Switch(autoPub, tr("Auto-publish ports as the guest listens")).Small(),
 				ggui.If(isAutoPub, func() ggui.Widget {
 					return ui.Field(tr("Auto-publish bind address"), ui.TextField(str(func(x *Draft) *string { return &x.AutoPublishAddr })).
 						Placeholder("127.0.0.1").Name(tr("Auto-publish bind address"))).
-						Help(tr("Host IP for --auto-publish, such as 0.0.0.0. Leave empty for 127.0.0.1 only (requires rungv v0.21+)."))
+						Help(tr("Host IP for --auto-publish, such as 0.0.0.0. Leave empty for 127.0.0.1 only (requires rungvx v0.21+)."))
 				}),
 				ui.Field(tr("Allowed live port addresses"), ui.TextField(str(func(x *Draft) *string { return &x.DynamicPortAddrs })).Multiline().Lines(2).
 					Placeholder("0.0.0.0\n192.168.1.10").Name(tr("Allowed live port addresses"))).
-					Help(tr("IP literals, one per line or comma-separated, allowed for live port publishing under lockdown (rungv v0.21+).")),
+					Help(tr("IP literals, one per line or comma-separated, allowed for live port publishing under lockdown (rungvx v0.21+).")),
 			).Gap(14).Stretch()
 		}),
 	).Gap(14).Stretch()
@@ -269,7 +269,7 @@ func editorSheet(m *Model) ggui.Widget {
 		ui.Switch(flag(func(x *Draft) *bool { return &x.SetEntrypoint }), tr("Override the entrypoint even when empty (clears it)")).Small(),
 		ui.Field(tr("Ready when the log shows"), ui.TextField(str(func(x *Draft) *string { return &x.ReadyPattern })).Placeholder(tr("Ready as soon as it starts")).Name(tr("Ready pattern"))).
 			Help(tr("The sandbox shows Starting until a line contains this text.")),
-		ui.Field(tr("Extra rungv flags"), ui.TextField(str(func(x *Draft) *string { return &x.ExtraArgs })).Placeholder("--tune net.nat.mtu=9000").Name(tr("Extra flags"))),
+		ui.Field(tr("Extra rungvx flags"), ui.TextField(str(func(x *Draft) *string { return &x.ExtraArgs })).Placeholder("--tune net.nat.mtu=9000").Name(tr("Extra flags"))),
 	).Gap(14).Stretch()
 
 	lifecycle := widget.Column(

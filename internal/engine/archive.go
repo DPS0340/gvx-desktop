@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -161,6 +162,7 @@ func (e *Engine) containerArchivePut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	guestPath = path.Clean(guestPath)
 	st, err := ctl.StatPath(r.Context(), guestPath)
 	if err != nil {
 		writeError(w, r, mapArchiveError(c, rawPath, err))

@@ -350,7 +350,7 @@ func sandboxEngineNotesCard(m *Model) ggui.Widget {
 		case f.Control:
 			text = tr("Works: docker run (-d, -i, -t, --rm), exec, cp, pause, top, update, stats, build (BuildKit and Compose), ps, logs, stop, start, rm, ports on 127.0.0.1, volumes, bind mounts, pull/images, networks between containers, and Compose with several services.")
 		default:
-			text = tr("Update rungv to v0.20 or later for exec, cp, diff, export, commit, pause, top and update.")
+			text = tr("Update rungvx to v0.20 or later for exec, cp, diff, export, commit, pause, top and update.")
 		}
 		return note(tr("Capabilities"), text)
 	})

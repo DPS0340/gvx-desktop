@@ -172,17 +172,17 @@ func TestSettingsFieldsSyncWithModelUpdates(t *testing.T) {
 	p.Frame()
 
 	// Updating RungvPath externally (as InstallRungv does) syncs the TextField.
-	m.UpdateSettings(func(s *store.Settings) { s.RungvPath = "/custom/bin/rungv" })
+	m.UpdateSettings(func(s *store.Settings) { s.RungvPath = "/custom/bin/rungvx" })
 	p.Frame()
 	found := false
 	for _, n := range p.Semantics().All() {
-		if n.Name == "rungv path" && n.Value == "/custom/bin/rungv" {
+		if n.Name == "rungvx path" && n.Value == "/custom/bin/rungvx" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("rungv path field did not sync after UpdateSettings:\n%s", p.Semantics())
+		t.Errorf("rungvx path field did not sync after UpdateSettings:\n%s", p.Semantics())
 	}
 }
 

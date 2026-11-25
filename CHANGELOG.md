@@ -8,12 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **Volume directory** in the rungv section of Settings places named volumes in a folder of your choice. The app passes it to `rungv` as `GVX_VOLUME_DIR`, which gvx reads once [gfire-sigs/gvx#259](https://github.com/gfire-sigs/gvx/issues/259) is fixed. An empty setting keeps `rungv`'s default. The setting applies only while **Layer cache directory** is empty, because `rungv` keeps volumes in `<cacheDir>/volumes` when it gets `-cache-dir` ([#15](https://github.com/ironpark/gvx-desktop/issues/15)).
-- The rungv section of Settings warns when named volumes lie in `~/Library/Caches`, which macOS empties when the disk runs low, and when the volume directory does not apply, because the `rungv` in use ignores it or a layer cache directory is set. Each warning names the setting to change.
+- **Volume directory** in the rungvx section of Settings places named volumes in a folder of your choice. The app passes it to `rungvx` as `GVX_VOLUME_DIR`, which gvx reads once [gfire-sigs/gvx#259](https://github.com/gfire-sigs/gvx/issues/259) is fixed. An empty setting keeps `rungvx`'s default. The setting applies only while **Layer cache directory** is empty, because `rungvx` keeps volumes in `<cacheDir>/volumes` when it gets `-cache-dir` ([#15](https://github.com/ironpark/gvx-desktop/issues/15)).
+- The rungvx section of Settings warns when named volumes lie in `~/Library/Caches`, which macOS empties when the disk runs low, and when the volume directory does not apply, because the `rungvx` in use ignores it or a layer cache directory is set. Each warning names the setting to change.
 
 ### Fixed
 
-- The help text of **Layer cache directory** said that named volumes live in a `volumes` folder beside it. `rungv` keeps them inside it, in `<cacheDir>/volumes`, and the text now also says that the volume directory then does not apply.
+- The help text of **Layer cache directory** said that named volumes live in a `volumes` folder beside it. `rungvx` keeps them inside it, in `<cacheDir>/volumes`, and the text now also says that the volume directory then does not apply.
 
 ## [0.10.2] - 2026-11-25
 

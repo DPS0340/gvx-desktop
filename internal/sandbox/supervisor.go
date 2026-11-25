@@ -181,15 +181,16 @@ type Supervisor struct {
 }
 
 type proc struct {
-	cmd         *exec.Cmd
-	client      *rungv.Client
-	state       State
-	spec        Spec
-	paths       Paths
-	socketIsTCP bool
-	done        chan struct{}
-	stopping    bool
-	interactive bool
+	cmd           *exec.Cmd
+	client        *rungv.Client
+	state         State
+	spec          Spec
+	paths         Paths
+	socketIsTCP   bool
+	done          chan struct{}
+	stopping      bool
+	checkpointing bool
+	interactive   bool
 	// portSync is set while syncPorts runs for the proc, portAgain when
 	// it is to read the ports once more as it ends.
 	portSync, portAgain bool
@@ -437,19 +438,19 @@ func (s *Supervisor) Restore(spec Spec, dir string) error {
 
 func checkSpecFeatures(spec Spec, feat rungv.Features) error {
 	if len(spec.UnixForwards) > 0 && !feat.UnixForward {
-		return errors.New("Unix socket forwarding (--unix-forward) requires rungv v0.21 or later.")
+		return errors.New("Unix socket forwarding (--unix-forward) requires rungvx v0.21 or later.")
 	}
 	if (spec.NetTXBPS > 0 || spec.NetRXBPS > 0) && !feat.NetQoS {
-		return errors.New("Network bandwidth limits (--net-tx-bps / --net-rx-bps) require rungv v0.21 or later.")
+		return errors.New("Network bandwidth limits (--net-tx-bps / --net-rx-bps) require rungvx v0.21 or later.")
 	}
 	if strings.TrimSpace(spec.NATPolicyFile) != "" && !feat.NATPolicy {
-		return errors.New("NAT firewall policy (--nat-policy-file) requires rungv v0.21 or later.")
+		return errors.New("NAT firewall policy (--nat-policy-file) requires rungvx v0.21 or later.")
 	}
 	if len(spec.DynamicPortAddrs) > 0 && !feat.DynamicPortAddrs {
-		return errors.New("Dynamic port bind addresses (--dynamic-ports-addr) require rungv v0.21 or later.")
+		return errors.New("Dynamic port bind addresses (--dynamic-ports-addr) require rungvx v0.21 or later.")
 	}
 	if strings.TrimSpace(spec.AutoPublishAddr) != "" && !feat.AutoPublishAddr {
-		return errors.New("Auto-publish bind address (--auto-publish-addr) requires rungv v0.21 or later.")
+		return errors.New("Auto-publish bind address (--auto-publish-addr) requires rungvx v0.21 or later.")
 	}
 	return nil
 }
@@ -578,7 +579,7 @@ func (s *Supervisor) launch(spec Spec, restoreDir string) error {
 		what = "Restoring " + filepath.Base(restoreDir)
 	}
 	logs.Add(System, fmt.Sprintf("── %s %s · %s", what, spec.Name, time.Now().Format("2006-01-02 15:04:05")))
-	logs.Add(System, "$ rungv "+rungv.FormatArgs(redactArgs(args)))
+	logs.Add(System, "$ rungvx "+rungv.FormatArgs(redactArgs(args)))
 
 	if err := startCmd(context.Background(), cmd, ptyTerm); err != nil {
 		closeOnFail()
@@ -876,6 +877,19 @@ func (s *Supervisor) Forget(id string) {
 // ErrNoCheckpoint reports a sandbox started without checkpoint support.
 var ErrNoCheckpoint = errors.New("the sandbox was started without snapshot support; enable it in the sandbox settings and restart")
 
+// checkpointRetryDelays bounds how long Checkpoint waits/retries when a
+// freshly started sandbox's control socket has not yet finished binding.
+var checkpointRetryDelays = []time.Duration{
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	200 * time.Millisecond,
+	400 * time.Millisecond,
+	800 * time.Millisecond,
+	time.Second,
+	time.Second,
+	time.Second,
+}
+
 // Checkpoint writes a snapshot of a running sandbox. Without leaveRunning
 // the sandbox stops once the bundle is written. It returns the bundle
 // directory.
@@ -886,6 +900,14 @@ func (s *Supervisor) Checkpoint(ctx context.Context, id string, leaveRunning boo
 		s.mu.Unlock()
 		return "", errors.New("the sandbox is not running")
 	}
+	if p.state.Status == Stopping || p.stopping {
+		s.mu.Unlock()
+		return "", errors.New("the sandbox is stopping")
+	}
+	if p.checkpointing {
+		s.mu.Unlock()
+		return "", errors.New("a snapshot is already in progress")
+	}
 	if p.paths.ControlSocket == "" || p.paths.CheckpointDir == "" {
 		s.mu.Unlock()
 		return "", ErrNoCheckpoint
@@ -895,20 +917,66 @@ func (s *Supervisor) Checkpoint(ctx context.Context, id string, leaveRunning boo
 		return "", errors.New("Resume the sandbox first")
 	}
 	paths := p.paths
+	done := p.done
+	p.checkpointing = true
 	if !leaveRunning {
 		p.stopping = true
 	}
 	s.mu.Unlock()
+	client := s.clientFor(p)
+	if client == nil || client.Path == "" {
+		s.mu.Lock()
+		p.checkpointing = false
+		if !leaveRunning && p.state.Status != Stopping {
+			p.stopping = false
+		}
+		s.mu.Unlock()
+		return "", rungv.ErrNotFound
+	}
 	s.Logs(id).Add(System, "── Writing snapshot to "+paths.CheckpointDir)
 	target := rungv.Target{Socket: paths.ControlSocket, TokenFile: paths.TokenFile}
-	err := s.Client().CheckpointTarget(ctx, target, paths.CheckpointDir, leaveRunning)
-	if err != nil {
+	fail := func(err error) (string, error) {
 		s.mu.Lock()
-		p.stopping = false
+		p.checkpointing = false
+		if !leaveRunning && p.state.Status != Stopping {
+			p.stopping = false
+		}
 		s.mu.Unlock()
 		s.Logs(id).Add(System, "snapshot failed: "+err.Error())
 		return "", err
 	}
+	for attempt := 0; ; attempt++ {
+		err := client.CheckpointTarget(ctx, target, paths.CheckpointDir, leaveRunning)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return fail(ctx.Err())
+		}
+		if !rungv.IsUnreachable(err) || attempt >= len(checkpointRetryDelays) {
+			return fail(err)
+		}
+		select {
+		case <-done:
+			return fail(err)
+		case <-ctx.Done():
+			return fail(ctx.Err())
+		default:
+		}
+		timer := time.NewTimer(checkpointRetryDelays[attempt])
+		select {
+		case <-done:
+			timer.Stop()
+			return fail(err)
+		case <-ctx.Done():
+			timer.Stop()
+			return fail(ctx.Err())
+		case <-timer.C:
+		}
+	}
+	s.mu.Lock()
+	p.checkpointing = false
+	s.mu.Unlock()
 	s.Logs(id).Add(System, "── Snapshot written")
 	s.notify(Event{ID: id, Kind: EventChanged, State: s.State(id)})
 	return paths.CheckpointDir, nil
@@ -953,8 +1021,13 @@ func redactArgs(args []string) []string {
 }
 
 // secretEnv are the variables whose values the log leaves out: netinit's
-// keys, and a k3s node's join token.
-var secretEnv = map[string]bool{"GVX_NET": true, "K3S_TOKEN": true}
+// keys, a k3s node's join token, and extension host/runtime bearer tokens.
+var secretEnv = map[string]bool{
+	"GVX_NET":        true,
+	"K3S_TOKEN":      true,
+	"GVX_HOST_TOKEN": true,
+	"GVX_EXT_TOKEN":  true,
+}
 
 // redactEnv is kv with its value left out, when kv sets a secretEnv to
 // something.

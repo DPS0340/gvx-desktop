@@ -23,8 +23,8 @@ import (
 	"time"
 )
 
-// ErrNotFound reports that no rungv binary could be located.
-var ErrNotFound = errors.New("rungv binary not found")
+// ErrNotFound reports that no rungvx binary could be located.
+var ErrNotFound = errors.New("rungvx binary not found")
 
 // rungv's program names. gvx calls it rungvx since v0.23
 // (gfire-sigs/gvx#250): its binary, its release archives and the start of
@@ -79,6 +79,7 @@ func Candidates(preferred string) []string {
 		}
 	}
 	add(ExpandHome(preferred))
+	add(os.Getenv("GVX_RUNGVX"))
 	add(os.Getenv("GVX_RUNGV"))
 	for _, name := range binaryNames() {
 		if p, err := exec.LookPath(name); err == nil {
@@ -645,7 +646,7 @@ func Diagnose(msg string, exitCode int) string {
 	case strings.Contains(m, "in use") && strings.Contains(m, "volume"):
 		return "The volume is mounted by another running sandbox. A volume can be used by one sandbox at a time."
 	case strings.Contains(m, "entitlement") || strings.Contains(m, "hypervisor") && runtime.GOOS == "darwin":
-		return "rungv must be signed with the com.apple.security.hypervisor entitlement. Use Settings → Sign rungv."
+		return "rungvx must be signed with the com.apple.security.hypervisor entitlement. Use Settings → Sign rungvx."
 	case strings.Contains(m, "windows hypervisor platform") || strings.Contains(m, "whpx"):
 		return "Enable the \"Windows Hypervisor Platform\" optional feature, or allow the systrap fallback for trusted workloads."
 	case strings.Contains(m, "memory limit"):

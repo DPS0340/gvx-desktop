@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-26
+
+### Fixed
+
+- Fixed installing Git extensions failing immediately with `git clone: context canceled` because `Model.initExtensions` passed the ephemeral `m.async` callback context to `ext.Manager.Start`, canceling the manager's lifetime context as soon as startup returned.
+- Fixed uninstalling an extension while viewing its page to return to the dedicated **Extensions** page instead of **Settings**.
+
 ## [0.11.0] - 2026-11-26
 
 ### Added
@@ -188,7 +195,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial release of GVX Desktop for Apple silicon macOS with Homebrew cask distribution.
 - Sandbox management, image registry search (Docker Hub & Quay), `ext4lite`/`hostfs` volumes, checkpoint snapshots, `rungv` installer/updater, and English & Korean UI.
 
-[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/ironpark/gvx-desktop/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/ironpark/gvx-desktop/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/ironpark/gvx-desktop/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/ironpark/gvx-desktop/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/ironpark/gvx-desktop/compare/v0.10.0...v0.10.1

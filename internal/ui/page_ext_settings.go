@@ -15,6 +15,22 @@ import (
 	"github.com/ironpark/gvx-desktop/internal/ext"
 )
 
+func extensionsPage(m *Model) ggui.Widget {
+	disabledNotice := ggui.View(m.Settings, func(s storeSettings) ggui.Widget {
+		if s.Extensions || m.extMgrPtr.Load() != nil {
+			return widget.Box()
+		}
+		return ui.Alert(tr("Extensions are disabled"), tr("Turn on Extensions in Labs to install and run extensions.")).
+			Icon(icons.Alert).
+			Action(ui.Button(tr("Open Labs"), func() { m.Go(PageLabs) }).Outline().Size(ui.ButtonSmall))
+	})
+
+	return page(
+		headed(pageHeader(tr("Extensions"), ui.Caption(tr("Install and manage sandboxed extensions, permissions, and settings."))), disabledNotice),
+		extensionsSettings(m),
+	)
+}
+
 func extensionsSettings(m *Model) ggui.Widget {
 	devMode := ggui.Bind(
 		func() bool { return m.Settings.Get().DeveloperMode },

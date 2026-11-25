@@ -797,8 +797,8 @@ title = "Disabled: HiddenCmd"
 		return slices.Contains(uiHost.snapshotCopied(), "palette-copied-ok")
 	}, "palette command executed Copy")
 
-	// Settings ▸ Extensions shows controls, masked secret, and logs.
-	m.Go(PageSettings)
+	// Extensions page shows controls, masked secret, and logs.
+	m.Go(PageExtensions)
 	extUISettle(t, p, func() bool {
 		sem := p.Semantics()
 		return extUISemHasText(sem, "Developer Mode") &&
@@ -808,7 +808,7 @@ title = "Disabled: HiddenCmd"
 			extUISemHasText(sem, "Enabled Flag") &&
 			extUISemHasText(sem, "Count Num") &&
 			extUISemHasText(sem, "Mode Sel")
-	}, "Settings ▸ Extensions rendered")
+	}, "Extensions page rendered")
 
 	if strings.Contains(p.Semantics().String(), "top-secret-never-shown") {
 		t.Fatalf("secret setting leaked plaintext into Settings UI:\n%s", p.Semantics())
@@ -835,10 +835,10 @@ func TestExtModelKeepImagesLocalProxyHostEventsAndShutdown(t *testing.T) {
 	})
 	m2, p2 := extUINewProbe(t, dataDir2, mgrFallback, ggui.Sz(1000, 700), nil)
 	defer p2.Close()
-	m2.Go(PageSettings)
+	m2.Go(PageExtensions)
 	extUISettle(t, p2, func() bool {
 		return extUISemHasText(p2.Semantics(), "Secret Service unavailable")
-	}, "keychain fallback notice shown in Settings")
+	}, "keychain fallback notice shown on Extensions page")
 
 	// sandboxKeepImages returns model images without crashing when extMgr has none.
 	if imgs := m.sandboxKeepImages(); !slices.Contains(imgs, "alpine:3.20") {
@@ -958,17 +958,92 @@ icon = "box"
 	close(release)
 	wg.Wait()
 
-	// Settings Developer Mode switch persists store.Settings.DeveloperMode.
-	m.Go(PageSettings)
+	// Extensions page Developer Mode switch persists store.Settings.DeveloperMode.
+	m.Go(PageExtensions)
 	extUISettle(t, p, func() bool {
 		return extUISemHasText(p.Semantics(), "Developer Mode")
-	}, "Settings Developer Mode visible")
+	}, "Extensions Developer Mode visible")
 	extUITapSem(t, p, ggui.RoleSwitch, "Developer Mode")
 	st := store.Store{Dir: dataDir}
 	extUISettle(t, p, func() bool {
 		saved, err := st.Settings()
 		return err == nil && saved.DeveloperMode
 	}, "DeveloperMode persisted to store.Settings")
+}
+
+func TestExtLabsToggleAndSidebarMenuBetweenLabsAndSettings(t *testing.T) {
+	dataDir := t.TempDir()
+	m, p := extUINewProbe(t, dataDir, nil, ggui.Sz(1280, 860), func(mod *Model) {
+		mod.Offline = false
+		mod.sup = &sandbox.Supervisor{DataDir: dataDir}
+		mod.followExtensions()
+	})
+	defer p.Close()
+	defer m.CloseExtensions(2 * time.Second)
+
+	// 1. Default (Extensions disabled): footer shows Labs and Settings, NOT Extensions.
+	p.Frame()
+	if _, ok := extUIFindSemNode(p.Semantics(), ggui.RoleTab, "Extensions"); ok {
+		t.Fatalf("expected sidebar Extensions menu hidden when Labs toggle is off:\n%s", p.Semantics())
+	}
+
+	// 2. Enable Extensions in Labs -> persists store.Settings.Extensions, starts manager,
+	//    and shows Extensions menu between Labs and Settings in sidebar footer.
+	m.Go(PageLabs)
+	extUISettle(t, p, func() bool {
+		_, ok := extUIFindSemNode(p.Semantics(), ggui.RoleSwitch, "Enable extensions")
+		return ok
+	}, "Labs Enable extensions switch visible")
+	extUITapSem(t, p, ggui.RoleSwitch, "Enable extensions")
+
+	st := store.Store{Dir: dataDir}
+	extUISettle(t, p, func() bool {
+		saved, err := st.Settings()
+		if err != nil || !saved.Extensions {
+			return false
+		}
+		_, hasExtTab := extUIFindSemNode(p.Semantics(), ggui.RoleTab, "Extensions")
+		return hasExtTab && m.extMgrPtr.Load() != nil
+	}, "Extensions enabled, manager initialized, and sidebar Extensions menu shown")
+
+	labsTab, ok1 := extUIFindSemNode(p.Semantics(), ggui.RoleTab, "Labs")
+	extTab, ok2 := extUIFindSemNode(p.Semantics(), ggui.RoleTab, "Extensions")
+	settingsTab, ok3 := extUIFindSemNode(p.Semantics(), ggui.RoleTab, "Settings")
+	if !ok1 || !ok2 || !ok3 {
+		t.Fatalf("missing footer tabs: labs=%v ext=%v settings=%v\n%s", ok1, ok2, ok3, p.Semantics())
+	}
+	if !(labsTab.Rect.Origin.Y < extTab.Rect.Origin.Y && extTab.Rect.Origin.Y < settingsTab.Rect.Origin.Y) {
+		t.Fatalf("expected sidebar footer order Labs < Extensions < Settings, got Y=(%.1f, %.1f, %.1f)",
+			labsTab.Rect.Origin.Y, extTab.Rect.Origin.Y, settingsTab.Rect.Origin.Y)
+	}
+
+	// 3. Tapping sidebar Extensions menu opens PageExtensions with install & Developer Mode UI.
+	extUITapSem(t, p, ggui.RoleTab, "Extensions")
+	extUISettle(t, p, func() bool {
+		sem := p.Semantics()
+		return ggui.Peek(m.Page) == PageExtensions &&
+			extUISemHasText(sem, "Developer Mode") &&
+			extUISemHasText(sem, "Install from Git repository")
+	}, "PageExtensions opened from sidebar")
+
+	// 4. Settings page no longer embeds Developer Mode / Extensions install section.
+	m.Go(PageSettings)
+	extUISettle(t, p, func() bool {
+		return ggui.Peek(m.Page) == PageSettings && extUISemHasText(p.Semantics(), "Appearance")
+	}, "PageSettings rendered")
+	if extUISemHasText(p.Semantics(), "Install from Git repository") {
+		t.Fatalf("expected Extensions install UI moved out of Settings page:\n%s", p.Semantics())
+	}
+
+	// 5. Disabling Extensions while on PageExtensions closes owned manager, hides sidebar item,
+	//    and navigates back to PageLabs.
+	m.Go(PageExtensions)
+	p.Frame()
+	m.SetExtensionsEnabled(false)
+	extUISettle(t, p, func() bool {
+		_, hasExtTab := extUIFindSemNode(p.Semantics(), ggui.RoleTab, "Extensions")
+		return ggui.Peek(m.Page) == PageLabs && !hasExtTab && m.extMgrPtr.Load() == nil
+	}, "Extensions disabled, redirected to Labs, and sidebar menu hidden")
 }
 
 func TestExtModelStartUsesFakeKeychainUnderTesting(t *testing.T) {
@@ -1425,11 +1500,11 @@ icon = "box"
 	defer p.Close()
 	defer close(release)
 
-	m.Go(PageSettings)
+	m.Go(PageExtensions)
 	extUISettle(t, p, func() bool {
 		sem := p.Semantics()
 		return extUISemHasText(sem, "Card Ext A") && extUISemHasText(sem, "Build Ext B")
-	}, "Settings cards for both extensions rendered")
+	}, "Extensions page cards for both extensions rendered")
 
 	findNthByY := func(role ggui.Role, name string, index int) ggui.SemNode {
 		var matches []ggui.SemNode

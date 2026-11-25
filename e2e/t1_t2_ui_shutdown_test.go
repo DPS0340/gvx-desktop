@@ -2022,13 +2022,13 @@ func main() {
 	defer p.Close()
 	p.Frame()
 
-	m.Go(ui.PageSettings)
+	m.Go(ui.PageExtensions)
 	e2e3UISettle(t, p, func() bool {
 		sem := p.Semantics()
 		return e2e3UISemHasText(sem, "Extensions") &&
 			e2e3UISemHasText(sem, "Binary Extension f23-logs") &&
 			e2e3UISemHasText(sem, "0.1.0")
-	}, "Settings ▸ Extensions lists extension name and version")
+	}, "Extensions page lists extension name and version")
 
 	// Expand/open logs if behind a Logs button, or inspect directly if already visible.
 	if !e2e3UISemHasText(p.Semantics(), "ext-boot-log-marker-42") {
@@ -2051,7 +2051,7 @@ func TestF23_T1_SettingsInstallAndAllowAndBuildTriggers(t *testing.T) {
 
 	m, p := e2e3UINewProbe(t, h.DataDir, mgr, ggui.Sz(1280, 840), nil)
 	defer p.Close()
-	m.Go(ui.PageSettings)
+	m.Go(ui.PageExtensions)
 	p.Frame()
 
 	// 1. InstallLocal -> waiting -> AllowAndBuild -> ImageBuilder invoked.
@@ -2183,7 +2183,7 @@ run_mode     = { type = "select", label = "Run Mode", options = ["fast", "safe"]
 	defer p.Close()
 	p.Frame()
 
-	m.Go(ui.PageSettings)
+	m.Go(ui.PageExtensions)
 	e2e3UISettle(t, p, func() bool {
 		sem := p.Semantics()
 		return e2e3UISemHasText(sem, "Endpoint URL") &&
@@ -2275,10 +2275,10 @@ func main() {
 
 	m, p := e2e3UINewProbe(t, h.DataDir, mgr, ggui.Sz(1280, 840), nil)
 	defer p.Close()
-	m.Go(ui.PageSettings)
+	m.Go(ui.PageExtensions)
 	e2e3UISettle(t, p, func() bool {
 		return e2e3UISemHasText(p.Semantics(), "Developer Mode") || e2e3UISemHasText(p.Semantics(), "Developer mode")
-	}, "Developer Mode toggle visible in Settings ▸ Extensions")
+	}, "Developer Mode toggle visible on Extensions page")
 
 	e2e3UITapSem(t, p, ggui.RoleSwitch, "Developer")
 	st := newTestStore(t, h.DataDir)
@@ -2384,12 +2384,12 @@ func TestF23_T2_KeychainFileFallbackNoticeShown(t *testing.T) {
 
 	m, p := e2e3UINewProbe(t, h.DataDir, mgr, ggui.Sz(1280, 840), nil)
 	defer p.Close()
-	m.Go(ui.PageSettings)
+	m.Go(ui.PageExtensions)
 	e2e3UISettle(t, p, func() bool {
 		sem := p.Semantics()
 		return e2e3UISemHasText(sem, "Secret Service unavailable") ||
 			(e2e3UISemHasText(sem, "file") && e2e3UISemHasText(sem, "keychain"))
-	}, "keychain file fallback notice displayed in Settings ▸ Extensions")
+	}, "keychain file fallback notice displayed on Extensions page")
 }
 
 func TestF23_T2_SecretSettingNeverPrefilledInPlaintext(t *testing.T) {
@@ -2423,10 +2423,10 @@ github_pat = { type = "secret", label = "GitHub Token", description = "Personal 
 
 	m, p := e2e3UINewProbe(t, h.DataDir, mgr, ggui.Sz(1280, 840), nil)
 	defer p.Close()
-	m.Go(ui.PageSettings)
+	m.Go(ui.PageExtensions)
 	e2e3UISettle(t, p, func() bool {
 		return e2e3UISemHasText(p.Semantics(), "GitHub Token")
-	}, "secret setting row rendered in Settings ▸ Extensions")
+	}, "secret setting row rendered on Extensions page")
 
 	semStr := p.Semantics().String()
 	if strings.Contains(semStr, secretVal) {

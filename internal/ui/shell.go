@@ -74,6 +74,8 @@ func build(m *Model) ggui.Widget {
 			return settingsPage(m)
 		case PageLabs:
 			return labsPage(m)
+		case PageExtensions:
+			return extensionsPage(m)
 		}
 		if extID, viewID, ok := ParseExtensionPage(p); ok {
 			return extensionPage(m, extID, viewID)
@@ -150,6 +152,7 @@ type sidebarExtKey struct {
 type sidebarKey struct {
 	containers bool
 	pods       bool
+	extEnabled bool
 	extItems   []sidebarExtKey
 }
 
@@ -189,12 +192,13 @@ func sidebar(m *Model) ggui.Widget {
 		return sidebarKey{
 			containers: m.ContainersOpen.Get(),
 			pods:       m.PodsOpen.Get(),
+			extEnabled: m.Settings.Get().Extensions,
 			extItems:   extItems,
 		}
 	}).WithEqual(func(a, b sidebarKey) bool {
-		return a.containers == b.containers && a.pods == b.pods && slices.Equal(a.extItems, b.extItems)
+		return a.containers == b.containers && a.pods == b.pods && a.extEnabled == b.extEnabled && slices.Equal(a.extItems, b.extItems)
 	})
-	return ggui.View(state, func(k sidebarKey) ggui.Widget { return sidebarFor(m, k.containers, k.pods, k.extItems) })
+	return ggui.View(state, func(k sidebarKey) ggui.Widget { return sidebarFor(m, k.containers, k.pods, k.extEnabled, k.extItems) })
 }
 
 // LabsSupported reports whether the current platform has any Labs features.
@@ -206,7 +210,7 @@ func LabsSupported() bool {
 
 // sidebarFor is the sidebar with Docker's Networks/Containers and
 // Kubernetes's Pods/Workloads/Services nested under their engine while it runs.
-func sidebarFor(m *Model, containers, pods bool, extItems []sidebarExtKey) ggui.Widget {
+func sidebarFor(m *Model, containers, pods, extEnabled bool, extItems []sidebarExtKey) ggui.Widget {
 	nav := ggui.Bind(m.Page.Get, m.Go)
 	item := func(key, label string, g *icons.Glyph) ui.SidebarEntry {
 		return ui.SidebarItem(key, label).Leading(glyph(g, 16)).Tooltip(label)
@@ -286,6 +290,9 @@ func sidebarFor(m *Model, containers, pods bool, extItems []sidebarExtKey) ggui.
 	footer := []ui.SidebarEntry{}
 	if LabsSupported() {
 		footer = append(footer, item(PageLabs, tr("Labs"), lucide.FlaskConical))
+	}
+	if extEnabled {
+		footer = append(footer, item(PageExtensions, tr("Extensions"), lucide.Puzzle))
 	}
 	footer = append(footer, item(PageSettings, tr("Settings"), lucide.Settings))
 
@@ -775,17 +782,19 @@ type paletteExtCmd struct {
 }
 
 type paletteState struct {
-	containers, pods bool
-	sandboxEngine    bool
-	active           int
-	sandboxes        []paletteSandbox
-	extCommands      []paletteExtCmd
+	containers, pods  bool
+	sandboxEngine     bool
+	extensionsEnabled bool
+	active            int
+	sandboxes         []paletteSandbox
+	extCommands       []paletteExtCmd
 }
 
 func (a paletteState) equal(b paletteState) bool {
 	return a.containers == b.containers &&
 		a.pods == b.pods &&
 		a.sandboxEngine == b.sandboxEngine &&
+		a.extensionsEnabled == b.extensionsEnabled &&
 		a.active == b.active &&
 		slices.Equal(a.sandboxes, b.sandboxes) &&
 		slices.Equal(a.extCommands, b.extCommands)
@@ -844,7 +853,10 @@ func palette(m *Model) ggui.Widget {
 			ui.CommandItem(tr("Settings"), close(func() { m.Go(PageSettings) })).Icon(ic(lucide.Settings)).Group(tr("Go to")).Shortcut("cmd+,"),
 		)
 		if LabsSupported() {
-			out = append(out, ui.CommandItem(tr("Labs"), close(func() { m.Go(PageLabs) })).Icon(ic(lucide.FlaskConical)).Group(tr("Go to")).Keywords("experimental local proxy https localhost mcp ai agent rosetta"))
+			out = append(out, ui.CommandItem(tr("Labs"), close(func() { m.Go(PageLabs) })).Icon(ic(lucide.FlaskConical)).Group(tr("Go to")).Keywords("experimental local proxy https localhost mcp ai agent rosetta extensions"))
+		}
+		if st.extensionsEnabled {
+			out = append(out, ui.CommandItem(tr("Extensions"), close(func() { m.Go(PageExtensions) })).Icon(ic(lucide.Puzzle)).Group(tr("Go to")).Keywords("plugins extensions install github actions"))
 		}
 		out = append(out,
 			ui.CommandItem(tr("Refresh"), close(m.RefreshAll)).Icon(ic(lucide.RefreshCw)).Group(tr("App")).Shortcut("cmd+r"),
@@ -914,12 +926,13 @@ func palette(m *Model) ggui.Widget {
 			}
 		}
 		return paletteState{
-			containers:    m.ContainersOpen.Get(),
-			pods:          m.PodsOpen.Get(),
-			sandboxEngine: m.Settings.Get().SandboxEngine,
-			active:        m.TotalRunning.Get(),
-			sandboxes:     sbs,
-			extCommands:   extCmds,
+			containers:        m.ContainersOpen.Get(),
+			pods:              m.PodsOpen.Get(),
+			sandboxEngine:     m.Settings.Get().SandboxEngine,
+			extensionsEnabled: m.Settings.Get().Extensions,
+			active:            m.TotalRunning.Get(),
+			sandboxes:         sbs,
+			extCommands:       extCmds,
 		}
 	}).WithEqual(paletteState.equal)
 	ggui.Watch(state, func(st paletteState) { cmd.Entries(entries(st)...) })
@@ -946,6 +959,9 @@ func (m *Model) RefreshAll() {
 			m.refreshAmd64State()
 			m.refreshMicroVMState()
 		}
+		m.refreshExtensions()
+	case PageExtensions:
+		m.refreshExtensions()
 	}
 	m.CheckKubeconfig()
 	for _, l := range m.Links() {

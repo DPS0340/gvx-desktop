@@ -73,7 +73,7 @@ func extensionPage(m *Model, extID, viewID string) ggui.Widget {
 				extIcon("package").Size(28).Color(colorGray),
 				ui.Heading(tr("Extension not found")).Size(16),
 				ui.Caption(tr("Extension %s is not installed.", extID)),
-				ui.Button(tr("Open Settings"), func() { m.Go(PageSettings) }).Outline(),
+				ui.Button(tr("Open Extensions"), func() { m.Go(PageExtensions) }).Outline(),
 			).Gap(10).Align(widget.AlignCenter))
 		}
 
@@ -171,7 +171,7 @@ func extensionPage(m *Model, extID, viewID string) ggui.Widget {
 				Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.RefreshCw, 14)),
 			ui.Button(tr("Logs"), func() { logsOpen.Set(true) }).
 				Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.ScrollText, 14)),
-			ui.Button(tr("Settings"), func() { m.Go(PageSettings) }).
+			ui.Button(tr("Settings"), func() { m.Go(PageExtensions) }).
 				Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.Settings, 14)),
 		)
 
@@ -326,7 +326,7 @@ func extWaitingCard(m *Model, info ext.ExtensionInfo) ggui.Widget {
 	}
 	if info.RuntimeType == ext.RuntimeBinary && !m.developerMode.Load() {
 		rows = append(rows, ui.Alert(tr("Developer Mode required"),
-			tr("This extension uses an unsandboxed binary runtime. Turn on Developer Mode in Settings ▸ Extensions to allow it.")).
+			tr("This extension uses an unsandboxed binary runtime. Turn on Developer Mode in Extensions to allow it.")).
 			Icon(icons.Alert))
 	}
 	for _, perm := range perms {

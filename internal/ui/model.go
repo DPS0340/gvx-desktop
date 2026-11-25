@@ -53,9 +53,12 @@ const (
 	PageDocker     = "docker"
 	PageKubernetes = "kubernetes"
 	PageSettings   = "settings"
-	// PageLabs holds what is still experimental, above Settings in the
-	// sidebar.
+	// PageLabs holds what is still experimental, above Extensions and Settings in
+	// the sidebar.
 	PageLabs = "labs"
+	// PageExtensions is the dedicated extension install/management page, shown
+	// between Labs and Settings in the sidebar when Extensions are enabled.
+	PageExtensions = "extensions"
 	// PageExtensionPrefix is the route prefix for extension views ("ext:<ext-id>/<view-id>").
 	PageExtensionPrefix = "ext:"
 )
@@ -989,6 +992,9 @@ func (m *Model) Go(page string) {
 			m.refreshAmd64State()
 			m.refreshMicroVMState()
 		}
+		m.refreshExtensions()
+	case PageExtensions:
+		m.refreshExtensions()
 	case PageDocker:
 		m.LoadDocker()
 		m.LoadDockerImages()
@@ -1035,7 +1041,9 @@ func (m *Model) Start() {
 	m.followLocalRegistry()
 	m.followLocalProxy()
 	m.followMCPServer()
-	m.initExtensions()
+	if ggui.Peek(m.Settings).Extensions {
+		m.initExtensions()
+	}
 	m.followExtensions()
 	m.followDocker()
 	m.followPods()

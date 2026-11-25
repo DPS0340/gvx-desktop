@@ -247,6 +247,64 @@ func (m *Model) CloseExtensions(timeout time.Duration) {
 	m.extMu.Unlock()
 }
 
+// SetExtensionsEnabled turns the Labs Extensions feature on or off, persisting
+// the setting and starting or stopping the owned extension Manager accordingly.
+func (m *Model) SetExtensionsEnabled(enabled bool) {
+	if m == nil {
+		return
+	}
+	m.UpdateSettings(func(s *store.Settings) {
+		s.Extensions = enabled
+	})
+	if enabled {
+		if m.extMgrPtr.Load() == nil {
+			m.initExtensions()
+		}
+		return
+	}
+	cur := ggui.Peek(m.Page)
+	if cur == PageExtensions || strings.HasPrefix(cur, PageExtensionPrefix) {
+		if LabsSupported() {
+			m.Go(PageLabs)
+		} else {
+			m.Go(PageDashboard)
+		}
+	}
+	m.stopOwnedExtensions()
+}
+
+func (m *Model) stopOwnedExtensions() {
+	if m == nil {
+		return
+	}
+	m.extLifeMu.Lock()
+	m.extMu.Lock()
+	owned := m.extOwnedMgr
+	m.extMu.Unlock()
+	if !owned {
+		m.extLifeMu.Unlock()
+		return
+	}
+	m.stopWatchPoller()
+	m.cancelExtensionStream()
+	mgr := m.extMgrPtr.Swap(nil)
+	m.extMu.Lock()
+	m.extOwnedMgr = false
+	m.extMu.Unlock()
+	m.extLifeMu.Unlock()
+
+	if m.host != nil {
+		m.post(m.refreshExtensions)
+	} else {
+		m.refreshExtensions()
+	}
+	if mgr != nil {
+		go func() {
+			_ = mgr.Close(5 * time.Second)
+		}()
+	}
+}
+
 func (m *Model) initExtensions() {
 	if m.extMgrPtr.Load() != nil {
 		m.refreshExtensions()
@@ -311,6 +369,14 @@ func (m *Model) followExtensions() {
 		m.developerMode.Store(set.DeveloperMode)
 		m.sandboxEngineMode.Store(set.SandboxEngine)
 		hi := m.updateHostInfoSnapshot(set, eng, cOpen)
+
+		if set.Extensions {
+			if m.extMgrPtr.Load() == nil {
+				m.initExtensions()
+			}
+		} else {
+			m.stopOwnedExtensions()
+		}
 
 		if mgr := m.extMgrPtr.Load(); mgr != nil {
 			if hi.Theme != "" && hi.Theme != m.extThemeSent {

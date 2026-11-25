@@ -146,7 +146,6 @@ func settingsPage(m *Model) ggui.Widget {
 		dockerSettings(m),
 		kubeSettings(m),
 		localRegistrySettings(m),
-		extensionsSettings(m),
 		rungvSettings(m, path, cache, volume),
 		appUpdateSettings(m),
 		settingsGroup(lucide.Download, tr("rungv updates"),

@@ -265,6 +265,8 @@ func installMenus(app *ggui.App, m *ui.Model) {
 	if ui.LabsSupported() {
 		viewItems = append(viewItems, ggui.MenuAction(ui.T("Labs"), "", func() { m.Go(ui.PageLabs) }))
 	}
+	viewItems = append(viewItems, ggui.MenuAction(ui.T("Extensions"), "", func() { m.Go(ui.PageExtensions) }).
+		BindEnabled(ggui.Map(m.Settings, func(s store.Settings) bool { return s.Extensions })))
 	app.SetMenu(
 		ggui.Menu(ui.T("File"),
 			ggui.MenuAction(ui.T("New Sandbox…"), "cmd+n", func() { m.NewSandbox("") }),

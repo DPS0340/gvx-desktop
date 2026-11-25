@@ -13,6 +13,7 @@ import (
 	"github.com/ironpark/ggui/ui"
 	"github.com/ironpark/ggui/widget"
 
+	"github.com/ironpark/gvx-desktop/internal/ext"
 	"github.com/ironpark/gvx-desktop/internal/localproxy"
 	"github.com/ironpark/gvx-desktop/internal/mcpserver"
 	"github.com/ironpark/gvx-desktop/internal/store"
@@ -40,6 +41,9 @@ func labsPage(m *Model) ggui.Widget {
 		),
 		settingsGroup(lucide.Bot, tr("AI agent MCP server"),
 			mcpServerSettings(m),
+		),
+		settingsGroup(lucide.Puzzle, tr("Extensions"),
+			extensionsLabsSettings(m),
 		),
 	}
 	if amd64BuilderPlatform() {
@@ -278,6 +282,54 @@ func mcpServerSettings(m *Model) ggui.Widget {
 		toggleRow,
 		ui.Divider(),
 		portRow,
+		ui.Divider(),
+		details,
+	).Gap(12).Stretch()
+}
+
+func extensionsLabsSettings(m *Model) ggui.Widget {
+	enabled := ggui.Bind(func() bool { return m.Settings.Get().Extensions }, m.SetExtensionsEnabled)
+
+	toggleRow := settingRow(
+		tr("Enable extensions"),
+		tr("Run sandboxed extensions built from Git repositories, local folders, or OCI images, and add an Extensions menu to the sidebar."),
+		ui.Switch(enabled, "").Name(tr("Enable extensions")),
+	)
+
+	type labsExtStatus struct {
+		on    bool
+		count int
+	}
+	status := ggui.Combine(
+		ggui.Map(m.Settings, func(s storeSettings) bool { return s.Extensions }),
+		m.Extensions,
+		func(on bool, list []ext.ExtensionInfo) labsExtStatus {
+			return labsExtStatus{on: on, count: len(list)}
+		},
+	)
+	details := ggui.View(status, func(st labsExtStatus) ggui.Widget {
+		var dotColor color.Color = colorGray
+		stateText := tr("Off")
+		var trailing []ggui.Widget
+		if st.on {
+			dotColor = colorGreen
+			if st.count > 0 {
+				stateText = tr("Enabled") + " · " + trn(st.count, "%d extension installed", "%d extensions installed")
+			} else {
+				stateText = tr("Enabled")
+			}
+			trailing = append(trailing, ui.Button(tr("Open Extensions"), func() { m.Go(PageExtensions) }).Outline().Size(ui.ButtonSmall).Icon(glyph(lucide.Puzzle, 14)))
+		}
+		parts := []ggui.Widget{
+			dot(dotColor, 7),
+			widget.Expanded(widget.Text(stateText).Size(13).Weight(ggui.WeightMedium)),
+		}
+		parts = append(parts, trailing...)
+		return widget.Row(parts...).Gap(8).Align(widget.AlignCenter)
+	})
+
+	return widget.Column(
+		toggleRow,
 		ui.Divider(),
 		details,
 	).Gap(12).Stretch()

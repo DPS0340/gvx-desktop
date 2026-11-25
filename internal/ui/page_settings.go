@@ -177,14 +177,14 @@ func rungvSettings(m *Model, path, cache, volume *ggui.StateValue[string]) ggui.
 			browseFile(m, path, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.RungvPath = v }) })
 		}).Outline(),
 	).Gap(8))
-	cacheField := settingField(tr("Layer cache directory"), tr("Passed as -cache-dir. Named volumes then live in its volumes folder, unless a volume directory is set."), widget.Row(
+	cacheField := settingField(tr("Layer cache directory"), tr("Passed as -cache-dir. Named volumes then live in its volumes folder, and the volume directory does not apply."), widget.Row(
 		widget.Expanded(ui.TextField(cache).Placeholder(tr("rungv's default")).Name(tr("Layer cache directory")).
 			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = strings.TrimSpace(v) }) })),
 		ui.Button(tr("Browse…"), func() {
 			browseFolder(m, cache, func(v string) { m.UpdateSettings(func(s *storeSettings) { s.CacheDir = v }) })
 		}).Outline(),
 	).Gap(8))
-	volumeField := settingField(tr("Volume directory"), tr("Passed to rungv as GVX_VOLUME_DIR. Keep it out of cache folders: macOS empties ~/Library/Caches when the disk runs low."), widget.Row(
+	volumeField := settingField(tr("Volume directory"), tr("Passed to rungv as GVX_VOLUME_DIR, which applies only while no layer cache directory is set. Keep it out of cache folders: macOS empties ~/Library/Caches when the disk runs low."), widget.Row(
 		widget.Expanded(ui.TextField(volume).Placeholder(tr("rungv's default")).Name(tr("Volume directory")).
 			OnCommit(func(v string) { m.UpdateSettings(func(s *storeSettings) { s.VolumeDir = strings.TrimSpace(v) }) })),
 		ui.Button(tr("Browse…"), func() {
@@ -288,7 +288,7 @@ func engineFacts(m *Model) ggui.Widget {
 			kvText(tr("Layer cache"), e.Info.LayerCacheDir),
 			kvText(tr("Volumes"), e.Info.VolumeDir),
 		}
-		if note := volumeDirNote(e, ggui.Peek(m.Settings).VolumeDir); note != nil {
+		if note := volumeDirNote(e, ggui.Peek(m.Settings)); note != nil {
 			rows = append(rows, note)
 		}
 		rows = append(rows, widget.Padding(widget.Row(actions...).Gap(8), 6, 0, 0, 0))
@@ -296,23 +296,45 @@ func engineFacts(m *Model) ggui.Widget {
 	})
 }
 
-// volumeDirNote warns when rungv keeps named volumes where they can be lost:
-// it ignored the volume directory setting, or it uses a cache folder that the
-// host may purge. It returns nil when neither applies.
-func volumeDirNote(e Engine, setting string) ggui.Widget {
-	if e.Info.VolumeDir == "" {
+// volumeDirNote shows the warning of volumeDirWarning for the engine e and the
+// settings set, or returns nil when there is none.
+func volumeDirNote(e Engine, set storeSettings) ggui.Widget {
+	home, _ := os.UserHomeDir()
+	title, body := volumeDirWarning(e.Info.OS, home, e.Info.VolumeDir, set.CacheDir, set.VolumeDir)
+	if title == "" {
 		return nil
 	}
-	if want := rungv.ExpandHome(setting); want != "" && filepath.Clean(want) != filepath.Clean(e.Info.VolumeDir) {
-		return ui.Alert(tr("Volume directory not applied"),
-			tr("This rungv does not read GVX_VOLUME_DIR and keeps volumes in %s. Update rungv to use the setting.", e.Info.VolumeDir)).Icon(icons.Alert)
+	return ui.Alert(title, body).Icon(icons.Alert)
+}
+
+// volumeDirWarning explains why the named volumes that rungv reports in dir
+// are not where the settings put them, or can be lost: rungv ignored the
+// volume directory setting, or dir lies in a cache folder that the host may
+// purge. rungv reads GVX_VOLUME_DIR only when no -cache-dir is given, so a
+// layer cache setting keeps the volumes in its volumes folder, and the advice
+// then names that setting. It returns empty strings when nothing applies.
+func volumeDirWarning(goos, home, dir, cacheSetting, volumeSetting string) (title, body string) {
+	if dir == "" {
+		return "", ""
 	}
-	home, _ := os.UserHomeDir()
-	if rungv.CacheVolumeDir(e.Info.OS, home, e.Info.VolumeDir) {
-		return ui.Alert(tr("Volumes are in a cache folder"),
-			tr("macOS empties ~/Library/Caches when the disk runs low, and named volumes there lose their data. Set a volume directory outside it, or update rungv.")).Icon(icons.Alert)
+	cacheSet := strings.TrimSpace(cacheSetting) != ""
+	if want := rungv.ExpandHome(strings.TrimSpace(volumeSetting)); want != "" && filepath.Clean(want) != filepath.Clean(dir) {
+		if cacheSet {
+			return tr("Volume directory not applied"),
+				tr("A layer cache directory is set, so rungv keeps volumes in %s. Clear the layer cache directory setting to use the volume directory.", dir)
+		}
+		return tr("Volume directory not applied"),
+			tr("This rungv does not read GVX_VOLUME_DIR and keeps volumes in %s. Update rungv to use the setting.", dir)
 	}
-	return nil
+	if rungv.CacheVolumeDir(goos, home, dir) {
+		if cacheSet {
+			return tr("Volumes are in a cache folder"),
+				tr("macOS empties ~/Library/Caches when the disk runs low, and named volumes there lose their data. Move the layer cache directory out of it.")
+		}
+		return tr("Volumes are in a cache folder"),
+			tr("macOS empties ~/Library/Caches when the disk runs low, and named volumes there lose their data. Set a volume directory outside it, or update rungv.")
+	}
+	return "", ""
 }
 
 // aboutCard names the app and its version, and where to read more.

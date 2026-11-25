@@ -142,12 +142,14 @@ type Client struct {
 	Path     string
 	CacheDir string // optional -cache-dir for every command that takes it
 	// VolumeDir is the optional directory of named volumes, given to every
-	// command as VolumeDirEnv. It takes precedence over CacheDir/volumes.
+	// command as VolumeDirEnv. rungv reads it only when no -cache-dir is
+	// given, so CacheDir/volumes wins while CacheDir is set.
 	VolumeDir string
 }
 
 // VolumeDirEnv is the variable through which rungv takes the directory of
-// named volumes. A rungv that predates it ignores it.
+// named volumes when no -cache-dir is given. A rungv that predates it ignores
+// it.
 const VolumeDirEnv = "GVX_VOLUME_DIR"
 
 // Error is a failed rungv command with what it wrote to stderr.

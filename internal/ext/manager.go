@@ -164,10 +164,12 @@ func (m *Manager) Start(ctx context.Context) error {
 		return nil
 	}
 	m.started = true
-	if m.cancel != nil {
-		m.cancel()
+	if ctx != context.Background() || m.baseCtx == nil || m.baseCtx.Err() != nil {
+		if m.cancel != nil {
+			m.cancel()
+		}
+		m.baseCtx, m.cancel = context.WithCancel(ctx)
 	}
-	m.baseCtx, m.cancel = context.WithCancel(ctx)
 	baseCtx := m.baseCtx
 	m.mu.Unlock()
 

@@ -349,8 +349,11 @@ func (m *Model) initExtensions() {
 		return
 	}
 	m.setExtensionManager(mgr, true)
-	m.async(func(ctx context.Context) error {
-		return mgr.Start(ctx)
+	m.async(func(context.Context) error {
+		// Use a long-lived background context for Manager.Start: Manager stores
+		// this context as its lifetime baseCtx until Close() is called, whereas
+		// m.async cancels its callback ctx as soon as Start returns.
+		return mgr.Start(context.Background())
 	}, func(err error) {
 		if err != nil {
 			m.toastError(tr("Extensions failed to start"), err)
@@ -927,7 +930,7 @@ func (m *Model) UninstallExtension(id string, purgeData bool) {
 		return
 	}
 	if cur := ggui.Peek(m.Page); strings.HasPrefix(cur, PageExtensionPrefix+id+"/") {
-		m.Go(PageSettings)
+		m.Go(PageExtensions)
 	}
 	m.extStreamMu.Lock()
 	activeForID := strings.HasPrefix(m.extStreamKey, id+"/")

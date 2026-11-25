@@ -2215,3 +2215,48 @@ func TestExtUI_MarkdownOnLinkValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestExtUI_InitExtensionsDoesNotCancelManagerContext(t *testing.T) {
+	// Regression test: initExtensions runs mgr.Start inside m.async, whose ctx
+	// is canceled as soon as Start returns. Manager.Start must receive a
+	// long-lived context so subsequent operations (git clone, build, etc.) do
+	// not fail immediately with context.Canceled.
+	dataDir := t.TempDir()
+	m, p := extUINewProbe(t, dataDir, nil, ggui.Sz(800, 600), func(mod *Model) {
+		mod.Offline = false
+		mod.sup = &sandbox.Supervisor{DataDir: dataDir}
+	})
+	defer p.Close()
+	defer m.CloseExtensions(2 * time.Second)
+
+	m.initExtensions()
+	extUISettle(t, p, func() bool {
+		return m.extMgrPtr.Load() != nil
+	}, "owned extension manager initialized")
+
+	// Give the async Start callback time to finish and run its defer cancel().
+	time.Sleep(100 * time.Millisecond)
+	p.Frame()
+
+	errCh := make(chan error, 1)
+	m.InstallGitExtension("https://127.0.0.1:1/owner/repo", "", func(err error) {
+		errCh <- err
+	})
+
+	var gotErr error
+	extUISettle(t, p, func() bool {
+		select {
+		case gotErr = <-errCh:
+			return true
+		default:
+			return false
+		}
+	}, "InstallGitExtension completed")
+
+	if gotErr == nil {
+		t.Fatal("expected error cloning unreachable loopback port, got nil")
+	}
+	if errors.Is(gotErr, context.Canceled) || strings.Contains(gotErr.Error(), "context canceled") {
+		t.Fatalf("InstallGitExtension failed with canceled manager context: %v", gotErr)
+	}
+}
